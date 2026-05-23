@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Database
+data/database.db
+data/database.db-wal
+data/database.db-shm
+data/vector_db/
+
+# Generated files
+generated/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Process
+*.pid
+
+# Claude Code
+.claude/
+
+# Planning files (local only)
+task_plan.md
+findings.md
+progress.md

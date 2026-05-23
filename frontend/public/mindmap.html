@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Python异常处理 - 交互式思维导图</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f4f8; overflow: hidden; height: 100vh; }
+
+  #canvas {
+    position: absolute; top: 0; left: 0;
+    transform-origin: 0 0;
+    cursor: grab;
+    transition: none;
+  }
+  #canvas.grabbing { cursor: grabbing; }
+
+  /* SVG连接线层 */
+  #svg-layer {
+    position: absolute; top: 0; left: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  #svg-layer path {
+    fill: none;
+    stroke-width: 2;
+    transition: stroke 0.3s, stroke-width 0.3s;
+  }
+
+  /* 节点样式 */
+  .node {
+    position: absolute;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s, opacity 0.3s;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .node:hover {
+    transform: scale(1.05);
+    z-index: 100;
+  }
+  .node .toggle {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    flex-shrink: 0;
+    transition: transform 0.3s;
+  }
+  .node .toggle.collapsed { transform: rotate(-90deg); }
+  .node.hidden { opacity: 0; pointer-events: none; }
+
+  /* 颜色方案 */
+  .level-0 { background: linear-gradient(135deg, #1e40af, #3b82f6); color: #fff; font-size: 20px; font-weight: 700; padding: 16px 28px; box-shadow: 0 8px 30px rgba(30,64,175,0.35); letter-spacing: 1px; }
+  .level-0 .toggle { background: rgba(255,255,255,0.25); color: #fff; }
+
+  .level-1 { background: linear-gradient(135deg, #7c3aed, #a78bfa); color: #fff; font-size: 15px; font-weight: 600; padding: 10px 18px; box-shadow: 0 4px 16px rgba(124,58,237,0.25); }
+  .level-1 .toggle { background: rgba(255,255,255,0.25); color: #fff; }
+
+  .level-2 { background: #fff; color: #1e293b; font-size: 13px; font-weight: 500; padding: 8px 14px; border: 1.5px solid #e2e8f0; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .level-2 .toggle { background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0; }
+  .level-2:hover { border-color: #7c3aed; box-shadow: 0 4px 16px rgba(124,58,237,0.15); }
+
+  .level-3 { background: #f8fafc; color: #475569; font-size: 12px; font-weight: 400; padding: 6px 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+  .level-3 .toggle { background: #f1f5f9; color: #94a3b8; border: 1px solid #e2e8f0; }
+  .level-3:hover { border-color: #3b82f6; background: #fff; }
+
+  /* 连接线颜色 */
+  .line-0 { stroke: #3b82f6; }
+  .line-1 { stroke: #a78bfa; }
+  .line-2 { stroke: #cbd5e1; }
+
+  /* 工具栏 */
+  #toolbar {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; padding: 8px 16px;
+    background: rgba(255,255,255,0.95); border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.1); backdrop-filter: blur(12px);
+    z-index: 999;
+  }
+  #toolbar button {
+    padding: 8px 14px; border: none; border-radius: 10px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    transition: all 0.2s; color: #475569; background: transparent;
+  }
+  #toolbar button:hover { background: #f1f5f9; color: #1e293b; }
+  #toolbar .sep { width: 1px; background: #e2e8f0; margin: 4px 4px; }
+
+  /* 缩放提示 */
+  #zoom-hint {
+    position: fixed; top: 20px; right: 20px;
+    padding: 8px 16px; border-radius: 10px;
+    background: rgba(255,255,255,0.9); box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    font-size: 12px; color: #64748b; z-index: 999;
+    backdrop-filter: blur(8px);
+  }
+</style>
+</head>
+<body>
+
+<div id="canvas">
+  <svg id="svg-layer"></svg>
+</div>
+
+<div id="toolbar">
+  <button onclick="zoomIn()">放大</button>
+  <button onclick="zoomOut()">缩小</button>
+  <div class="sep"></div>
+  <button onclick="expandAll()">全部展开</button>
+  <button onclick="collapseAll()">全部折叠</button>
+  <div class="sep"></div>
+  <button onclick="resetView()">重置视图</button>
+  <span class="sep"></span>
+  <span style="font-size:12px;color:#94a3b8;align-self:center" id="zoom-label">100%</span>
+</div>
+
+<div id="zoom-hint">滚轮缩放 · 拖拽移动 · 点击折叠 · 双击重置</div>
+
+<script>
+// ===== 思维导图数据 =====
+const mindmapData = {
+  text: 'Python异常处理',
+  children: [
+    { text: '异常基础', children: [
+      { text: '什么是异常', children: [] },
+      { text: '异常与错误的区别', children: [] },
+      { text: '异常的层次结构', children: [
+        { text: 'BaseException', children: [] },
+        { text: 'Exception', children: [] },
+        { text: '常见内置异常', children: [] },
+      ]},
+    ]},
+    { text: '基本语法', children: [
+      { text: 'try-except', children: [] },
+      { text: 'try-except-else', children: [] },
+      { text: 'try-except-finally', children: [] },
+      { text: 'try-finally', children: [] },
+    ]},
+    { text: '高级用法', children: [
+      { text: '捕获多个异常', children: [] },
+      { text: '异常对象信息', children: [] },
+      { text: '主动抛出异常 raise', children: [] },
+      { text: '异常链 raise ... from', children: [] },
+    ]},
+    { text: '自定义异常', children: [
+      { text: '继承Exception类', children: [] },
+      { text: '添加自定义属性', children: [] },
+      { text: '自定义异常的使用场景', children: [] },
+    ]},
+    { text: '最佳实践', children: [
+      { text: '不要捕获所有异常', children: [] },
+      { text: '异常信息要具体', children: [] },
+      { text: '资源清理用finally', children: [] },
+      { text: '不要忽略异常', children: [] },
+    ]},
+  ]
+};
+
+// ===== 布局配置 =====
+const CONFIG = {
+  levelGapY: 100,      // 层级间垂直间距
+  nodeGapY: 14,        // 同级节点间垂直间距
+  nodeGapX: 60,        // 父子间水平缩进
+  rootX: 0,            // 根节点X（后面会居中）
+  rootY: 60,           // 根节点Y
+};
+
+// ===== 状态 =====
+let scale = 1, panX = 0, panY = 0;
+let dragging = false, dragStartX = 0, dragStartY = 0, panStartX = 0, panStartY = 0;
+let nodes = [];  // 所有节点信息 {el, data, x, y, w, h, level, collapsed, parentId}
+
+const canvas = document.getElementById('canvas');
+const svgLayer = document.getElementById('svg-layer');
+
+// ===== 计算布局 =====
+function layoutTree(data, level, parentId, x, y) {
+  const nodeInfo = {
+    data, level, parentId,
+    x, y,
+    w: 0, h: 0,
+    collapsed: false,
+    el: null,
+    children: [],
+    id: nodes.length,
+  };
+  nodes.push(nodeInfo);
+
+  if (!data.children || data.children.length === 0 || nodeInfo.collapsed) {
+    nodeInfo.subtreeHeight = 0;
+    return nodeInfo;
+  }
+
+  let childX = x + CONFIG.nodeGapX;
+  let currentY = y;
+  let totalChildHeight = 0;
+
+  data.children.forEach((child, i) => {
+    const childNode = layoutTree(child, level + 1, nodeInfo.id, childX, currentY);
+    nodeInfo.children.push(childNode);
+    const childSubtreeHeight = childNode.h + (childNode.subtreeHeight || 0);
+    currentY += childSubtreeHeight + (i < data.children.length - 1 ? CONFIG.nodeGapY : 0);
+    totalChildHeight += childSubtreeHeight + (i < data.children.length - 1 ? CONFIG.nodeGapY : 0);
+  });
+
+  // 垂直居中父节点相对于子节点
+  const firstChild = nodeInfo.children[0];
+  const lastChild = nodeInfo.children[nodeInfo.children.length - 1];
+  if (firstChild && lastChild) {
+    const firstCenter = firstChild.y + firstChild.h / 2;
+    const lastCenter = lastChild.y + lastChild.h / 2;
+    nodeInfo.y = (firstCenter + lastCenter) / 2 - nodeInfo.h / 2;
+    // 修正所有子节点的Y
+    const dy = nodeInfo.y - y;
+    shiftSubtree(nodeInfo, 0, dy);
+  }
+
+  nodeInfo.subtreeHeight = totalChildHeight;
+  return nodeInfo;
+}
+
+function shiftSubtree(node, dx, dy) {
+  node.x += dx;
+  node.y += dy;
+  node.children.forEach(c => shiftSubtree(c, dx, dy));
+}
+
+// ===== 创建DOM节点 =====
+function createNodeEl(nodeInfo) {
+  const el = document.createElement('div');
+  el.className = `node level-${nodeInfo.level}`;
+  el.style.left = nodeInfo.x + 'px';
+  el.style.top = nodeInfo.y + 'px';
+  el.dataset.id = nodeInfo.id;
+
+  const span = document.createElement('span');
+  span.textContent = nodeInfo.data.text;
+  el.appendChild(span);
+
+  if (nodeInfo.data.children && nodeInfo.data.children.length > 0) {
+    const toggle = document.createElement('div');
+    toggle.className = 'toggle';
+    toggle.textContent = '▼';
+    el.appendChild(toggle);
+
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      nodeInfo.collapsed = !nodeInfo.collapsed;
+      toggle.classList.toggle('collapsed', nodeInfo.collapsed);
+      rebuild();
+    });
+  }
+
+  canvas.appendChild(el);
+  nodeInfo.el = el;
+
+  // 测量尺寸
+  nodeInfo.w = el.offsetWidth;
+  nodeInfo.h = el.offsetHeight;
+}
+
+// ===== 绘制连接线 =====
+function drawLines() {
+  svgLayer.innerHTML = '';
+  nodes.forEach(node => {
+    if (node.collapsed) return;
+    node.children.forEach(child => {
+      if (child.el.classList.contains('hidden')) return;
+
+      const x1 = node.x + node.w / 2;
+      const y1 = node.y + node.h;
+      const x2 = child.x + child.w / 2;
+      const y2 = child.y;
+
+      const midY = (y1 + y2) / 2;
+      const d = `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`;
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.classList.add(`line-${Math.min(node.level, 2)}`);
+      svgLayer.appendChild(path);
+    });
+  });
+}
+
+// ===== 重新构建布局 =====
+function rebuild() {
+  // 清除旧节点
+  nodes.forEach(n => { if (n.el) n.el.remove(); });
+  nodes = [];
+
+  // 重新布局
+  const tree = layoutTree(mindmapData, 0, -1, CONFIG.rootX, CONFIG.rootY);
+
+  // 居中根节点
+  const rootW = 0; // 会在createNodeEl后测量
+  nodes.forEach(n => createNodeEl(n));
+
+  // 居中计算：把根节点移到屏幕中央
+  const screenCenter = window.innerWidth / 2;
+  const rootCenter = nodes[0].x + nodes[0].w / 2;
+  const offsetX = screenCenter - rootCenter;
+  nodes.forEach(n => shiftSubtree(n, offsetX, 0));
+
+  // 更新DOM位置
+  nodes.forEach(n => {
+    n.el.style.left = n.x + 'px';
+    n.el.style.top = n.y + 'px';
+  });
+
+  // 折叠状态下隐藏子节点
+  hideCollapsedChildren();
+  drawLines();
+  updateTransform();
+}
+
+function hideCollapsedChildren() {
+  // 先全部显示
+  nodes.forEach(n => n.el.classList.remove('hidden'));
+
+  // 递归隐藏
+  function hideChildren(nodeInfo) {
+    if (nodeInfo.collapsed) {
+      nodeInfo.children.forEach(c => {
+        c.el.classList.add('hidden');
+        hideAllDescendants(c);
+      });
+    } else {
+      nodeInfo.children.forEach(c => hideChildren(c));
+    }
+  }
+
+  function hideAllDescendants(nodeInfo) {
+    nodeInfo.children.forEach(c => {
+      c.el.classList.add('hidden');
+      hideAllDescendants(c);
+    });
+  }
+
+  hideChildren(nodes[0]);
+}
+
+// ===== 缩放和平移 =====
+function updateTransform() {
+  canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  document.getElementById('zoom-label').textContent = Math.round(scale * 100) + '%';
+}
+
+// 鼠标滚轮缩放
+document.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.08 : 0.08;
+  const newScale = Math.max(0.2, Math.min(3, scale + delta));
+
+  // 以鼠标位置为中心缩放
+  const rect = document.body.getBoundingClientRect();
+  const mx = e.clientX;
+  const my = e.clientY;
+
+  panX = mx - (mx - panX) * (newScale / scale);
+  panY = my - (my - panY) * (newScale / scale);
+  scale = newScale;
+
+  updateTransform();
+}, { passive: false });
+
+// 鼠标拖拽
+document.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.node') || e.target.closest('#toolbar')) return;
+  dragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  panStartX = panX;
+  panStartY = panY;
+  canvas.classList.add('grabbing');
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  panX = panStartX + (e.clientX - dragStartX);
+  panY = panStartY + (e.clientY - dragStartY);
+  updateTransform();
+});
+
+document.addEventListener('mouseup', () => {
+  dragging = false;
+  canvas.classList.remove('grabbing');
+});
+
+// 双击重置
+document.addEventListener('dblclick', (e) => {
+  if (e.target.closest('.node') || e.target.closest('#toolbar')) return;
+  resetView();
+});
+
+// 触摸支持
+let lastTouchDist = 0;
+document.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    dragging = true;
+    dragStartX = e.touches[0].clientX;
+    dragStartY = e.touches[0].clientY;
+    panStartX = panX;
+    panStartY = panY;
+  } else if (e.touches.length === 2) {
+    lastTouchDist = Math.hypot(
+      e.touches[1].clientX - e.touches[0].clientX,
+      e.touches[1].clientY - e.touches[0].clientY
+    );
+  }
+});
+
+document.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1 && dragging) {
+    panX = panStartX + (e.touches[0].clientX - dragStartX);
+    panY = panStartY + (e.touches[0].clientY - dragStartY);
+    updateTransform();
+  } else if (e.touches.length === 2) {
+    const dist = Math.hypot(
+      e.touches[1].clientX - e.touches[0].clientX,
+      e.touches[1].clientY - e.touches[0].clientY
+    );
+    const delta = (dist - lastTouchDist) * 0.005;
+    scale = Math.max(0.2, Math.min(3, scale + delta));
+    lastTouchDist = dist;
+    updateTransform();
+  }
+}, { passive: false });
+
+document.addEventListener('touchend', () => { dragging = false; });
+
+// ===== 工具栏功能 =====
+function zoomIn() { scale = Math.min(3, scale + 0.15); updateTransform(); }
+function zoomOut() { scale = Math.max(0.2, scale - 0.15); updateTransform(); }
+
+function resetView() {
+  scale = 1;
+  const screenCenter = window.innerWidth / 2;
+  const rootCenter = nodes[0].x + nodes[0].w / 2;
+  panX = screenCenter - rootCenter;
+  panY = 40;
+  updateTransform();
+}
+
+function expandAll() {
+  nodes.forEach(n => { n.collapsed = false; });
+  rebuild();
+}
+
+function collapseAll() {
+  nodes.forEach(n => {
+    if (n.data.children && n.data.children.length > 0) {
+      n.collapsed = true;
+    }
+  });
+  rebuild();
+}
+
+// ===== 初始化 =====
+rebuild();
+
+// 初始居中
+setTimeout(() => {
+  const screenCenter = window.innerWidth / 2;
+  const rootCenter = nodes[0].x + nodes[0].w / 2;
+  panX = screenCenter - rootCenter;
+  panY = 40;
+  updateTransform();
+}, 50);
+
+// 窗口大小变化时重新居中
+window.addEventListener('resize', () => {
+  const screenCenter = window.innerWidth / 2;
+  const rootCenter = nodes[0].x + nodes[0].w / 2;
+  panX = screenCenter - rootCenter;
+  updateTransform();
+});
+
+// 3秒后隐藏提示
+setTimeout(() => {
+  const hint = document.getElementById('zoom-hint');
+  if (hint) hint.style.transition = 'opacity 0.5s';
+  if (hint) hint.style.opacity = '0';
+  setTimeout(() => { if (hint) hint.remove(); }, 500);
+}, 4000);
+</script>
+</body>
+</html>
