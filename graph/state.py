@@ -152,6 +152,16 @@ class WorkflowState(BaseModel):
         description="用户意图：start_learning/ask_question/do_quiz/view_path/generate_resource"
     )
 
+    resource_type: Optional[str] = Field(
+        default=None,
+        description="资源类型：mindmap/doc/code/video/quiz（仅 generate_resource 意图时有值）"
+    )
+
+    topic: Optional[str] = Field(
+        default=None,
+        description="LLM 提取的纯知识点主题"
+    )
+
     resource_list: List[ResourceItem] = Field(
         default_factory=list,
         description="已生成/待生成的学习资源列表（强类型约束）"

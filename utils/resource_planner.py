@@ -17,6 +17,11 @@ import json
 from pathlib import Path
 
 from config.settings import settings
+from config.constants import (
+    RESOURCE_PLANNER_BEGINNER_MULTIPLIER, RESOURCE_PLANNER_ADVANCED_MULTIPLIER,
+    RESOURCE_PLANNER_MIN_TIME_MINUTES, RESOURCE_PLANNER_DEFAULT_RESOURCE_TIME,
+    RESOURCE_PLANNER_DEFAULT_STUDY_TIME_PER_DAY, RESOURCE_PLANNER_MAX_RESOURCES_PER_PLAN,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="resource_planner")
@@ -128,8 +133,8 @@ class ResourcePlanner:
         self._load_dependencies()
 
         # 配置参数
-        self.default_study_time_per_day = 60  # 默认每天学习时长（分钟）
-        self.max_resources_per_plan = 20  # 每次规划最大资源数
+        self.default_study_time_per_day = RESOURCE_PLANNER_DEFAULT_STUDY_TIME_PER_DAY
+        self.max_resources_per_plan = RESOURCE_PLANNER_MAX_RESOURCES_PER_PLAN
 
         logger.info("✅ 资源规划器初始化完成（规则模式）")
 
@@ -321,17 +326,17 @@ class ResourcePlanner:
         Returns:
             预计学习时长（分钟）
         """
-        base_time = self.RESOURCE_TIME_BASE.get(resource_type, 20)
+        base_time = self.RESOURCE_TIME_BASE.get(resource_type, RESOURCE_PLANNER_DEFAULT_RESOURCE_TIME)
 
         # 根据基础水平调整：beginner *1.5, advanced *0.8
         if level == "beginner":
-            time_min = int(base_time * 1.5)
+            time_min = int(base_time * RESOURCE_PLANNER_BEGINNER_MULTIPLIER)
         elif level == "advanced":
-            time_min = int(base_time * 0.8)
+            time_min = int(base_time * RESOURCE_PLANNER_ADVANCED_MULTIPLIER)
         else:
             time_min = base_time
 
-        return max(5, time_min)  # 最少5分钟
+        return max(RESOURCE_PLANNER_MIN_TIME_MINUTES, time_min)
 
     # ------------------------------
     # 学习路径管理方法（保留扩展接口）

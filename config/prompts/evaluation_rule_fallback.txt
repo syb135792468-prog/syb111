@@ -1,0 +1,8 @@
+📊 **学习效果评估报告**
+- 累计学习：{study_hours} 小时
+- 资源完成：{completed_res}/{total_resources}
+- 练习完成：{quiz_count} 次
+- 已掌握：{mastered_points}
+- 待加强：{weak_points}
+
+{suggestion}

@@ -21,6 +21,7 @@ from sqlalchemy import event, text, inspect
 from sqlalchemy.orm import DeclarativeBase
 
 from config.settings import settings
+from config.constants import SQLITE_CACHE_SIZE
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="db_core")
@@ -76,7 +77,7 @@ if "sqlite" in NORMALIZED_DATABASE_URL:
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA cache_size=-64000")  # 64MB 缓存
+        cursor.execute(f"PRAGMA cache_size={SQLITE_CACHE_SIZE}")  # 64MB 缓存
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
         logger.debug("✅ SQLite PRAGMA 优化已应用")
@@ -119,16 +120,63 @@ async def _auto_migrate() -> None:
     """自动迁移：为已有表添加缺失的列"""
     try:
         async with engine.begin() as conn:
-            # 检查 chat_messages 表是否有 conversation_id 列
             inspector = await conn.run_sync(lambda sync_conn: inspect(sync_conn))
-            columns = await conn.run_sync(
+
+            # chat_messages 表迁移
+            chat_columns = await conn.run_sync(
                 lambda sync_conn: [col["name"] for col in inspector.get_columns("chat_messages")]
             )
-            if "conversation_id" not in columns:
+            if "conversation_id" not in chat_columns:
                 await conn.execute(text(
                     "ALTER TABLE chat_messages ADD COLUMN conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL"
                 ))
                 logger.info("✅ 已添加 chat_messages.conversation_id 列")
+            if "content_blocks_json" not in chat_columns:
+                await conn.execute(text(
+                    "ALTER TABLE chat_messages ADD COLUMN content_blocks_json TEXT"
+                ))
+                logger.info("✅ 已添加 chat_messages.content_blocks_json 列")
+
+            # users 表迁移：AI 自适应字段
+            user_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("users")]
+            )
+            if "ability_estimates" not in user_columns:
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN ability_estimates TEXT DEFAULT '{}'"
+                ))
+                logger.info("✅ 已添加 users.ability_estimates 列")
+            if "ability_standard_errors" not in user_columns:
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN ability_standard_errors TEXT DEFAULT '{}'"
+                ))
+                logger.info("✅ 已添加 users.ability_standard_errors 列")
+
+            # error_book 表迁移：间隔重复（艾宾浩斯）字段
+            eb_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("error_book")]
+            )
+            if "next_review_at" not in eb_columns:
+                await conn.execute(text(
+                    "ALTER TABLE error_book ADD COLUMN next_review_at DATETIME"
+                ))
+                logger.info("✅ 已添加 error_book.next_review_at 列")
+            if "review_interval_days" not in eb_columns:
+                await conn.execute(text(
+                    "ALTER TABLE error_book ADD COLUMN review_interval_days FLOAT NOT NULL DEFAULT 1.0"
+                ))
+                logger.info("✅ 已添加 error_book.review_interval_days 列")
+            if "easiness_factor" not in eb_columns:
+                await conn.execute(text(
+                    "ALTER TABLE error_book ADD COLUMN easiness_factor FLOAT NOT NULL DEFAULT 2.5"
+                ))
+                logger.info("✅ 已添加 error_book.easiness_factor 列")
+            if "repetition_count" not in eb_columns:
+                await conn.execute(text(
+                    "ALTER TABLE error_book ADD COLUMN repetition_count INTEGER NOT NULL DEFAULT 0"
+                ))
+                logger.info("✅ 已添加 error_book.repetition_count 列")
+
     except Exception as e:
         logger.warning(f"⚠️ 自动迁移跳过（可能表尚未创建）: {e}")
 

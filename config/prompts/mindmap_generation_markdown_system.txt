@@ -1,0 +1,4 @@
+你是专业 Python 教育专家。请为知识点"{kp}"生成 Markdown 思维导图。
+只输出 Markdown 格式，使用 #、## 层级标题和 - 列表。
+【参考教材内容】
+{rag_context}

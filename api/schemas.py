@@ -16,7 +16,12 @@ from config.model_config import (
     PROFILE_DIMENSION_OPTIONS,
     PYTHON_KNOWLEDGE_POINTS,
 )
-from config.constants import HTTP_OK, RESOURCE_PROGRESS_COMPLETE
+from config.constants import (
+    HTTP_OK, RESOURCE_PROGRESS_COMPLETE,
+    USERNAME_MAX_LENGTH, PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH,
+    MESSAGE_MAX_LENGTH, TITLE_MAX_LENGTH, DIFFICULTY_MIN, DIFFICULTY_MAX,
+)
+from utils.agent_helpers import match_knowledge_point
 
 # 泛型变量定义
 T = TypeVar("T")
@@ -63,8 +68,8 @@ class BaseResponse(BaseSchema, Generic[T]):
 # ============================================================
 class RegisterRequest(BaseSchema):
     """用户注册"""
-    username: str = Field(..., min_length=2, max_length=50, description="用户名")
-    password: str = Field(..., min_length=4, max_length=100, description="密码")
+    username: str = Field(..., min_length=2, max_length=USERNAME_MAX_LENGTH, description="用户名")
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH, description="密码")
 
     @field_validator("username")
     @classmethod
@@ -74,8 +79,8 @@ class RegisterRequest(BaseSchema):
 
 class LoginRequest(BaseSchema):
     """用户登录"""
-    username: str = Field(..., min_length=1, max_length=50, description="用户名")
-    password: str = Field(..., min_length=1, max_length=100, description="密码")
+    username: str = Field(..., min_length=1, max_length=USERNAME_MAX_LENGTH, description="用户名")
+    password: str = Field(..., min_length=1, max_length=PASSWORD_MAX_LENGTH, description="密码")
 
     @field_validator("username")
     @classmethod
@@ -104,9 +109,10 @@ class UserInfoResponse(BaseSchema):
 class ChatRequest(BaseSchema):
     """用户对话请求"""
     user_id: Optional[str] = Field(None, min_length=1, max_length=64, description="用户唯一标识（可选，优先使用token中的用户）")
-    message: str = Field(..., min_length=1, max_length=2000, description="用户输入内容")
+    message: str = Field(..., min_length=1, max_length=MESSAGE_MAX_LENGTH, description="用户输入内容")
     thread_id: Optional[str] = Field(None, description="工作流线程ID，用于多轮对话")
     conversation_id: Optional[int] = Field(None, description="对话ID，用于关联到指定对话")
+    mode: Literal["fast", "deep"] = Field("fast", description="对话模式：fast=快速回答，deep=深度思考（多Agent协作）")
 
     @field_validator("message")
     @classmethod
@@ -115,12 +121,28 @@ class ChatRequest(BaseSchema):
         return v.strip()
 
 
+class SocraticChatRequest(BaseSchema):
+    """苏格拉底导学模式请求"""
+    message: str = Field("", max_length=MESSAGE_MAX_LENGTH, description="用户输入内容（hint/give_up/end 时可为空）")
+    conversation_id: Optional[int] = Field(None, description="对话ID")
+    thread_id: Optional[str] = Field(None, description="苏格拉底会话线程ID（后续轮次必传）")
+    action: Literal["start", "answer", "hint", "give_up", "end", "confused"] = Field(
+        "start",
+        description="操作类型：start=开始新会话，answer=提交回答，hint=请求提示，give_up=直接给答案，end=结束学习，confused=没听懂"
+    )
+
+    @field_validator("message")
+    @classmethod
+    def trim_message(cls, v: str) -> str:
+        return v.strip()
+
+
 # ============================================================
 # 2.5 对话会话接口
 # ============================================================
 class ConversationCreateRequest(BaseSchema):
     """创建对话请求"""
-    title: Optional[str] = Field(None, max_length=200, description="对话标题（可选，默认新对话）")
+    title: Optional[str] = Field(None, max_length=TITLE_MAX_LENGTH, description="对话标题（可选，默认新对话）")
 
 
 class ConversationResponse(BaseSchema):
@@ -180,6 +202,23 @@ class ProfileData(BaseSchema):
     )
     last_study_at: Optional[datetime] = Field(None, description="最后学习时间")
 
+    @field_validator("weak_points", "mastered_points", mode="before")
+    @classmethod
+    def normalize_knowledge_points(cls, v: Any) -> List[str]:
+        """将 LLM 返回的模糊知识点名称归一化为标准名称"""
+        if not isinstance(v, list):
+            return []
+        normalized = []
+        seen = set()
+        for point in v:
+            if not isinstance(point, str):
+                continue
+            std = match_knowledge_point(point)
+            if std and std not in seen:
+                normalized.append(std)
+                seen.add(std)
+        return normalized
+
 
 class ProfileResponse(BaseSchema):
     """获取用户画像响应"""
@@ -197,6 +236,24 @@ class ProfileUpdateRequest(BaseSchema):
     weak_points: Optional[List[Literal[tuple(PYTHON_KNOWLEDGE_POINTS)]]] = None
     mastered_points: Optional[List[Literal[tuple(PYTHON_KNOWLEDGE_POINTS)]]] = None
     motivation_level: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["motivation_level"])]] = None
+
+    @field_validator("weak_points", "mastered_points", mode="before")
+    @classmethod
+    def normalize_knowledge_points(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            return []
+        normalized = []
+        seen = set()
+        for point in v:
+            if not isinstance(point, str):
+                continue
+            std = match_knowledge_point(point)
+            if std and std not in seen:
+                normalized.append(std)
+                seen.add(std)
+        return normalized
 
 
 # ============================================================
@@ -217,15 +274,29 @@ class ResourceMetadata(BaseModel):
 class ResourceRequest(BaseSchema):
     """生成学习资源请求"""
     user_id: str = Field(..., min_length=1, max_length=64, description="用户ID")
-    topic: str = Field(..., min_length=1, max_length=128, description="知识点名称")
+    topic: str = Field(..., min_length=1, max_length=50000, description="知识点名称或SQL建表语句")
     resource_type: Literal[tuple(RESOURCE_TYPES)] = Field(..., description="资源类型")
-    difficulty: int = Field(2, ge=1, le=5, description="难度等级（1-5，默认2）")
+    difficulty: Optional[int] = Field(None, ge=DIFFICULTY_MIN, le=DIFFICULTY_MAX, description="已废弃，请使用 config.difficulty")
+    config: Optional[Dict[str, Any]] = Field(None, description="类型专属配置，quiz类型支持: questionTypes, questionCount, difficulty, includeExplanation, customPrompt")
 
     @field_validator("topic")
     @classmethod
     def trim_topic(cls, v: str) -> str:
         """自动去除知识点名称首尾空白字符"""
         return v.strip()
+
+
+class ExpandNodeRequest(BaseSchema):
+    """思维导图节点展开请求"""
+    user_id: str = Field(..., min_length=1, max_length=64, description="用户ID")
+    resource_id: int = Field(..., description="思维导图资源ID")
+    node_id: str = Field(..., min_length=1, description="被点击的节点ID")
+    node_topic: str = Field(..., min_length=1, max_length=128, description="节点主题")
+    node_definition: str = Field("", description="节点详细解释")
+    node_syntax: str = Field("", description="节点语法")
+    node_examples: List[str] = Field(default_factory=list, description="节点示例列表")
+    node_pitfalls: List[str] = Field(default_factory=list, description="节点常见陷阱")
+    node_advice: str = Field("", description="节点学习建议")
 
 
 class ResourceResponse(BaseSchema):
@@ -249,7 +320,14 @@ class ResourceResponse(BaseSchema):
 # ============================================================
 class StreamEvent(BaseSchema):
     """服务端推送的流式事件"""
-    event: Literal["intent", "profile", "path", "resource", "tutor", "eval", "token", "end", "error"] = Field(
+    event: Literal["intent", "profile", "path", "resource", "tutor", "eval", "token", "end", "error",
+                   "quiz", "code", "doc", "mindmap", "video", "evaluation",
+                   "thinking", "clear",
+                   "socratic_question", "socratic_hint", "socratic_feedback",
+                   "socratic_answer", "socratic_summary", "socratic_end",
+                   "socratic_explain", "socratic_demo", "socratic_practice", "socratic_relate",
+                   "mastery_update", "learning_path", "path_node_resource",
+                   "content_block_start", "content_block_data", "content_block_stop"] = Field(
         ..., description="事件类型"
     )
     data: Any = Field(..., description="事件数据")
@@ -257,6 +335,156 @@ class StreamEvent(BaseSchema):
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC).replace(tzinfo=None),
         description="事件时间戳"
+    )
+
+
+# ============================================================
+# 5.5 Content Block 模型（统一内容块架构）
+# ============================================================
+class TextBlock(BaseModel):
+    """文本块"""
+    type: Literal["text"] = "text"
+    text: str
+
+class CodeBlock(BaseModel):
+    """代码块"""
+    type: Literal["code"] = "code"
+    code: str
+    language: str = "python"
+
+class ThinkingBlock(BaseModel):
+    """思考过程块"""
+    type: Literal["thinking"] = "thinking"
+    text: str
+
+class CardBlock(BaseModel):
+    """卡片资源块"""
+    type: Literal["card"] = "card"
+    card_type: str       # quiz|code|doc|mindmap|video
+    card_id: int         # DB resource ID
+    title: str
+    data: Any = None     # 内联数据（测验题、代码等）
+
+ContentBlock = TextBlock | CodeBlock | ThinkingBlock | CardBlock
+
+class ContentBlockStartData(BaseModel):
+    """content_block_start 事件数据"""
+    block_type: str
+    block_id: str
+    card_type: Optional[str] = None
+    card_id: Optional[int] = None
+    title: Optional[str] = None
+
+class ContentBlockDeltaData(BaseModel):
+    """content_block_data 事件数据"""
+    block_id: str
+    delta: str
+
+class ContentBlockStopData(BaseModel):
+    """content_block_stop 事件数据"""
+    block_id: str
+
+
+# ============================================================
+# 5b. 学习路径接口（软件杯A3赛题核心功能）
+# ============================================================
+class LearningPathNodeResourceData(BaseSchema):
+    """路径节点关联资源"""
+    id: Optional[int] = Field(None, description="资源关联ID")
+    node_id: Optional[int] = Field(None, description="所属节点ID")
+    resource_type: Literal[tuple(RESOURCE_TYPES)] = Field(..., description="资源类型")
+    title: str = Field(..., description="资源标题")
+    description: Optional[str] = Field(None, description="资源描述")
+    content: Optional[str] = Field(None, description="资源内容")
+    resource_id: Optional[int] = Field(None, description="关联的全局资源ID")
+    duration: int = Field(0, ge=0, description="预计时长（分钟）")
+    difficulty: float = Field(0.5, ge=0, le=1, description="资源难度")
+    status: str = Field("pending", description="资源状态")
+    is_cached: bool = Field(False, description="是否已缓存")
+
+
+class LearningPathNodeData(BaseSchema):
+    """路径节点数据"""
+    id: Optional[int] = Field(None, description="节点ID")
+    knowledge_point: str = Field(..., description="知识点名称")
+    description: Optional[str] = Field(None, description="节点描述")
+    order: int = Field(..., ge=1, description="节点顺序")
+    prerequisites: List[str] = Field(default_factory=list, description="前置知识点")
+    difficulty: float = Field(0.5, ge=0, le=1, description="知识点难度")
+    estimated_time: int = Field(15, ge=1, description="预计学习时长（分钟）")
+    mastery_threshold: float = Field(0.7, ge=0, le=1, description="掌握度阈值")
+    mastery: float = Field(0.0, ge=0, le=1, description="当前掌握度")
+    status: str = Field("not_started", description="节点状态")
+    progress: float = Field(0.0, ge=0, le=100, description="学习进度")
+    node_type: str = Field("new", description="节点类型：new/review")
+    started_at: Optional[datetime] = Field(None, description="开始时间")
+    completed_at: Optional[datetime] = Field(None, description="完成时间")
+    last_study_at: Optional[datetime] = Field(None, description="最后学习时间")
+    resources: List[LearningPathNodeResourceData] = Field(
+        default_factory=list, description="关联资源列表"
+    )
+
+
+class LearningPathData(BaseSchema):
+    """学习路径完整数据"""
+    id: Optional[int] = Field(None, description="路径ID")
+    user_id: Optional[int] = Field(None, description="用户ID")
+    title: str = Field(..., description="路径标题")
+    description: Optional[str] = Field(None, description="路径描述")
+    goal: Optional[str] = Field(None, description="学习目标")
+    topic: str = Field("Python基础", description="路径主题")
+    status: str = Field("active", description="路径状态")
+    total_nodes: int = Field(0, description="总节点数")
+    completed_nodes: int = Field(0, description="已完成节点数")
+    total_estimated_time: int = Field(0, description="总预计时长（分钟）")
+    progress_percent: float = Field(0.0, description="整体进度百分比")
+    created_at: Optional[datetime] = Field(None, description="创建时间")
+    updated_at: Optional[datetime] = Field(None, description="更新时间")
+    nodes: List[LearningPathNodeData] = Field(
+        default_factory=list, description="路径节点列表"
+    )
+
+
+class LearningPathGenerateRequest(BaseSchema):
+    """生成学习路径请求"""
+    topic: str = Field(
+        "Python基础", min_length=1, max_length=200,
+        description="学习主题/方向（如：Python基础、数据分析）"
+    )
+    goal: Optional[str] = Field(
+        None, max_length=200, description="学习目标"
+    )
+    max_steps: Optional[int] = Field(
+        None, ge=1, le=15, description="最大步数（默认8）"
+    )
+    mastered_points: Optional[List[str]] = Field(
+        None, description="问卷：用户自认已掌握的知识点列表"
+    )
+    weak_points: Optional[List[str]] = Field(
+        None, description="问卷：用户自认薄弱的知识点列表"
+    )
+
+
+class LearningPathListResponse(BaseSchema):
+    """学习路径列表响应"""
+    paths: List[LearningPathData] = Field(default_factory=list, description="路径列表")
+    total: int = Field(0, description="总数")
+
+
+class LearningPathNodeCompleteRequest(BaseSchema):
+    """标记节点完成请求"""
+    mastery: Optional[float] = Field(
+        None, ge=0, le=1, description="掌握度（可选，默认设为阈值）"
+    )
+
+
+class LearningPathQuizSubmitRequest(BaseSchema):
+    """提交测验结果请求"""
+    node_id: int = Field(..., description="路径节点ID")
+    total_questions: int = Field(..., ge=1, description="总题数")
+    correct_count: int = Field(..., ge=0, description="正确题数")
+    details: Optional[List[Dict[str, Any]]] = Field(
+        None, description="详细答题记录"
     )
 
 

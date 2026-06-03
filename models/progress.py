@@ -75,7 +75,7 @@ class LearningProgress(Base):
         if score is not None:
             self.score = max(0.0, min(100.0, score))
         if duration is not None and duration >= 0:
-            self.duration = duration if overwrite_duration else self.duration + duration
+            self.duration = duration if overwrite_duration else (self.duration or 0) + duration
         self.updated_at = datetime.now(UTC).replace(tzinfo=None)
         return self
 
@@ -96,6 +96,6 @@ class LearningProgress(Base):
             "score": self.score,
             "duration": self.duration,
             "is_active": self.is_active,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "created_at": (self.created_at.isoformat() + "Z") if self.created_at else None,
+            "updated_at": (self.updated_at.isoformat() + "Z") if self.updated_at else None,
         }

@@ -12,7 +12,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from enum import Enum
 from uuid import uuid4, UUID
-from typing import Any, AsyncIterator, Dict, Optional, List, cast
+from typing import Any, AsyncIterator, Dict, Optional, List, Sequence, cast
 
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
@@ -22,6 +22,7 @@ from langgraph.checkpoint.base import (
     PendingWrite,
     RunnableConfig,
 )
+from langgraph.types import Interrupt
 from sqlalchemy import (
     Integer, String, Text, DateTime, JSON, Index, func, select, delete
 )
@@ -43,6 +44,8 @@ class CheckpointEncoder(json.JSONEncoder):
     def default(self, obj: Any) -> Any:
         if isinstance(obj, datetime):
             return obj.replace(tzinfo=None).isoformat()
+        if isinstance(obj, Interrupt):
+            return {"value": obj.value, "id": obj.id}
         if hasattr(obj, "model_dump"):
             return obj.model_dump()
         if isinstance(obj, Path):
@@ -219,6 +222,40 @@ class SQLAlchemyCheckpointSaver(BaseCheckpointSaver):
         except Exception as e:
             logger.error(f"❌ 删除线程检查点失败: {e}", exc_info=True)
             raise
+
+    # 【LangGraph 0.2.19 interrupt 支持】存储中间写入
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        try:
+            thread_id = config["configurable"]["thread_id"]
+            checkpoint_id = config["configurable"].get("checkpoint_id", "")
+            step = 0
+            # 序列化 writes
+            writes_json = json.dumps(
+                [{"channel": w[0], "value": w[1]} for w in writes],
+                cls=CheckpointEncoder,
+                ensure_ascii=False,
+            )
+            async with AsyncSessionLocal() as session:
+                new_row = WorkflowCheckpoint(
+                    user_id=config.get("configurable", {}).get("user_id", "unknown"),
+                    thread_id=thread_id,
+                    checkpoint_id=f"{checkpoint_id}_write_{task_id}",
+                    parent_checkpoint_id=checkpoint_id,
+                    step=step,
+                    state_json=writes_json,
+                    state_metadata={"task_id": task_id, "task_path": task_path, "source": "writes"},
+                )
+                session.add(new_row)
+                await session.commit()
+                logger.debug(f"💾 保存 writes 成功: thread={thread_id}, task={task_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ aput_writes 失败（不阻塞主流程）: {e}")
 
     # 内部工具：行转CheckpointTuple（补全所有必填字段）
     def _row_to_tuple(self, row: WorkflowCheckpoint) -> CheckpointTuple:

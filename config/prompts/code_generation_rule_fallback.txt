@@ -1,0 +1,15 @@
+# {kp} - {type_name}
+# 知识点：{kp}
+
+# 基本示例
+def demo():
+    """
+    {kp} {type_name}
+    请根据实际需求修改此代码
+    """
+    # TODO: 在此编写 {kp} 相关代码
+    pass
+
+# 运行示例
+if __name__ == "__main__":
+    demo()

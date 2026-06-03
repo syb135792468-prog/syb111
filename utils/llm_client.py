@@ -1,9 +1,8 @@
 """
-大模型统一调用封装（软件杯A3赛题 v4.2 最终验证版）
-- ✅ 主模型：DeepSeek（稳定不报错，解决讯飞500问题）
+大模型统一调用封装（软件杯A3赛题 v5.3）
+- ✅ 主模型：小米 MiMo-v2.5-pro
+- ✅ 备用模型：DeepSeek（自动降级）
 - ✅ Embedding：讯飞原生（基于官方示例代码，100%正确）
-- ✅ 彻底解决所有401签名错误
-- ✅ 彻底解决所有500服务器错误
 - ✅ 全局配置统一：100%从 config/settings + config/model_config 读取
 - ✅ 架构适配：同时提供同步 + 异步版本，异步优先适配FastAPI/LangGraph
 - ✅ 功能完整：主模型 + 备用模型 + 内容安全被动拦截
@@ -32,10 +31,11 @@ from config.settings import settings
 from config.model_config import (
     ENABLE_FALLBACK,
     MAX_RETRIES_PER_MODEL,
+    PRIMARY_MODEL_CONFIG,
     DEEPSEEK_MODEL_CONFIG,
     EMBEDDING_CONFIG,
 )
-from config.constants import LLM_BACKOFF_BASE, EMBEDDING_TIMEOUT_SEC, EMBEDDING_MAX_WORKERS
+from config.constants import LLM_BACKOFF_BASE, EMBEDDING_TIMEOUT_SEC, EMBEDDING_MAX_WORKERS, EMBEDDING_MAX_RETRIES
 from utils.logger import get_logger
 
 # 关闭SSL警告
@@ -106,24 +106,24 @@ class LLMClient:
         # 主模型：DeepSeek
         self.primary_client = OpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_MODEL_CONFIG.base_url,      # ✅ 正确使用DeepSeek地址
-            timeout=DEEPSEEK_MODEL_CONFIG.timeout,
+            base_url=PRIMARY_MODEL_CONFIG.base_url,
+            timeout=PRIMARY_MODEL_CONFIG.timeout,
         )
-        self.primary_model = DEEPSEEK_MODEL_CONFIG.model_name  # ✅ 正确模型名
+        self.primary_model = PRIMARY_MODEL_CONFIG.model_name
         logger.info(f"✅ DeepSeek主模型初始化成功：{self.primary_model}")
 
-        # 备用模型：DeepSeek（同主模型，防止单点故障）
+        # 备用模型：小米 MiMo（当前未启用）
         self.fallback_client = None
-        if settings.DEEPSEEK_API_KEY and ENABLE_FALLBACK:
+        if settings.MIMO_API_KEY and ENABLE_FALLBACK:
             self.fallback_client = OpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
+                api_key=settings.MIMO_API_KEY,
                 base_url=DEEPSEEK_MODEL_CONFIG.base_url,
                 timeout=DEEPSEEK_MODEL_CONFIG.timeout,
             )
             self.fallback_model = DEEPSEEK_MODEL_CONFIG.model_name
-            logger.info(f"✅ DeepSeek备用模型初始化成功：{self.fallback_model}")
+            logger.info(f"✅ MiMo备用模型初始化成功：{self.fallback_model}")
         else:
-            logger.warning(f"⚠️ DeepSeek备用模型未启用：KEY={bool(settings.DEEPSEEK_API_KEY)}, FALLBACK={ENABLE_FALLBACK}")
+            logger.info(f"ℹ️ 备用模型未启用：FALLBACK={ENABLE_FALLBACK}")
 
         self.max_retries = MAX_RETRIES_PER_MODEL
 
@@ -146,8 +146,16 @@ class LLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                content = response.choices[0].message.content
+                if content is None:
+                    # MiMo 有时返回 200 但 content 为 None（内容安全过滤或 prompt 太复杂）
+                    logger.warning(f"[{provider_name}] 响应内容为空 (尝试 {attempt}/{self.max_retries})")
+                    last_exception = Exception(f"{provider_name} 返回空内容")
+                    if attempt < self.max_retries:
+                        time.sleep(LLM_BACKOFF_BASE ** attempt)
+                    continue
                 logger.info(f"[{provider_name}] 同步调用成功 (尝试 {attempt})")
-                return response.choices[0].message.content
+                return content
 
             except (APIConnectionError, APITimeoutError, RateLimitError) as net_err:
                 last_exception = net_err
@@ -203,7 +211,7 @@ class LLMClient:
         except ContentSecurityError:
             raise
         except Exception as primary_exc:
-            logger.warning(f"DeepSeek主模型调用失败，准备降级: {primary_exc}")
+            logger.warning(f"DeepSeek主模型调用失败: {primary_exc}")
             if self.fallback_client is not None:
                 try:
                     return self._call_with_retry(
@@ -212,12 +220,12 @@ class LLMClient:
                         messages=messages,
                         temperature=temp,
                         max_tokens=tokens,
-                        provider_name="DeepSeek备用",
+                        provider_name="MiMo备用",
                     )
                 except ContentSecurityError:
                     raise
                 except Exception as fallback_exc:
-                    logger.error(f"DeepSeek备用模型也失败: {fallback_exc}")
+                    logger.error(f"MiMo备用模型也失败: {fallback_exc}")
                     raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
             else:
                 raise Exception("DeepSeek主模型不可用，且未配置备用模型。") from primary_exc
@@ -227,8 +235,8 @@ class LLMClient:
         【讯飞官方原版】同步调用讯飞 Embedding API
         完全基于讯飞官方示例代码，100%正确
         """
-        OFFICIAL_HOST = "emb-cn-huabei-1.xf-yun.com"
-        OFFICIAL_URL = "https://emb-cn-huabei-1.xf-yun.com/"
+        OFFICIAL_HOST = settings.EMBEDDING_BASE_URL.replace("https://", "").replace("http://", "").rstrip("/")
+        OFFICIAL_URL = settings.EMBEDDING_BASE_URL if settings.EMBEDDING_BASE_URL.endswith("/") else settings.EMBEDDING_BASE_URL + "/"
 
         api_key = settings.SPARK_API_KEY_RAW
         api_secret = settings.SPARK_API_SECRET
@@ -245,7 +253,7 @@ class LLMClient:
         }
 
         embeddings = []
-        max_retries = 3
+        max_retries = EMBEDDING_MAX_RETRIES
 
         for text in texts:
             # 【讯飞官方要求】text字段必须是base64编码的JSON
@@ -338,24 +346,24 @@ class AsyncLLMClient:
         # 主模型：DeepSeek（异步）
         self.primary_client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_MODEL_CONFIG.base_url,      # ✅ 正确使用DeepSeek地址
-            timeout=DEEPSEEK_MODEL_CONFIG.timeout,
+            base_url=PRIMARY_MODEL_CONFIG.base_url,
+            timeout=PRIMARY_MODEL_CONFIG.timeout,
         )
-        self.primary_model = DEEPSEEK_MODEL_CONFIG.model_name  # ✅ 正确模型名
+        self.primary_model = PRIMARY_MODEL_CONFIG.model_name
         logger.info(f"✅ DeepSeek异步主模型初始化成功：{self.primary_model}")
 
-        # 备用模型：DeepSeek（异步）
+        # 备用模型：小米 MiMo（异步，当前未启用）
         self.fallback_client = None
-        if settings.DEEPSEEK_API_KEY and ENABLE_FALLBACK:
+        if settings.MIMO_API_KEY and ENABLE_FALLBACK:
             self.fallback_client = AsyncOpenAI(
-                api_key=settings.DEEPSEEK_API_KEY,
+                api_key=settings.MIMO_API_KEY,
                 base_url=DEEPSEEK_MODEL_CONFIG.base_url,
                 timeout=DEEPSEEK_MODEL_CONFIG.timeout,
             )
             self.fallback_model = DEEPSEEK_MODEL_CONFIG.model_name
-            logger.info(f"✅ DeepSeek异步备用模型初始化成功：{self.fallback_model}")
+            logger.info(f"✅ MiMo异步备用模型初始化成功：{self.fallback_model}")
         else:
-            logger.warning(f"⚠️ DeepSeek异步备用模型未启用：KEY={bool(settings.DEEPSEEK_API_KEY)}, FALLBACK={ENABLE_FALLBACK}")
+            logger.info(f"ℹ️ 异步备用模型未启用：FALLBACK={ENABLE_FALLBACK}")
 
         self.max_retries = MAX_RETRIES_PER_MODEL
 
@@ -378,8 +386,15 @@ class AsyncLLMClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                content = response.choices[0].message.content
+                if content is None:
+                    logger.warning(f"[{provider_name}] 异步响应内容为空 (尝试 {attempt}/{self.max_retries})")
+                    last_exception = Exception(f"{provider_name} 返回空内容")
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(LLM_BACKOFF_BASE ** attempt)
+                    continue
                 logger.info(f"[{provider_name}] 异步调用成功 (尝试 {attempt})")
-                return response.choices[0].message.content
+                return content
 
             except (APIConnectionError, APITimeoutError, RateLimitError) as net_err:
                 last_exception = net_err
@@ -435,7 +450,7 @@ class AsyncLLMClient:
         except ContentSecurityError:
             raise
         except Exception as primary_exc:
-            logger.warning(f"DeepSeek主模型调用失败，准备降级: {primary_exc}")
+            logger.warning(f"DeepSeek主模型调用失败: {primary_exc}")
             if self.fallback_client is not None:
                 try:
                     return await self._call_with_retry(
@@ -444,15 +459,105 @@ class AsyncLLMClient:
                         messages=messages,
                         temperature=temp,
                         max_tokens=tokens,
-                        provider_name="DeepSeek备用",
+                        provider_name="MiMo备用",
                     )
                 except ContentSecurityError:
                     raise
                 except Exception as fallback_exc:
-                    logger.error(f"DeepSeek备用模型也失败: {fallback_exc}")
+                    logger.error(f"MiMo备用模型也失败: {fallback_exc}")
                     raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
             else:
                 raise Exception("DeepSeek主模型不可用，且未配置备用模型。") from primary_exc
+
+    async def call_stream(
+        self,
+        messages: List[dict],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """
+        流式调用大模型（自动降级），逐 chunk yield 文本片段。
+        首 chunk 延迟约 0.5-2s，之后实时输出。
+        """
+        import time as _time
+        temp = temperature if temperature is not None else DEEPSEEK_MODEL_CONFIG.default_temperature
+        tokens = max_tokens if max_tokens is not None else DEEPSEEK_MODEL_CONFIG.default_max_tokens
+
+        async def _try_stream(client, model, provider_name):
+            """尝试流式调用，成功则 yield 所有 chunk，失败则抛异常"""
+            last_exception = None
+            for attempt in range(1, self.max_retries + 1):
+                t_start = _time.monotonic()
+                try:
+                    logger.info(f"[{provider_name}] 流式调用开始 (尝试 {attempt}), model={model}")
+                    stream = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=temp,
+                        max_tokens=tokens,
+                        stream=True,
+                    )
+                    t_connected = _time.monotonic()
+                    print(f"[{provider_name}] 流式连接建立: {(t_connected-t_start)*1000:.0f}ms", flush=True)
+
+                    chunk_count = 0
+                    async for chunk in stream:
+                        delta = chunk.choices[0].delta if chunk.choices else None
+                        if delta and delta.content:
+                            chunk_count += 1
+                            if chunk_count == 1:
+                                print(f"[{provider_name}] 首token: {(_time.monotonic()-t_start)*1000:.0f}ms", flush=True)
+                            yield delta.content
+
+                    logger.info(f"[{provider_name}] 流式完成: {chunk_count}个chunk, {(_time.monotonic()-t_start)*1000:.0f}ms")
+                    return  # 成功，退出重试循环
+
+                except (APIConnectionError, APITimeoutError, RateLimitError) as net_err:
+                    last_exception = net_err
+                    logger.warning(f"[{provider_name}] 流式网络错误 (尝试 {attempt}/{self.max_retries}): {net_err}")
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(LLM_BACKOFF_BASE ** attempt)
+                except APIError as api_err:
+                    error_str = str(api_err)
+                    if "content_policy_violation" in error_str or "sensitive" in error_str:
+                        raise ContentSecurityError("生成的内容涉及敏感信息，已被系统拦截。")
+                    last_exception = api_err
+                    logger.warning(f"[{provider_name}] 流式API错误 (尝试 {attempt}/{self.max_retries}): {api_err}")
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(LLM_BACKOFF_BASE ** attempt)
+                except ContentSecurityError:
+                    raise
+                except Exception as unk_err:
+                    last_exception = unk_err
+                    logger.error(f"[{provider_name}] 流式未知异常: {unk_err}")
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(LLM_BACKOFF_BASE ** attempt)
+
+            raise last_exception or Exception(f"{provider_name} 流式调用失败，已达最大重试次数")
+
+        # 主模型流式
+        try:
+            async for chunk in _try_stream(self.primary_client, self.primary_model, "DeepSeek"):
+                yield chunk
+            return
+        except ContentSecurityError:
+            raise
+        except Exception as primary_exc:
+            logger.warning(f"DeepSeek流式失败: {primary_exc}")
+
+        # 降级到 MiMo 流式
+        if self.fallback_client is not None:
+            try:
+                async for chunk in _try_stream(self.fallback_client, self.fallback_model, "MiMo"):
+                    yield chunk
+                return
+            except ContentSecurityError:
+                raise
+            except Exception as fallback_exc:
+                logger.error(f"MiMo流式也失败: {fallback_exc}")
+                raise Exception("所有大模型均不可用") from fallback_exc
+        else:
+            raise Exception("MiMo不可用且未配置备用模型") from primary_exc
 
     async def call_embedding(self, texts: List[str], domain: str = "para") -> List[List[float]]:
         loop = asyncio.get_event_loop()

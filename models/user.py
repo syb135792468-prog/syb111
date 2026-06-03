@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
-from sqlalchemy import Integer, String, DateTime, Boolean, func
+from sqlalchemy import Integer, String, DateTime, Boolean, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
@@ -75,7 +75,19 @@ class User(Base):
     )
 
     # ------------------------------
-    # 4. 关联关系（性能优化：selectin 异步批量加载）
+    # 4. AI 自适应字段（IRT 能力估计）
+    # ------------------------------
+    ability_estimates: Mapped[Optional[str]] = mapped_column(
+        Text, default="{}", nullable=True,
+        comment="各主题能力估计 JSON: {topic: ability_score}"
+    )
+    ability_standard_errors: Mapped[Optional[str]] = mapped_column(
+        Text, default="{}", nullable=True,
+        comment="各主题能力标准误差 JSON: {topic: se}"
+    )
+
+    # ------------------------------
+    # 5. 关联关系（性能优化：selectin 异步批量加载）
     # ------------------------------
     profile: Mapped[Optional["UserProfile"]] = relationship(
         "UserProfile",
@@ -93,7 +105,7 @@ class User(Base):
     )
 
     # ------------------------------
-    # 5. 调试方法
+    # 6. 调试方法
     # ------------------------------
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username!r}, active={self.is_active})>"

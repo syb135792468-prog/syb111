@@ -19,13 +19,18 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # --- 大模型凭证（主模型已切换为 DeepSeek，SPARK_* 仅用于 Embedding 和内容安全）---
+    # --- 大模型凭证（主模型：小米 MiMo，备用：DeepSeek，SPARK_* 仅用于 Embedding 和内容安全）---
     SPARK_APP_ID: str = Field(default="", description="讯飞应用 ID（Embedding/内容安全用）")
     SPARK_API_KEY_RAW: str = Field(default="", description="讯飞 API Key（Embedding/内容安全用）")
     SPARK_API_SECRET: str = Field(default="", description="讯飞 API Secret（Embedding/内容安全用）")
     SPARK_BASE_URL: str = "https://spark-api-open.xf-yun.com/v1"
     SPARK_MODEL: str = "lite"
-    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key（主模型）")
+    MIMO_API_KEY: str = Field(default="", description="小米 MiMo API Key（主模型）")
+    MIMO_BASE_URL: str = Field(default="https://api.xiaomimimo.com/v1", env="MIMO_BASE_URL")
+    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key（备用模型）")
+    DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
+    SEEDANCE_BASE_URL: str = Field(default="https://seedance.xf-yun.com/v1/generate", env="SEEDANCE_BASE_URL")
+    MODERATION_BASE_URL: str = Field(default="https://spark-api-open.xf-yun.com/v1/moderations", env="MODERATION_BASE_URL")
 
     # --- 内容安全凭证 ---
     SECURITY_APP_ID: str = Field(default="", description="内容安全应用 ID")
@@ -51,6 +56,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = Field(default="development")
     LOG_LEVEL: str = Field(default="INFO")
     DEBUG: bool = Field(default=True)
+    DEMO_MODE: bool = Field(default=False, description="演示模式：跳过LLM冷却期，比赛演示时开启")
 
     # --- 数据库配置 ---
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./data/app.db")
@@ -92,6 +98,10 @@ class Settings(BaseSettings):
         Pydantic 推荐的初始化后钩子
         用于创建必需目录等副作用操作
         """
+        # 0. 生产环境安全检查：禁止使用默认 JWT 密钥
+        if self.ENVIRONMENT == "production" and self.JWT_SECRET_KEY == "dev-secret-change-in-production":
+            raise ValueError("生产环境必须配置JWT_SECRET_KEY环境变量，禁止使用默认值")
+
         # 1. 创建核心目录
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)

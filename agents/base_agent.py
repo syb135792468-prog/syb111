@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, UTC
 
@@ -30,6 +31,8 @@ try:
         BASE_AGENT_FALLBACK_MAX_TOKENS,
         BASE_AGENT_DEFAULT_TOP_K,
         BASE_AGENT_DISTANCE_THRESHOLD,
+        LOG_TRUNCATE_LENGTH,
+        QUERY_TRUNCATE_LENGTH,
     )
     from utils.agent_helpers import (
         match_knowledge_point,
@@ -82,6 +85,36 @@ class BaseAgent(ABC):
         self.vector_db = get_db_manager() if enable_rag else None
 
         self.logger.info(f"✅ {agent_name} 初始化完成 (RAG={'启用' if enable_rag else '关闭'})")
+
+    # ------------------------------------------------
+    # Prompt 模板加载
+    # ------------------------------------------------
+    _PROMPTS_DIR: Path = Path(__file__).resolve().parent.parent / "config" / "prompts"
+
+    def _load_prompt(self, template_name: str, **kwargs: Any) -> str:
+        """
+        从 config/prompts/ 目录加载 Prompt 模板文件，并用 kwargs 填充占位符。
+
+        Args:
+            template_name: 模板文件名（不含 .txt 后缀），如 "quiz_generation_system"
+            **kwargs: 传给 str.format() 的命名参数
+
+        Returns:
+            填充后的 Prompt 字符串
+        """
+        file_path = self._PROMPTS_DIR / f"{template_name}.txt"
+        try:
+            template = file_path.read_text(encoding="utf-8").strip()
+            if kwargs:
+                template = template.format(**kwargs)
+            self.logger.debug(f"📄 加载 Prompt 模板: {file_path.name}")
+            return template
+        except FileNotFoundError:
+            self.logger.error(f"❌ Prompt 模板文件不存在: {file_path}")
+            raise
+        except KeyError as exc:
+            self.logger.error(f"❌ Prompt 模板占位符缺失: {exc} (文件: {file_path.name})")
+            raise
 
     # ------------------------------------------------
     # LangGraph 节点统一入口
@@ -165,7 +198,7 @@ class BaseAgent(ABC):
                 temperature=temp,
                 max_tokens=tokens,
             )
-            self.logger.debug(f"✅ LLM 响应: {result[:100]}...")
+            self.logger.debug(f"✅ LLM 响应: {result[:LOG_TRUNCATE_LENGTH]}...")
             return result
         except ContentSecurityError as exc:
             self.logger.warning(f"⚠️ 内容安全拦截: {exc}")
@@ -184,7 +217,7 @@ class BaseAgent(ABC):
         if not self.vector_db:
             return ""
 
-        self.logger.debug(f"🔍 RAG 检索: {query[:50]}...")
+        self.logger.debug(f"🔍 RAG 检索: {query[:QUERY_TRUNCATE_LENGTH]}...")
         try:
             docs = await self.vector_db.query(
                 query_text=query,

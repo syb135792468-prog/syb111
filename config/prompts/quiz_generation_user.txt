@@ -1,0 +1,1 @@
+请生成一道关于 {kp} 的 {qtype} 题，难度{difficulty}

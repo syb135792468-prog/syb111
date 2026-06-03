@@ -19,6 +19,7 @@ from utils.logger import get_logger
 from config.constants import (
     HTTP_OK, HTTP_NOT_FOUND, HTTP_SERVER_ERROR,
 )
+from config.messages import MSG_SUCCESS, MSG_SERVER_ERROR
 
 router = APIRouter(prefix="/progress", tags=["学习进度"])
 logger = get_logger(__name__, task_id="progress_api")
@@ -42,13 +43,13 @@ async def get_progress(
 
         return BaseResponse(
             code=HTTP_OK,
-            message="success",
+            message=MSG_SUCCESS,
             data=[r.to_dict() for r in records],
             request_id=request_id,
         )
     except Exception as e:
         logger.error(f"查询进度失败: {e}", exc_info=True, extra={"request_id": request_id})
-        return BaseResponse(code=HTTP_SERVER_ERROR, message="服务器错误", data=None, request_id=request_id)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None, request_id=request_id)
 
 
 @router.post("/update", response_model=BaseResponse)
@@ -79,11 +80,11 @@ async def update_progress(
         await session.refresh(record)
 
         return BaseResponse(
-            code=HTTP_OK, message="success", data=record.to_dict(), request_id=request_id,
+            code=HTTP_OK, message=MSG_SUCCESS, data=record.to_dict(), request_id=request_id,
         )
     except Exception as e:
         logger.error(f"更新进度失败: {e}", exc_info=True, extra={"request_id": request_id})
-        return BaseResponse(code=HTTP_SERVER_ERROR, message="服务器错误", data=None, request_id=request_id)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None, request_id=request_id)
 
 
 @router.delete("/{user_id}", response_model=BaseResponse)
@@ -110,13 +111,13 @@ async def reset_progress(
         )
     except Exception as e:
         logger.error(f"重置进度失败: {e}", exc_info=True, extra={"request_id": request_id})
-        return BaseResponse(code=HTTP_SERVER_ERROR, message="服务器错误", data=None, request_id=request_id)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None, request_id=request_id)
 
 
 @router.get("/health", response_model=BaseResponse)
 async def health(request_id: str = Depends(generate_request_id)):
     return BaseResponse(
-        code=HTTP_OK, message="success",
+        code=HTTP_OK, message=MSG_SUCCESS,
         data={"status": "ok", "service": "progress"},
         request_id=request_id,
     )

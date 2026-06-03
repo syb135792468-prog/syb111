@@ -11,7 +11,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
 from sqlalchemy import (
-    Integer, String, DateTime, ForeignKey, JSON, Boolean,
+    Integer, String, DateTime, ForeignKey, JSON, Boolean, Float,
     CheckConstraint, func
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -182,3 +182,35 @@ class UserProfile(Base):
             f"<UserProfile(user_id={self.user_id}, "
             f"level={self.knowledge_level}, goal={self.learning_goal})>"
         )
+
+
+class ProfileChangeLog(Base):
+    """画像变更日志，记录每次画像更新的字段变化"""
+    __tablename__ = "profile_change_logs"
+    __table_args__ = (
+        {"comment": "用户画像变更日志表"}
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    changed_fields: Mapped[dict] = mapped_column(
+        JSON, nullable=False, comment="变更的字段和新旧值"
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="api",
+        comment="变更来源: llm / evaluation / api"
+    )
+    raw_llm_output: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True, comment="LLM 原始输出（仅 source=llm 时记录）"
+    )
+    confidence: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True, comment="LLM 信心度（仅 source=llm 时记录）"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )

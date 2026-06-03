@@ -17,6 +17,7 @@ import sys
 import os
 import time
 import uuid
+import asyncio
 import contextvars
 from contextlib import asynccontextmanager
 from typing import Callable
@@ -29,10 +30,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.schemas import BaseResponse
-from api.routes import chat, profile, resource, progress, auth, conversation
+from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path
 from config.constants import (
     DEFAULT_PORT, SLOW_REQUEST_THRESHOLD_SEC, CORS_MAX_AGE,
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE,
+    PREINIT_AGENT_TYPES, HEALTH_CHECK_SERVICES, DEV_RELOAD_DIRS,
+)
+from config.messages import (
+    MSG_SUCCESS, MSG_REQUEST_PARAM_ERROR, MSG_SERVER_INTERNAL_ERROR,
+    MSG_SERVICE_UNAVAILABLE,
 )
 from models.database import init_db, engine
 from utils.logger import get_logger
@@ -50,6 +56,27 @@ DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 SLOW_REQUEST_THRESHOLD = float(os.getenv("SLOW_REQUEST_THRESHOLD", SLOW_REQUEST_THRESHOLD_SEC))
 
 
+async def _daily_batch_update_loop():
+    """每天凌晨3点执行批量画像更新"""
+    from datetime import datetime
+    while True:
+        now = datetime.now()
+        # 计算距离下一个凌晨3点的秒数
+        target = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if now >= target:
+            from datetime import timedelta
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logger.info(f"⏰ 下次批量更新: {target.strftime('%Y-%m-%d %H:%M')} (等待 {wait_seconds:.0f}s)")
+        await asyncio.sleep(wait_seconds)
+        try:
+            from agents.evaluation_agent import EvaluationAgent
+            result = await EvaluationAgent.batch_update_all_users()
+            logger.info(f"✅ 每日批量画像更新完成: {result}")
+        except Exception as e:
+            logger.error(f"❌ 每日批量画像更新失败: {e}", exc_info=True)
+
+
 # ============================================================
 # 1. 应用生命周期管理
 # ============================================================
@@ -65,6 +92,16 @@ async def lifespan(app: FastAPI):
         logger.critical(f"❌ 数据库初始化失败: {str(e)}", exc_info=True)
         sys.exit(1)
 
+    # 初始化预定义 A/B 测试实验
+    try:
+        from ai.experiment_config import ensure_experiments_exist
+        from models.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as exp_db:
+            await ensure_experiments_exist(exp_db)
+        logger.info("✅ A/B 测试实验初始化成功")
+    except Exception as e:
+        logger.error(f"⚠️ 实验初始化失败（非致命）: {str(e)}", exc_info=True)
+
     # 预初始化所有Agent单例（解决冷启动）
     try:
         logger.info("🔄 预初始化所有AI Agent...")
@@ -79,14 +116,20 @@ async def lifespan(app: FastAPI):
 
         # 预初始化资源生成Agent
         from api.routes.resource import get_agent
-        for agent_type in ["quiz", "code", "mindmap", "doc", "video"]:
+        for agent_type in PREINIT_AGENT_TYPES:
             await get_agent(agent_type)
 
         logger.info("✅ 所有AI Agent预初始化完成")
     except Exception as e:
         logger.error(f"⚠️ Agent预初始化失败: {str(e)}", exc_info=True)
 
+    # 启动每日批量更新定时任务
+    _batch_task = asyncio.create_task(_daily_batch_update_loop())
+
     yield  # 应用运行期间
+
+    # 取消定时任务
+    _batch_task.cancel()
 
     # 关闭时清理资源
     logger.info("🔌 正在关闭服务...")
@@ -184,7 +227,7 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         status_code=HTTP_BAD_REQUEST,
         content=BaseResponse(
             code=HTTP_BAD_REQUEST,
-            message="请求参数错误",
+            message=MSG_REQUEST_PARAM_ERROR,
             data={"errors": exc.errors()},
             request_id=request_id_var.get()
         ).model_dump(mode="json")
@@ -202,7 +245,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=HTTP_SERVER_ERROR,
         content=BaseResponse(
             code=HTTP_SERVER_ERROR,
-            message="服务器内部错误",
+            message=MSG_SERVER_INTERNAL_ERROR,
             data={"detail": str(exc)} if DEBUG else None,
             request_id=request_id_var.get()
         ).model_dump(mode="json")
@@ -218,6 +261,11 @@ app.include_router(profile.router, prefix="/api")
 app.include_router(resource.router, prefix="/api")
 app.include_router(progress.router, prefix="/api")
 app.include_router(conversation.router, prefix="/api")
+app.include_router(quiz.router, prefix="/api")
+app.include_router(error_book.router, prefix="/api")
+app.include_router(code_execute.router, prefix="/api")
+app.include_router(experiment.router, prefix="/api")
+app.include_router(learning_path.router, prefix="/api")
 
 
 # ============================================================
@@ -232,10 +280,10 @@ async def global_health():
 
         return BaseResponse(
             code=HTTP_OK,
-            message="success",
+            message=MSG_SUCCESS,
             data={
                 "status": "ok",
-                "services": ["chat", "profile", "resource", "database"],
+                "services": HEALTH_CHECK_SERVICES,
             },
             request_id=request_id_var.get()  # 🔴 修复6：补全request_id参数
         )
@@ -243,22 +291,40 @@ async def global_health():
         logger.error(f"❌ 健康检查失败: {str(e)}", exc_info=True)
         return BaseResponse(
             code=HTTP_SERVICE_UNAVAILABLE,
-            message="服务不可用",
+            message=MSG_SERVICE_UNAVAILABLE,
             data={"error": str(e)},
             request_id=request_id_var.get()
         )
 
 
 # ============================================================
-# 7. 前端静态文件托管
+# 7. 前端静态文件托管（SPA 路由支持）
 # ============================================================
 _frontend_dir = Path(__file__).parent.parent / "frontend"
 _frontend_dist = _frontend_dir / "dist"
 # 优先使用构建产物目录(dist)，否则使用源码目录
 _static_dir = _frontend_dist if _frontend_dist.is_dir() else _frontend_dir
+
 if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="frontend")
-    logger.info(f"✅ 前端静态文件已托管: {_static_dir}")
+    _index_html = _static_dir / "index.html"
+
+    # 挂载静态资源目录（JS/CSS/图片等实际文件）
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="static-assets")
+
+    # SPA catch-all：所有非 API、非静态文件的请求都返回 index.html
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """SPA 路由回退：客户端路由全部返回 index.html"""
+        # 尝试返回实际存在的静态文件（favicon.svg 等）
+        file_path = _static_dir / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(str(file_path))
+        # 其他所有路径返回 index.html，由前端路由处理
+        return FileResponse(str(_index_html))
+
+    logger.info(f"✅ 前端静态文件已托管（SPA 模式）: {_static_dir}")
 else:
     logger.warning(f"⚠️ 前端目录不存在: {_static_dir}")
 
@@ -273,7 +339,7 @@ if __name__ == "__main__":
         host=HOST,
         port=PORT,
         reload=DEBUG,
-        reload_dirs=["api", "models", "agents", "utils"],
+        reload_dirs=DEV_RELOAD_DIRS,
         log_level="info",
         access_log=True,
         workers=1

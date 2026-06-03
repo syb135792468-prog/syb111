@@ -1,0 +1,1680 @@
+{
+  "变量与数据类型": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "变量命名规则",
+      "question": "以下哪个是 Python 的合法变量名？",
+      "options": [
+        "A. 2name",
+        "B. my-var",
+        "C. _count",
+        "D. class"
+      ],
+      "answer": "C",
+      "explanation": "变量名可以下划线开头，不能以数字开头，不能含连字符，不能是关键字。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "类型判断",
+      "question": "type(True) 的结果是？",
+      "options": [
+        "A. <class 'int'>",
+        "B. <class 'bool'>",
+        "C. <class 'str'>",
+        "D. <class 'float'>"
+      ],
+      "answer": "B",
+      "explanation": "Python 中 bool 是独立类型，虽然 bool 是 int 的子类，但 type() 返回精确类型。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "类型转换",
+      "question": "int('10.5') 会怎样？",
+      "options": [
+        "A. 返回 10",
+        "B. 返回 10.5",
+        "C. 返回 11",
+        "D. 抛出 ValueError"
+      ],
+      "answer": "D",
+      "explanation": "int() 不能直接转换含小数点的字符串，需先 float() 再 int()。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "可变与不可变",
+      "question": "以下哪个是不可变类型？",
+      "options": [
+        "A. list",
+        "B. dict",
+        "C. set",
+        "D. tuple"
+      ],
+      "answer": "D",
+      "explanation": "tuple 是不可变序列，创建后不能修改元素。list/dict/set 都是可变类型。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "类型本质",
+      "question": "a = [1,2,3]; b = a; b.append(4) 后 a 的值是？",
+      "options": [
+        "A. [1,2,3]",
+        "B. [1,2,3,4]",
+        "C. 报错",
+        "D. None"
+      ],
+      "answer": "B",
+      "explanation": "列表是引用类型，b = a 使 b 和 a 指向同一对象，修改 b 也会影响 a。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "类型转换函数",
+      "question": "将字符串 '3.14' 转换为浮点数：x = ____('3.14')",
+      "answer": "float",
+      "explanation": "float() 将字符串转为浮点数。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "多重赋值",
+      "question": "一行代码同时给 a, b, c 赋值 1, 2, 3：____ = 1, 2, 3",
+      "answer": "a, b, c",
+      "explanation": "Python 支持元组解包赋值，a, b, c = 1, 2, 3。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "类型检查",
+      "question": "判断 x 是否为字符串类型：if ____(x) == str:",
+      "answer": "type",
+      "explanation": "type(x) 返回 x 的类型，与 str 比较即可判断。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "变量交换",
+      "question": "用一行代码交换变量 a 和 b 的值。",
+      "answer": "a, b = b, a",
+      "explanation": "Python 元组解包赋值可以一步完成交换。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "类型判断函数",
+      "question": "编写函数 type_name(x)，返回 x 的类型名称字符串（如 'int'、'str'）。",
+      "answer": "def type_name(x):\n    return type(x).__name__",
+      "explanation": "type(x).__name__ 获取类型的名称字符串。"
+    }
+  ],
+  "运算符与表达式": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "整除运算",
+      "question": "7 // 2 的结果是？",
+      "options": [
+        "A. 3.5",
+        "B. 3",
+        "C. 4",
+        "D. 2"
+      ],
+      "answer": "B",
+      "explanation": "// 是整除运算符，向下取整，7 // 2 = 3。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "幂运算",
+      "question": "2 ** 3 ** 2 的结果是？",
+      "options": [
+        "A. 64",
+        "B. 512",
+        "C. 36",
+        "D. 8"
+      ],
+      "answer": "B",
+      "explanation": "** 右结合，先算 3**2=9，再算 2**9=512。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "逻辑运算",
+      "question": "True and False or True 的结果是？",
+      "options": [
+        "A. True",
+        "B. False",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "先算 and：True and False = False，再算 or：False or True = True。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "短路求值",
+      "question": "[] and 'hello' 的结果是？",
+      "options": [
+        "A. []",
+        "B. 'hello'",
+        "C. True",
+        "D. False"
+      ],
+      "answer": "A",
+      "explanation": "空列表为假值，and 短路返回第一个假值 []。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "运算符优先级",
+      "question": "not 1 == 1 的结果是？",
+      "options": [
+        "A. True",
+        "B. False",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "B",
+      "explanation": "== 优先级高于 not，先算 1==1=True，再算 not True=False。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "取余运算",
+      "question": "判断 n 是否为偶数：if n % ____ == 0:",
+      "answer": "2",
+      "explanation": "n % 2 == 0 表示 n 除以 2 余数为 0，即偶数。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "复合赋值",
+      "question": "x 初始为 10，执行 x //= 3 后 x 的值是：____",
+      "answer": "3",
+      "explanation": "//= 是整除赋值，10 // 3 = 3。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "三元表达式",
+      "question": "用三元表达式实现：如果 x>0 返回 '正'，否则返回 '非正'：result = '正' ____ x > 0 ____ '非正'",
+      "answer": "if  else",
+      "explanation": "Python 三元表达式：a if condition else b。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "温度转换",
+      "question": "编写代码将摄氏温度 c 转换为华氏温度 f（公式：f = c * 9/5 + 32）。",
+      "answer": "f = c * 9 / 5 + 32",
+      "explanation": "直接用公式计算，/ 是真除法。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "计算器函数",
+      "question": "编写函数 calc(a, op, b)，支持 +、-、*、/ 四种运算，除数为 0 返回 None。",
+      "answer": "def calc(a, op, b):\n    if op == '+': return a + b\n    elif op == '-': return a - b\n    elif op == '*': return a * b\n    elif op == '/': return a / b if b != 0 else None",
+      "explanation": "用 if-elif 分支处理不同运算符，除法前检查除数。"
+    }
+  ],
+  "条件判断（if/elif/else）": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "if 语法",
+      "question": "以下哪个是 Python if 语句的正确写法？",
+      "options": [
+        "A. if (x > 0) {",
+        "B. if x > 0:",
+        "C. if x > 0 then",
+        "D. if x > 0 {"
+      ],
+      "answer": "B",
+      "explanation": "Python 用 if 条件: 的形式，冒号和缩进是语法要求。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "elif 执行",
+      "question": "x=15，执行 if x>10: A elif x>5: B else: C，会执行哪个分支？",
+      "options": [
+        "A. A",
+        "B. B",
+        "C. C",
+        "D. A 和 B"
+      ],
+      "answer": "A",
+      "explanation": "elif 是 else if 的缩写，只要前面的条件满足，后面的就不判断了。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "条件嵌套",
+      "question": "a=3, b=5，执行以下代码后 c 的值是？\nif a > 2:\n    if b > 3:\n        c = 1\n    else:\n        c = 2\nelse:\n    c = 3",
+      "options": [
+        "A. 1",
+        "B. 2",
+        "C. 3",
+        "D. None"
+      ],
+      "answer": "A",
+      "explanation": "a>2 为真进入内层判断，b>3 也为真，所以 c=1。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "条件表达式陷阱",
+      "question": "x = 0; if x: print('真') else: print('假') 输出什么？",
+      "options": [
+        "A. 真",
+        "B. 假",
+        "C. 0",
+        "D. 报错"
+      ],
+      "answer": "B",
+      "explanation": "0 是假值（falsy），所以 if x 为假，执行 else 分支。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "match-case（了解）",
+      "question": "Python 3.10 引入的模式匹配关键字是？",
+      "options": [
+        "A. switch-case",
+        "B. match-case",
+        "C. select-when",
+        "D. case-match"
+      ],
+      "answer": "B",
+      "explanation": "Python 3.10 引入 match-case 语句，类似其他语言的 switch-case。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "多条件判断",
+      "question": "判断 x 是否在 0 到 100 之间：if 0 ____ x ____ 100:",
+      "answer": "<=  <=",
+      "explanation": "Python 支持链式比较，0 <= x <= 100。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "三元表达式",
+      "question": "用一行代码实现：如果 a>b 返回 a，否则返回 b：result = a ____ a > b ____ b",
+      "answer": "if  else",
+      "explanation": "三元表达式：a if a > b else b。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "in 操作符",
+      "question": "判断字符 c 是否为元音字母：if c ____ 'aeiou':",
+      "answer": "in",
+      "explanation": "in 操作符判断元素是否在序列中。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "成绩等级",
+      "question": "根据分数 score 输出等级：90+为A，80+为B，70+为C，60+为D，否则F。",
+      "answer": "if score >= 90:\n    print('A')\nelif score >= 80:\n    print('B')\nelif score >= 70:\n    print('C')\nelif score >= 60:\n    print('D')\nelse:\n    print('F')",
+      "explanation": "用 if-elif-else 链从高到低判断。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "闰年判断函数",
+      "question": "编写函数 is_leap(year)，判断是否为闰年（能被4整除但不能被100整除，或能被400整除）。",
+      "answer": "def is_leap(year):\n    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)",
+      "explanation": "闰年规则：四年一闰、百年不闰、四百年再闰。"
+    }
+  ],
+  "循环（for/while）": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "for 循环语法",
+      "question": "以下哪个是 Python 的 for 循环语法？",
+      "options": [
+        "A. for (i=0; i<10; i++)",
+        "B. for i in range(10):",
+        "C. foreach i in 10:",
+        "D. loop i from 0 to 9:"
+      ],
+      "answer": "B",
+      "explanation": "Python 使用 for...in... 语法，range(10) 生成 0-9。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "range 函数",
+      "question": "range(1, 10, 2) 生成的序列是？",
+      "options": [
+        "A. [1,3,5,7,9]",
+        "B. [1,2,3,4,5,6,7,8,9]",
+        "C. [1,3,5,7]",
+        "D. [2,4,6,8,10]"
+      ],
+      "answer": "A",
+      "explanation": "range(start, stop, step)，步长为2，从1到9取奇数。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "break 语句",
+      "question": "for i in range(5): 中途 break 后，else 子句会执行吗？",
+      "options": [
+        "A. 会",
+        "B. 不会",
+        "C. 看情况",
+        "D. 报错"
+      ],
+      "answer": "B",
+      "explanation": "for-else 中，break 跳出循环时 else 不执行；只有正常结束循环才执行 else。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "循环变量作用域",
+      "question": "for i in range(3): pass 执行后，i 的值是？",
+      "options": [
+        "A. 2",
+        "B. 3",
+        "C. 0",
+        "D. 未定义"
+      ],
+      "answer": "A",
+      "explanation": "Python 的 for 循环变量在循环结束后保留最后的值，range(3) 最后一个值是 2。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "列表推导式",
+      "question": "[x**2 for x in range(5) if x%2==0] 的结果是？",
+      "options": [
+        "A. [0,4,16]",
+        "B. [0,2,4]",
+        "C. [0,1,4,9,16]",
+        "D. [4,16]"
+      ],
+      "answer": "A",
+      "explanation": "先过滤偶数 0,2,4，再平方得 0,4,16。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "while 循环",
+      "question": "while 循环中，提前退出循环用 ____ 关键字。",
+      "answer": "break",
+      "explanation": "break 立即退出当前循环。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "continue 语句",
+      "question": "跳过本次循环剩余代码、进入下次迭代用 ____ 关键字。",
+      "answer": "continue",
+      "explanation": "continue 跳过当前迭代的剩余部分，进入下一次循环。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "enumerate 函数",
+      "question": "同时获取列表元素和索引：for i, v ____(lst):",
+      "answer": "in enumerate",
+      "explanation": "enumerate(lst) 返回 (index, value) 元组序列。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "求和函数",
+      "question": "编写函数 sum_n(n)，计算 1 到 n 的和。",
+      "answer": "def sum_n(n):\n    return sum(range(1, n+1))",
+      "explanation": "range(1, n+1) 生成 1 到 n，sum() 求和。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "质数判断",
+      "question": "编写函数 is_prime(n)，判断 n 是否为质数。",
+      "answer": "def is_prime(n):\n    if n < 2: return False\n    for i in range(2, int(n**0.5)+1):\n        if n % i == 0: return False\n    return True",
+      "explanation": "质数只需检查到 sqrt(n)，2 到 sqrt(n) 之间没有因子就是质数。"
+    }
+  ],
+  "函数定义与调用": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "函数定义语法",
+      "question": "以下哪个是 Python 函数定义的正确语法？",
+      "options": [
+        "A. function my_func():",
+        "B. def my_func():",
+        "C. func my_func():",
+        "D. define my_func():"
+      ],
+      "answer": "B",
+      "explanation": "Python 使用 def 关键字定义函数。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "函数调用",
+      "question": "def f(a, b=2): return a+b 调用 f(3) 的结果是？",
+      "options": [
+        "A. 3",
+        "B. 5",
+        "C. 报错",
+        "D. None"
+      ],
+      "answer": "B",
+      "explanation": "b 有默认值 2，f(3) 等价于 f(3, 2)，结果为 5。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "返回值",
+      "question": "没有 return 语句的函数返回什么？",
+      "options": [
+        "A. 0",
+        "B. 空字符串",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "C",
+      "explanation": "Python 函数没有 return 时默认返回 None。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "函数对象",
+      "question": "def f(): pass 执行后，f 的类型是？",
+      "options": [
+        "A. <class 'function'>",
+        "B. <class 'method'>",
+        "C. <class 'object'>",
+        "D. <class 'callable'>"
+      ],
+      "answer": "A",
+      "explanation": "def 语句创建的是 function 类型的对象。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "文档字符串",
+      "question": "函数的文档字符串（docstring）通过什么属性访问？",
+      "options": [
+        "A. f.doc",
+        "B. f.__doc__",
+        "C. f.help()",
+        "D. f.comment"
+      ],
+      "answer": "B",
+      "explanation": "__doc__ 属性存储函数的文档字符串。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "return 关键字",
+      "question": "函数返回值用 ____ 关键字。",
+      "answer": "return",
+      "explanation": "return 返回函数结果并结束函数执行。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "函数调用",
+      "question": "定义了 def greet(name): 后，调用它：____('小明')",
+      "answer": "greet",
+      "explanation": "函数名加括号调用。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "类型注解",
+      "question": "Python 函数参数类型注解写法：def f(x: ____) -> int:",
+      "answer": "int",
+      "explanation": "x: int 表示参数 x 的类型注解为 int，-> int 表示返回值注解。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "判断偶数函数",
+      "question": "编写函数 is_even(n)，判断 n 是否为偶数。",
+      "answer": "def is_even(n):\n    return n % 2 == 0",
+      "explanation": "偶数是能被 2 整除的数。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "递归阶乘",
+      "question": "编写函数 factorial(n)，用递归计算 n 的阶乘。",
+      "answer": "def factorial(n):\n    if n <= 1: return 1\n    return n * factorial(n-1)",
+      "explanation": "递归基准条件 n<=1 返回 1，否则 n * factorial(n-1)。"
+    }
+  ],
+  "函数参数与返回值": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "默认参数",
+      "question": "def f(a, b=5) 中 b 是什么类型的参数？",
+      "options": [
+        "A. 必选参数",
+        "B. 默认参数",
+        "C. 可变参数",
+        "D. 关键字参数"
+      ],
+      "answer": "B",
+      "explanation": "b=5 有默认值，是默认参数。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "可变参数",
+      "question": "def f(*args): 中 args 的类型是？",
+      "options": [
+        "A. list",
+        "B. tuple",
+        "C. dict",
+        "D. set"
+      ],
+      "answer": "B",
+      "explanation": "*args 收集多余位置参数为元组。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "关键字参数",
+      "question": "def f(**kwargs): 中 kwargs 的类型是？",
+      "options": [
+        "A. list",
+        "B. tuple",
+        "C. dict",
+        "D. set"
+      ],
+      "answer": "C",
+      "explanation": "**kwargs 收集多余关键字参数为字典。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "参数顺序",
+      "question": "以下函数定义 def f(a, b=1, *args, **kwargs) 中参数的正确顺序是？",
+      "options": [
+        "A. 位置参数→默认参数→可变参数→关键字参数",
+        "B. 任意顺序",
+        "C. 默认参数在位置参数前",
+        "D. 可变参数在最前"
+      ],
+      "answer": "A",
+      "explanation": "Python 参数顺序：位置参数→默认参数→*args→**kwargs。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "解包传参",
+      "question": "def f(a, b, c): 可以用 f(*[1,2,3]) 调用吗？",
+      "options": [
+        "A. 可以",
+        "B. 不可以",
+        "C. 只能传列表",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "* 解包列表/元组为位置参数，** 解包字典为关键字参数。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "返回多个值",
+      "question": "Python 函数返回多个值实际返回的是 ____ 类型。",
+      "answer": "tuple",
+      "explanation": "return a, b 实际返回元组 (a, b)。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "可变参数",
+      "question": "定义接受任意数量位置参数的函数：def f(____):",
+      "answer": "*args",
+      "explanation": "*args 收集任意数量的位置参数为元组。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "强制关键字参数",
+      "question": "def f(a, *, b) 中 b 必须以 ____ 方式传参。",
+      "answer": "关键字",
+      "explanation": "* 后面的参数必须用关键字方式传递，如 f(1, b=2)。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "带默认参数的函数",
+      "question": "编写函数 power(base, exp=2)，计算 base 的 exp 次方，默认平方。",
+      "answer": "def power(base, exp=2):\n    return base ** exp",
+      "explanation": "exp=2 设置默认参数。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "装饰器函数",
+      "question": "编写装饰器 timer，打印函数执行耗时。",
+      "answer": "import time\ndef timer(func):\n    def wrapper(*args, **kwargs):\n        start = time.time()\n        result = func(*args, **kwargs)\n        print(f'耗时: {time.time()-start:.4f}秒')\n        return result\n    return wrapper",
+      "explanation": "装饰器接收函数，返回包装后的函数，用 *args, **kwargs 透传参数。"
+    }
+  ],
+  "列表与元组": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "列表索引",
+      "question": "lst = [10,20,30,40]，lst[-1] 的值是？",
+      "options": [
+        "A. 10",
+        "B. 30",
+        "C. 40",
+        "D. 报错"
+      ],
+      "answer": "C",
+      "explanation": "-1 表示最后一个元素，即 40。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "切片操作",
+      "question": "lst = [1,2,3,4,5]，lst[1:4] 的结果是？",
+      "options": [
+        "A. [1,2,3]",
+        "B. [2,3,4]",
+        "C. [2,3,4,5]",
+        "D. [1,2,3,4]"
+      ],
+      "answer": "B",
+      "explanation": "切片 [1:4] 取索引 1、2、3 的元素，不含索引 4。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "列表方法",
+      "question": "lst = [3,1,2]，执行 lst.sort() 后 lst 的值是？",
+      "options": [
+        "A. [3,1,2]",
+        "B. [1,2,3]",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "B",
+      "explanation": "sort() 原地排序，修改列表本身。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "列表引用",
+      "question": "a = [1,2]; b = a; b = b + [3] 后 a 的值是？",
+      "options": [
+        "A. [1,2]",
+        "B. [1,2,3]",
+        "C. [1,2,3,3]",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "b = b + [3] 创建新列表，不影响 a。而 b += [3] 才会影响 a。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "列表推导式",
+      "question": "[i for i in range(10) if i % 3 == 0] 的结果是？",
+      "options": [
+        "A. [0,3,6,9]",
+        "B. [3,6,9]",
+        "C. [0,3,6]",
+        "D. [1,4,7]"
+      ],
+      "answer": "A",
+      "explanation": "range(10) 中能被 3 整除的数：0, 3, 6, 9。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "列表方法",
+      "question": "在列表末尾添加元素：lst.____(5)",
+      "answer": "append",
+      "explanation": "append() 在列表末尾添加一个元素。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "列表长度",
+      "question": "获取列表元素个数：____(lst)",
+      "answer": "len",
+      "explanation": "len() 返回列表长度。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "列表解包",
+      "question": "将列表 [1,2,3] 解包到三个变量：a, b, c = ____[1,2,3]",
+      "answer": "*lst  或者直接 a,b,c = [1,2,3]",
+      "explanation": "可以用 * 解包，或直接解包赋值。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "列表求平均值",
+      "question": "编写函数 avg(lst)，返回列表元素的平均值。",
+      "answer": "def avg(lst):\n    return sum(lst) / len(lst)",
+      "explanation": "sum() 求和，len() 求长度。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "列表去重保序",
+      "question": "编写函数 dedup(lst)，去除重复元素并保持原顺序。",
+      "answer": "def dedup(lst):\n    seen = set()\n    result = []\n    for x in lst:\n        if x not in seen:\n            seen.add(x)\n            result.append(x)\n    return result",
+      "explanation": "用 set 记录已出现元素，保持原顺序。"
+    }
+  ],
+  "字典与集合": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "字典取值",
+      "question": "d = {'a':1,'b':2}，d['c'] 会怎样？",
+      "options": [
+        "A. 返回 None",
+        "B. 返回 0",
+        "C. 抛出 KeyError",
+        "D. 返回 ''"
+      ],
+      "answer": "C",
+      "explanation": "访问不存在的键会抛出 KeyError，用 d.get('c') 可避免。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "字典方法",
+      "question": "d = {'a':1,'b':2}，list(d.keys()) 的结果是？",
+      "options": [
+        "A. ['a','b']",
+        "B. [1,2]",
+        "C. [('a',1),('b',2)]",
+        "D. dict_keys(['a','b'])"
+      ],
+      "answer": "A",
+      "explanation": "keys() 返回所有键，list() 转为列表。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "集合特性",
+      "question": "set([1,2,2,3,3]) 的结果是？",
+      "options": [
+        "A. [1,2,2,3,3]",
+        "B. {1,2,3}",
+        "C. (1,2,3)",
+        "D. 报错"
+      ],
+      "answer": "B",
+      "explanation": "集合自动去重，set() 去除重复元素。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "字典推导式",
+      "question": "{k: v for k, v in [('a',1),('b',2)]} 的结果是？",
+      "options": [
+        "A. {'a':1,'b':2}",
+        "B. [('a',1),('b',2)]",
+        "C. ['a','b']",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "字典推导式从键值对序列创建字典。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "集合运算",
+      "question": "{1,2,3} & {2,3,4} 的结果是？",
+      "options": [
+        "A. {1,4}",
+        "B. {2,3}",
+        "C. {1,2,3,4}",
+        "D. {1,2}"
+      ],
+      "answer": "B",
+      "explanation": "& 是交集运算，返回共同元素。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "字典方法",
+      "question": "获取字典所有键：d.____()",
+      "answer": "keys",
+      "explanation": "keys() 返回所有键。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "安全取值",
+      "question": "安全获取字典值（键不存在返回默认值）：d.____('key', 0)",
+      "answer": "get",
+      "explanation": "get(key, default) 键不存在时返回默认值。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "字典合并",
+      "question": "合并两个字典（Python 3.9+）：d3 = d1 ____ d2",
+      "answer": "|",
+      "explanation": "Python 3.9+ 用 | 合并字典，d3 = d1 | d2。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "字典计数",
+      "question": "编写函数 count_chars(s)，统计字符串中每个字符出现次数。",
+      "answer": "def count_chars(s):\n    d = {}\n    for c in s:\n        d[c] = d.get(c, 0) + 1\n    return d",
+      "explanation": "用 get(c, 0) 安全取值并累加。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "字典按值排序",
+      "question": "编写函数 sort_by_value(d)，返回按值从小到大排序的键列表。",
+      "answer": "def sort_by_value(d):\n    return sorted(d, key=d.get)",
+      "explanation": "sorted 的 key 参数指定排序依据，d.get 按值排序。"
+    }
+  ],
+  "字符串操作": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "字符串方法",
+      "question": "'Hello'.lower() 的结果是？",
+      "options": [
+        "A. 'hello'",
+        "B. 'HELLO'",
+        "C. 'Hello'",
+        "D. 'hELLO'"
+      ],
+      "answer": "A",
+      "explanation": "lower() 转换为小写。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "字符串切片",
+      "question": "'Python'[::-1] 的结果是？",
+      "options": [
+        "A. 'Python'",
+        "B. 'nohtyP','C. 'Pytho','D. 'P'"
+      ],
+      "answer": "B",
+      "explanation": "[::-1] 是反转切片，步长为 -1。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "字符串方法",
+      "question": "'a,b,c'.split(',') 的结果是？",
+      "options": [
+        "A. 'a,b,c'",
+        "B. ['a','b','c']",
+        "C. ('a','b','c')",
+        "D. 'abc'"
+      ],
+      "answer": "B",
+      "explanation": "split() 按分隔符分割字符串，返回列表。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "字符串格式化",
+      "question": "f'{3.14159:.2f}' 的结果是？",
+      "options": [
+        "A. '3.14'",
+        "B. '3.14159'",
+        "C. '3.1'",
+        "D. '3'"
+      ],
+      "answer": "A",
+      "explanation": ":.2f 保留两位小数。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "字符串方法",
+      "question": "'  hello  '.strip() 的结果是？",
+      "options": [
+        "A. 'hello'",
+        "B. '  hello'",
+        "C. 'hello  '",
+        "D. '  hello  '"
+      ],
+      "answer": "A",
+      "explanation": "strip() 去除首尾空白字符。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "字符串分割",
+      "question": "按逗号分割字符串：s.____(',')",
+      "answer": "split",
+      "explanation": "split(',') 按逗号分割。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "字符串替换",
+      "question": "替换子串：s.____('old', 'new')",
+      "answer": "replace",
+      "explanation": "replace(old, new) 替换所有匹配的子串。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "字符串判断",
+      "question": "判断字符串是否以 'http' 开头：s.____('http')",
+      "answer": "startswith",
+      "explanation": "startswith() 判断前缀。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "回文判断",
+      "question": "编写函数 is_palindrome(s)，判断字符串是否为回文。",
+      "answer": "def is_palindrome(s):\n    return s == s[::-1]",
+      "explanation": "s[::-1] 反转字符串，与原串相等则是回文。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "统计单词频率",
+      "question": "编写函数 word_freq(sentence)，统计句子中每个单词出现次数（不区分大小写）。",
+      "answer": "def word_freq(sentence):\n    words = sentence.lower().split()\n    d = {}\n    for w in words:\n        d[w] = d.get(w, 0) + 1\n    return d",
+      "explanation": "先 lower() 统一小写，再 split() 分词，最后计数。"
+    }
+  ],
+  "面向对象基础": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "类定义语法",
+      "question": "以下哪个是 Python 类的正确定义？",
+      "options": [
+        "A. class MyClass {}",
+        "B. class MyClass:",
+        "C. Class MyClass:",
+        "D. define class MyClass:"
+      ],
+      "answer": "B",
+      "explanation": "Python 用 class 关键字定义类，类名后加冒号。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "__init__ 方法",
+      "question": "__init__ 方法什么时候被调用？",
+      "options": [
+        "A. 定义类时",
+        "B. 创建实例时",
+        "C. 调用方法时",
+        "D. 程序结束时"
+      ],
+      "answer": "B",
+      "explanation": "__init__ 是构造方法，创建实例时自动调用。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "实例属性",
+      "question": "self.name = name 中 self.name 是什么？",
+      "options": [
+        "A. 类属性",
+        "B. 局部变量",
+        "C. 实例属性",
+        "D. 全局变量"
+      ],
+      "answer": "C",
+      "explanation": "通过 self. 绑定的是实例属性，属于具体对象。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "类属性与实例属性",
+      "question": "class A: x=1; a=A(); a.x=2 后 A.x 的值是？",
+      "options": [
+        "A. 1",
+        "B. 2",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "a.x=2 创建了实例属性，不影响类属性 A.x。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "特殊方法",
+      "question": "print(obj) 时自动调用的方法是？",
+      "options": [
+        "A. __str__",
+        "B. __repr__",
+        "C. __init__",
+        "D. __print__"
+      ],
+      "answer": "A",
+      "explanation": "print() 调用 __str__ 方法获取对象的字符串表示。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "构造方法",
+      "question": "Python 类的构造方法名是：____(self):",
+      "answer": "__init__",
+      "explanation": "__init__ 是构造方法。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "self 参数",
+      "question": "类方法的第一个参数约定俗成叫 ____。",
+      "answer": "self",
+      "explanation": "self 代表实例对象本身。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "类方法装饰器",
+      "question": "定义类方法需要使用 ____ 装饰器。",
+      "answer": "@classmethod",
+      "explanation": "@classmethod 定义类方法，第一个参数是 cls。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "学生类",
+      "question": "定义 Student 类，有 name 和 age 属性，introduce() 方法返回自我介绍。",
+      "answer": "class Student:\n    def __init__(self, name, age):\n        self.name = name\n        self.age = age\n    def introduce(self):\n        return f'我叫{self.name}，今年{self.age}岁'",
+      "explanation": "用 __init__ 初始化属性。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "计数器类",
+      "question": "定义 Counter 类，支持 increment()、decrement()、get_value() 方法。",
+      "answer": "class Counter:\n    def __init__(self, value=0):\n        self._value = value\n    def increment(self):\n        self._value += 1\n    def decrement(self):\n        self._value -= 1\n    def get_value(self):\n        return self._value",
+      "explanation": "用 _value 存储状态，提供方法操作。"
+    }
+  ],
+  "类与对象": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "self 关键字",
+      "question": "类方法中的 self 代表什么？",
+      "options": [
+        "A. 类本身",
+        "B. 当前实例对象",
+        "C. 父类",
+        "D. None"
+      ],
+      "answer": "B",
+      "explanation": "self 代表调用该方法的实例对象。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "创建实例",
+      "question": "class Dog: pass 创建实例的正确写法是？",
+      "options": [
+        "A. Dog.new()",
+        "B. Dog()",
+        "C. create Dog()",
+        "D. new Dog()"
+      ],
+      "answer": "B",
+      "explanation": "类名加括号调用构造方法创建实例。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "方法调用",
+      "question": "obj.method() 实际等价于什么？",
+      "options": [
+        "A. method(obj)",
+        "B. Class.method(obj)",
+        "C. method()",
+        "D. Class.method()"
+      ],
+      "answer": "B",
+      "explanation": "obj.method() 等价于 Class.method(obj)，self 自动传入。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "__repr__ 方法",
+      "question": "在交互式终端直接输入对象名回车，调用的是哪个方法？",
+      "options": [
+        "A. __str__",
+        "B. __repr__",
+        "C. __init__",
+        "D. __display__"
+      ],
+      "answer": "B",
+      "explanation": "终端直接显示对象调用 __repr__，print() 调用 __str__。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "属性访问控制",
+      "question": "以双下划线开头的属性（如 __name）会怎样？",
+      "options": [
+        "A. 完全私有",
+        "B. 名称改写（name mangling）",
+        "C. 只读",
+        "D. 无特殊效果"
+      ],
+      "answer": "B",
+      "explanation": "双下划线属性会进行名称改写，变为 _类名__属性名，不是完全私有。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "创建实例",
+      "question": "创建 Dog 类的实例：my_dog = ____('旺财')",
+      "answer": "Dog",
+      "explanation": "类名加括号调用构造方法。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "属性访问",
+      "question": "访问对象 obj 的属性 x：obj.____",
+      "answer": "x",
+      "explanation": "用点号访问对象属性。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "属性删除",
+      "question": "删除对象属性：____(obj, 'name')",
+      "answer": "delattr",
+      "explanation": "delattr(obj, 'name') 删除对象的指定属性。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "银行账户类",
+      "question": "定义 BankAccount 类，有 balance 属性，deposit() 和 withdraw() 方法。",
+      "answer": "class BankAccount:\n    def __init__(self, balance=0):\n        self.balance = balance\n    def deposit(self, amount):\n        self.balance += amount\n    def withdraw(self, amount):\n        if amount <= self.balance:\n            self.balance -= amount",
+      "explanation": "检查余额后再扣款。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "描述符类",
+      "question": "定义 Temperature 类，用 Celsius 类实现温度属性，设置时验证不低于 -273.15。",
+      "answer": "class Celsius:\n    def __set_name__(self, owner, name):\n        self.name = name\n    def __get__(self, obj, objtype=None):\n        return getattr(obj, f'_{self.name}', 0)\n    def __set__(self, obj, value):\n        if value < -273.15:\n            raise ValueError('温度不能低于绝对零度')\n        setattr(obj, f'_{self.name}', value)\n\nclass Temperature:\n    celsius = Celsius()",
+      "explanation": "描述符协议：__get__、__set__、__set_name__。"
+    }
+  ],
+  "继承与多态": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "继承语法",
+      "question": "以下哪个是 Python 继承的正确写法？",
+      "options": [
+        "A. class Dog extends Animal:",
+        "B. class Dog(Animal):",
+        "C. class Dog inherits Animal:",
+        "D. class Dog : Animal:"
+      ],
+      "answer": "B",
+      "explanation": "Python 在类名后的括号中指定父类。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "super 函数",
+      "question": "super().__init__() 的作用是？",
+      "options": [
+        "A. 调用自身 __init__",
+        "B. 调用父类 __init__",
+        "C. 创建父类实例",
+        "D. 删除父类"
+      ],
+      "answer": "B",
+      "explanation": "super() 返回代理对象，调用父类方法。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "方法重写",
+      "question": "子类定义与父类同名方法，这叫什么？",
+      "options": [
+        "A. 方法重载",
+        "B. 方法重写",
+        "C. 方法继承",
+        "D. 方法封装"
+      ],
+      "answer": "B",
+      "explanation": "子类重新定义父类方法叫方法重写（override）。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "isinstance 函数",
+      "question": "isinstance(Dog(), Animal) 的结果是？（Dog 继承自 Animal）",
+      "options": [
+        "A. True",
+        "B. False",
+        "C. None",
+        "D. 报错"
+      ],
+      "answer": "A",
+      "explanation": "isinstance 检查对象是否是类的实例，子类实例也是父类实例。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "MRO",
+      "question": "Python 方法解析顺序（MRO）使用什么算法？",
+      "options": [
+        "A. 深度优先",
+        "B. 广度优先",
+        "C. C3 线性化",
+        "D. 随机"
+      ],
+      "answer": "C",
+      "explanation": "Python 3 使用 C3 线性化算法确定 MRO。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "继承声明",
+      "question": "子类声明继承：class Child(____):",
+      "answer": "Parent",
+      "explanation": "括号中写父类名。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "多继承",
+      "question": "Python 支持 ____ 继承，即一个类可以有多个父类。",
+      "answer": "多",
+      "explanation": "Python 支持多继承，但要注意菱形继承问题。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "抽象类",
+      "question": "定义抽象类需要使用 ABC 模块的 ____ 装饰器。",
+      "answer": "@abstractmethod",
+      "explanation": "@abstractmethod 定义抽象方法，子类必须实现。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "方法重写",
+      "question": "定义 Animal 类 speak() 返回 '...'，Dog 类继承并重写 speak() 返回 '汪汪'。",
+      "answer": "class Animal:\n    def speak(self):\n        return '...'\n\nclass Dog(Animal):\n    def speak(self):\n        return '汪汪'",
+      "explanation": "子类定义同名方法实现重写。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "多态实现",
+      "question": "编写函数 animal_speak(animal)，传入任意 Animal 子类都能正确调用 speak()。",
+      "answer": "class Animal:\n    def speak(self):\n        return '...'\n\ndef animal_speak(animal):\n    return animal.speak()\n\nclass Dog(Animal):\n    def speak(self):\n        return '汪汪'\n\nclass Cat(Animal):\n    def speak(self):\n        return '喵喵'",
+      "explanation": "多态：同一接口，不同实现。传入不同子类表现不同行为。"
+    }
+  ],
+  "异常处理": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "异常捕获",
+      "question": "以下哪个关键字用于捕获异常？",
+      "options": [
+        "A. catch",
+        "B. except",
+        "C. handle",
+        "D. error"
+      ],
+      "answer": "B",
+      "explanation": "Python 用 try...except 捕获异常。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "异常类型",
+      "question": "1/0 会抛出什么异常？",
+      "options": [
+        "A. ValueError",
+        "B. TypeError",
+        "C. ZeroDivisionError",
+        "D. IndexError"
+      ],
+      "answer": "C",
+      "explanation": "除以零抛出 ZeroDivisionError。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "finally 子句",
+      "question": "finally 子句什么时候执行？",
+      "options": [
+        "A. 只在出错时",
+        "B. 只在正常时",
+        "C. 无论如何都执行",
+        "D. 从不执行"
+      ],
+      "answer": "C",
+      "explanation": "finally 无论是否发生异常都会执行。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "异常链",
+      "question": "raise ... from ... 的作用是？",
+      "options": [
+        "A. 抛出新异常",
+        "B. 保留原始异常链",
+        "C. 忽略异常",
+        "D. 重复异常"
+      ],
+      "answer": "B",
+      "explanation": "from 保留原始异常信息，形成异常链。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "自定义异常",
+      "question": "自定义异常类应该继承什么？",
+      "options": [
+        "A. object",
+        "B. Exception",
+        "C. Error",
+        "D. BaseClass"
+      ],
+      "answer": "B",
+      "explanation": "自定义异常应继承 Exception 类。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "完整结构",
+      "question": "异常处理完整结构：try-except-____",
+      "answer": "finally",
+      "explanation": "try-except-finally 是标准结构。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "捕获多种异常",
+      "question": "同时捕获多种异常：except (ValueError, ____):",
+      "answer": "TypeError",
+      "explanation": "用元组指定多种异常类型。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "as 关键字",
+      "question": "获取异常对象：except Exception ____ e:",
+      "answer": "as",
+      "explanation": "as 将异常对象绑定到变量。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "安全除法",
+      "question": "编写函数 safe_div(a, b)，b 为 0 时返回 None。",
+      "answer": "def safe_div(a, b):\n    try:\n        return a / b\n    except ZeroDivisionError:\n        return None",
+      "explanation": "try-except 捕获 ZeroDivisionError。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "重试装饰器",
+      "question": "编写装饰器 retry(times)，函数出错时最多重试 times 次。",
+      "answer": "def retry(times):\n    def decorator(func):\n        def wrapper(*args, **kwargs):\n            for i in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception as e:\n                    if i == times - 1:\n                        raise e\n        return wrapper\n    return decorator",
+      "explanation": "装饰器工厂模式，外层接收参数，中层接收函数，内层是实际逻辑。"
+    }
+  ],
+  "文件操作": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "文件打开模式",
+      "question": "open('f.txt', 'r') 中 'r' 表示什么？",
+      "options": [
+        "A. 写入",
+        "B. 读取",
+        "C. 追加",
+        "D. 二进制"
+      ],
+      "answer": "B",
+      "explanation": "'r' 是读取模式（默认）。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "with 语句",
+      "question": "使用 with open() 的好处是？",
+      "options": [
+        "A. 速度更快",
+        "B. 自动关闭文件",
+        "C. 支持更多格式",
+        "D. 可以读取二进制"
+      ],
+      "answer": "B",
+      "explanation": "with 语句自动管理资源，退出时自动关闭文件。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "文件方法",
+      "question": "readlines() 返回什么？",
+      "options": [
+        "A. 字符串",
+        "B. 列表",
+        "C. 元组",
+        "D. 字典"
+      ],
+      "answer": "B",
+      "explanation": "readlines() 返回所有行的列表。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "文件编码",
+      "question": "open('f.txt', encoding='utf-8') 中 encoding 参数的作用是？",
+      "options": [
+        "A. 压缩文件",
+        "B. 指定字符编码",
+        "C. 加密文件",
+        "D. 设置权限"
+      ],
+      "answer": "B",
+      "explanation": "encoding 指定文件的字符编码格式。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "文件指针",
+      "question": "f.seek(0) 的作用是？",
+      "options": [
+        "A. 关闭文件",
+        "B. 移动到文件开头",
+        "C. 移动到文件末尾",
+        "D. 删除文件"
+      ],
+      "answer": "B",
+      "explanation": "seek(0) 将文件指针移动到开头位置。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "with 语句",
+      "question": "使用 with 语句打开文件：____ open('f.txt') as f:",
+      "answer": "with",
+      "explanation": "with 语句自动管理文件资源。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "写入文件",
+      "question": "写入一行内容：f.____('hello\\n')",
+      "answer": "write",
+      "explanation": "write() 写入字符串。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "二进制模式",
+      "question": "以二进制读取模式打开文件：open('f.bin', '____')",
+      "answer": "rb",
+      "explanation": "'rb' 是二进制读取模式。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "统计行数",
+      "question": "编写代码读取 data.txt 并统计行数。",
+      "answer": "with open('data.txt', 'r') as f:\n    count = len(f.readlines())\n    print(count)",
+      "explanation": "readlines() 返回行列表，len() 计数。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "文件复制函数",
+      "question": "编写函数 copy_file(src, dst)，复制源文件到目标路径。",
+      "answer": "def copy_file(src, dst):\n    with open(src, 'r') as f_src:\n        content = f_src.read()\n    with open(dst, 'w') as f_dst:\n        f_dst.write(content)",
+      "explanation": "先读取源文件内容，再写入目标文件。"
+    }
+  ],
+  "模块与包": [
+    {
+      "type": "choice",
+      "difficulty": "easy",
+      "title": "import 语法",
+      "question": "以下哪个是导入模块的正确方式？",
+      "options": [
+        "A. include math",
+        "B. import math",
+        "C. using math",
+        "D. require math"
+      ],
+      "answer": "B",
+      "explanation": "Python 用 import 关键字导入模块。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "from import",
+      "question": "from math import sqrt 表示什么？",
+      "options": [
+        "A. 导入整个 math",
+        "B. 只导入 sqrt",
+        "C. 重命名 math",
+        "D. 导入 sqrt 模块"
+      ],
+      "answer": "B",
+      "explanation": "from ... import ... 只导入指定成员。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "medium",
+      "title": "模块别名",
+      "question": "import numpy as np 中 np 是什么？",
+      "options": [
+        "A. 变量名",
+        "B. 模块别名",
+        "C. 函数名",
+        "D. 类名"
+      ],
+      "answer": "B",
+      "explanation": "as 给模块起别名。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "__name__ 变量",
+      "question": "当模块被直接运行时，__name__ 的值是？",
+      "options": [
+        "A. 'module'",
+        "B. '__main__'",
+        "C. 'main'",
+        "D. None"
+      ],
+      "answer": "B",
+      "explanation": "直接运行时 __name__ == '__main__'，被导入时为模块名。"
+    },
+    {
+      "type": "choice",
+      "difficulty": "hard",
+      "title": "包结构",
+      "question": "Python 包目录中必须包含什么文件？",
+      "options": [
+        "A. __init__.py",
+        "B. __main__.py",
+        "C. setup.py",
+        "D. config.py"
+      ],
+      "answer": "A",
+      "explanation": "__init__.py 标识目录为 Python 包（Python 3.3+ 可省略但建议保留）。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "easy",
+      "title": "导入模块",
+      "question": "导入 os 模块：____ os",
+      "answer": "import",
+      "explanation": "import 关键字导入模块。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "medium",
+      "title": "导入指定成员",
+      "question": "从 math 导入 pi：____ math ____ pi",
+      "answer": "from  import",
+      "explanation": "from math import pi。"
+    },
+    {
+      "type": "fill",
+      "difficulty": "hard",
+      "title": "动态导入",
+      "question": "动态导入模块：m = ____('math')",
+      "answer": "__import__",
+      "explanation": "__import__('math') 动态导入模块。"
+    },
+    {
+      "type": "code",
+      "difficulty": "easy",
+      "title": "自定义模块",
+      "question": "创建 myutils.py 包含 add(a,b) 函数，并在另一个文件中导入使用。",
+      "answer": "# myutils.py\ndef add(a, b):\n    return a + b\n\n# main.py\nfrom myutils import add\nprint(add(1, 2))",
+      "explanation": "每个 .py 文件就是模块。"
+    },
+    {
+      "type": "code",
+      "difficulty": "hard",
+      "title": "模块化项目结构",
+      "question": "设计一个包含 models/ 和 utils/ 子包的项目结构，models/user.py 定义 User 类。",
+      "answer": "# 项目结构：\n# myproject/\n#   __init__.py\n#   models/\n#     __init__.py\n#     user.py\n#   utils/\n#     __init__.py\n#     helpers.py\n\n# user.py\nclass User:\n    def __init__(self, name):\n        self.name = name\n\n# 使用：\nfrom myproject.models.user import User",
+      "explanation": "包是包含 __init__.py 的目录，子包同理。"
+    }
+  ]
+}

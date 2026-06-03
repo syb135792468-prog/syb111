@@ -24,6 +24,16 @@ from config.constants import (
     STATS_AGGREGATION_DAYS, STATS_AGGREGATION_LIMIT, SECONDS_PER_HOUR,
 )
 
+# 延迟导入避免循环依赖
+_real_time_engine = None
+
+def _get_real_time_engine():
+    global _real_time_engine
+    if _real_time_engine is None:
+        from ai.real_time_adaptation import real_time_adaptation_engine
+        _real_time_engine = real_time_adaptation_engine
+    return _real_time_engine
+
 logger = get_logger(__name__, task_id="behavior_tracker")
 
 
@@ -130,7 +140,7 @@ class BehaviorTracker:
             duration_seconds: Optional[int] = None,
             extra_data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """记录一条学习行为"""
+        """记录一条学习行为，并同步更新实时学习状态"""
         try:
             async with AsyncSessionLocal() as session:
                 log_entry = BehaviorLog(
@@ -147,6 +157,33 @@ class BehaviorTracker:
                 logger.debug(f"📝 行为记录: user={user_id}, type={log_entry.behavior_type}")
         except Exception as e:
             logger.error(f"❌ 记录行为失败: {e}", exc_info=True)
+
+    @staticmethod
+    async def log_quiz_answer(
+            user_id: int,
+            session_id: str,
+            is_correct: bool,
+            response_time_ms: int,
+            knowledge_point: Optional[str] = None,
+            resource_id: Optional[int] = None,
+    ) -> None:
+        """记录答题行为并同步更新实时学习状态"""
+        # 记录行为日志
+        await BehaviorTracker.log(
+            user_id=user_id,
+            behavior_type=BehaviorType.COMPLETE_QUIZ,
+            resource_id=resource_id,
+            resource_type="quiz",
+            knowledge_point=knowledge_point,
+            duration_seconds=response_time_ms // 1000,
+            extra_data={"is_correct": is_correct, "session_id": session_id},
+        )
+        # 同步更新实时学习状态
+        try:
+            engine = _get_real_time_engine()
+            engine.update_state_with_answer(user_id, session_id, is_correct, response_time_ms)
+        except Exception as e:
+            logger.warning(f"⚠️ 实时状态更新失败（不影响行为记录）: {e}")
 
     @staticmethod
     async def get_user_behaviors(
@@ -184,21 +221,31 @@ class BehaviorTracker:
             "quizzes_completed": 0,
             "questions_asked": 0,
             "points_studied": [],
+            "study_days": 0,
+            "question_by_point": {},
         }
         seen_points = set()
+        study_dates = set()
         for b in behaviors:
             if b.duration_seconds:
                 stats["total_study_hours"] += b.duration_seconds / SECONDS_PER_HOUR
+            if b.created_at:
+                study_dates.add(b.created_at.date())
             if b.behavior_type == BehaviorType.VIEW_RESOURCE.value:
                 stats["resources_viewed"] += 1
             elif b.behavior_type == BehaviorType.COMPLETE_QUIZ.value:
                 stats["quizzes_completed"] += 1
             elif b.behavior_type == BehaviorType.ASK_QUESTION.value:
                 stats["questions_asked"] += 1
+                if b.knowledge_point:
+                    stats["question_by_point"][b.knowledge_point] = (
+                        stats["question_by_point"].get(b.knowledge_point, 0) + 1
+                    )
             if b.knowledge_point and b.knowledge_point not in seen_points:
                 seen_points.add(b.knowledge_point)
                 stats["points_studied"].append(b.knowledge_point)
         stats["total_study_hours"] = round(stats["total_study_hours"], 1)
+        stats["study_days"] = len(study_dates)
         return stats
 
 

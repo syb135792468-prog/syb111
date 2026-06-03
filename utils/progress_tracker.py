@@ -11,6 +11,7 @@ from typing import Dict, Optional
 from datetime import datetime, timezone
 import threading
 
+from config.constants import PROGRESS_CLEANUP_MAX_AGE_SEC
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="progress_tracker")
@@ -145,7 +146,7 @@ class ProgressTracker:
                 del self._tasks[task_id]
                 logger.info(f"🗑️  进度任务已移除: {task_id}")
 
-    def cleanup_completed(self, max_age_seconds: int = 3600) -> int:
+    def cleanup_completed(self, max_age_seconds: int = PROGRESS_CLEANUP_MAX_AGE_SEC) -> int:
         """清理超过指定时间的已完成/失败任务，返回清理数量"""
         now = datetime.now(timezone.utc)
         removed = 0

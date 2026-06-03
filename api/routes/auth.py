@@ -19,7 +19,13 @@ from api.schemas import (
 from models.user import User
 from models.database import get_db
 from config.settings import settings
-from config.constants import HTTP_OK, HTTP_BAD_REQUEST
+from config.constants import HTTP_OK, HTTP_BAD_REQUEST, HTTP_UNAUTHORIZED
+from config.messages import (
+    MSG_REGISTER_SUCCESS, MSG_LOGIN_SUCCESS, MSG_NOT_LOGGED_IN,
+    MSG_TOKEN_INVALID, MSG_USER_NOT_FOUND_OR_DISABLED,
+    MSG_USERNAME_OR_PASSWORD_WRONG, MSG_USERNAME_EXISTS,
+    MSG_ACCOUNT_DISABLED, MSG_SUCCESS,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="auth")
@@ -50,7 +56,7 @@ async def get_current_user(
     """从 Authorization header 解析当前用户（FastAPI 依赖注入）"""
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="未登录")
+        raise HTTPException(status_code=HTTP_UNAUTHORIZED, detail=MSG_NOT_LOGGED_IN)
 
     token = auth_header[7:]
     try:
@@ -61,12 +67,12 @@ async def get_current_user(
         )
         user_id = int(payload.get("sub"))
     except (JWTError, ValueError, TypeError):
-        raise HTTPException(status_code=401, detail="Token 无效或已过期")
+        raise HTTPException(status_code=HTTP_UNAUTHORIZED, detail=MSG_TOKEN_INVALID)
 
     result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
     user = result.scalar_one_or_none()
     if user is None:
-        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+        raise HTTPException(status_code=HTTP_UNAUTHORIZED, detail=MSG_USER_NOT_FOUND_OR_DISABLED)
 
     return user
 
@@ -76,7 +82,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     # 检查用户名是否已存在
     result = await db.execute(select(User).where(User.username == req.username))
     if result.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="用户名已存在")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_USERNAME_EXISTS)
 
     # 创建用户
     user = User(
@@ -92,7 +98,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
     return BaseResponse(
         code=HTTP_OK,
-        message="注册成功",
+        message=MSG_REGISTER_SUCCESS,
         data=TokenResponse(
             access_token=token,
             user_id=user.id,
@@ -107,17 +113,17 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="用户名或密码错误")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_USERNAME_OR_PASSWORD_WRONG)
 
     if not user.is_active:
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="账户已禁用")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_ACCOUNT_DISABLED)
 
     token = create_access_token(user.id, user.username)
     logger.info(f"用户登录: {user.username} (id={user.id})")
 
     return BaseResponse(
         code=HTTP_OK,
-        message="登录成功",
+        message=MSG_LOGIN_SUCCESS,
         data=TokenResponse(
             access_token=token,
             user_id=user.id,
@@ -130,7 +136,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 async def get_me(current_user: User = Depends(get_current_user)):
     return BaseResponse(
         code=HTTP_OK,
-        message="success",
+        message=MSG_SUCCESS,
         data=UserInfoResponse(
             user_id=current_user.id,
             username=current_user.username,

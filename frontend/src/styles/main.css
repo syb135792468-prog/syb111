@@ -1,98 +1,636 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ===== 全局基础 ===== */
 * {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
 }
 
 body {
   margin: 0;
   overflow: hidden;
+  background: #ffffff;
 }
 
-/* Scrollbar - Light */
-::-webkit-scrollbar { width: 6px; }
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 
-/* Scrollbar - Dark (sidebar) */
-.dark-scroll::-webkit-scrollbar-thumb { background: #4b5563; }
-.dark-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+/* ===== 选中颜色 ===== */
+::selection { background: rgba(16, 185, 129, 0.15); }
 
-/* Typing animation */
+/* ===== 通用动画 ===== */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideInUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideInDown {
+  from { transform: translateY(-12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ===== 掌握度动画 ===== */
+@keyframes pulseOnce {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-pulse-once {
+  animation: pulseOnce 0.6s ease-in-out;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* ===== Toast 动画 ===== */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toastOut {
+  from { opacity: 1; }
+  to { opacity: 0; transform: translateY(-12px); }
+}
+
+/* ===== 聊天打字动画 ===== */
 .typing-dot {
-  animation: typingBounce 1.4s infinite ease-in-out;
+  animation: typingBounce 1.2s infinite ease-in-out;
 }
 .typing-dot:nth-child(1) { animation-delay: 0s; }
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes typingBounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-4px); opacity: 1; }
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
+  30% { transform: translateY(-4px); opacity: 0.8; }
 }
 
-/* Chat message animations */
+/* ===== 聊天消息动画 ===== */
 .msg-enter {
-  animation: msgSlideIn 0.3s ease-out;
-}
-@keyframes msgSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  animation: fadeIn 0.15s ease-out;
 }
 
-/* Toast animations */
-@keyframes toastIn {
-  from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes toastOut {
-  from { opacity: 1; }
-  to { opacity: 0; transform: translateY(-20px); }
-}
-
-/* Markdown content styling */
-.md-content h1 { font-size: 1.5em; font-weight: 700; margin: 0.8em 0 0.4em; color: #111827; }
-.md-content h2 { font-size: 1.3em; font-weight: 600; margin: 0.7em 0 0.35em; color: #1f2937; }
-.md-content h3 { font-size: 1.1em; font-weight: 600; margin: 0.6em 0 0.3em; color: #374151; }
-.md-content p { margin: 0.5em 0; line-height: 1.7; color: #374151; }
-.md-content ul, .md-content ol { margin: 0.5em 0; padding-left: 1.5em; }
-.md-content li { margin: 0.25em 0; line-height: 1.6; color: #374151; }
+/* ===== Markdown 内容样式 ===== */
+.md-content h1 { font-size: 18px; font-weight: 600; margin: 0 0 16px; color: #111827; line-height: 1.5; }
+.md-content h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: #111827; line-height: 1.5; }
+.md-content h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; color: #111827; line-height: 1.5; }
+.md-content p { margin: 0 0 16px; line-height: 1.7; color: #374151; }
+.md-content ul, .md-content ol { margin: 0 0 16px; padding-left: 1.5em; }
+.md-content li { margin: 0 0 8px; line-height: 1.7; color: #374151; }
 .md-content strong { font-weight: 600; color: #111827; }
-.md-content em { font-style: italic; }
-.md-content a { color: #2563eb; text-decoration: underline; }
+.md-content em { font-style: italic; color: #6b7280; }
+.md-content a { color: #10b981; text-decoration: underline; }
 .md-content blockquote {
-  border-left: 3px solid #3b82f6; margin: 0.8em 0; padding: 0.5em 1em;
-  background: #eff6ff; border-radius: 0 6px 6px 0; color: #1e40af;
+  border-left: 2px solid #e5e7eb; margin: 0 0 16px; padding: 0.5em 1em;
+  background: #f9fafb; border-radius: 0 6px 6px 0; color: #374151;
 }
 .md-content code:not(pre code) {
-  background: #f1f5f9; color: #be185d; padding: 0.15em 0.4em;
-  border-radius: 4px; font-size: 0.9em; font-family: 'Fira Code', 'Consolas', monospace;
+  background: #f3f4f6; color: #374151; padding: 0.15em 0.4em;
+  border-radius: 4px; font-size: 0.9em; font-family: 'Consolas', 'Monaco', monospace;
 }
 .md-content pre {
-  background: #0d1117; color: #e6edf3; padding: 1em; border-radius: 8px;
-  overflow-x: auto; margin: 0.8em 0; position: relative; font-size: 0.88em;
+  background: #f9fafb; color: #374151; padding: 20px; border-radius: 0 0 8px 8px;
+  overflow-x: auto; margin: 0; position: relative; font-size: 14px;
+  border: none;
 }
-.md-content pre code { font-family: 'Fira Code', 'Consolas', monospace; line-height: 1.5; }
-.md-content table { border-collapse: collapse; margin: 0.8em 0; width: 100%; }
+.md-content pre code {
+  font-family: 'Consolas', 'Monaco', monospace; line-height: 1.6;
+  display: block; tab-size: 4; color: #374151;
+}
+.md-content table { border-collapse: collapse; margin: 0 0 16px; width: 100%; }
 .md-content th, .md-content td { border: 1px solid #e5e7eb; padding: 0.5em 0.8em; text-align: left; }
-.md-content th { background: #f9fafb; font-weight: 600; }
-.md-content hr { border: none; border-top: 1px solid #e5e7eb; margin: 1em 0; }
+.md-content th { background: #f9fafb; font-weight: 600; color: #111827; }
+.md-content hr { border: none; border-top: 1px solid #f3f4f6; margin: 16px 0; }
 
-/* Code block wrapper */
-.code-block-wrapper { position: relative; }
+/* ===== 代码块样式 ===== */
+.code-block-wrapper {
+  position: relative; margin: 0 0 16px; border-radius: 8px; overflow: hidden;
+  border: 1px solid #e5e7eb;
+}
+.code-block-wrapper .code-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; height: 36px; background: #f9fafb; color: #6b7280; font-size: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.code-block-wrapper .code-header .lang-label { display: flex; align-items: center; gap: 8px; }
+.code-block-wrapper .code-header .line-count { color: #9ca3af; font-size: 11px; }
 .code-block-wrapper .copy-btn {
-  position: absolute; top: 8px; right: 8px; padding: 4px 10px;
-  background: rgba(255,255,255,0.1); color: #9ca3af; border: none;
-  border-radius: 4px; cursor: pointer; font-size: 12px; opacity: 0;
-  transition: all 0.2s;
+  padding: 4px 8px; background: #ffffff; color: #6b7280;
+  border: 1px solid #e5e7eb; border-radius: 6px; cursor: pointer; font-size: 12px;
+  transition: background 0.15s ease; opacity: 0;
 }
 .code-block-wrapper:hover .copy-btn { opacity: 1; }
-.code-block-wrapper .copy-btn:hover { background: rgba(255,255,255,0.2); color: #fff; }
+.code-block-wrapper .copy-btn:hover { background: #f3f4f6; }
+.code-block-wrapper .copy-btn.copied { color: #10b981; border-color: #10b981; }
 
-/* Mermaid container */
+/* ===== CodeMirror 编辑器（代码练习场） ===== */
+.cm-editor {
+  height: 100% !important;
+  flex: 1;
+}
+.cm-editor .cm-scroller {
+  overflow: auto;
+  font-size: 14px;
+  line-height: 1.6;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+}
+/* 错误行高亮 */
+.cm-error-line {
+  background: rgba(239, 68, 68, 0.12) !important;
+  border-left: 3px solid #ef4444;
+  padding-left: 2px;
+}
+
+/* ===== Mermaid 容器 ===== */
 .mermaid { text-align: center; }
 .mermaid svg { max-width: 100%; height: auto; }
+
+/* ===== 覆盖层通用样式 ===== */
+.overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.2s ease;
+}
+
+.overlay-panel {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  animation: scaleIn 0.2s ease;
+}
+
+/* ===== 面板滑入动画 ===== */
+.panel-slide-in {
+  animation: slideInRight 0.3s ease forwards;
+}
+
+/* ===== 加载骨架屏 ===== */
+.skeleton-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ===== 登录界面 ===== */
+
+@keyframes authFadeIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes authBlobFloat1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(80px, -60px) scale(1.1); }
+  50% { transform: translate(-40px, 80px) scale(0.95); }
+  75% { transform: translate(60px, 40px) scale(1.05); }
+}
+
+@keyframes authBlobFloat2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25% { transform: translate(-60px, 70px) scale(1.08); }
+  50% { transform: translate(50px, -50px) scale(0.92); }
+  75% { transform: translate(-30px, -80px) scale(1.12); }
+}
+
+@keyframes authBlobFloat3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(100px, 50px) scale(1.15); }
+  66% { transform: translate(-70px, -30px) scale(0.9); }
+}
+
+@keyframes authTabSlide {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes authFormEnter {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes authErrorShake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+@keyframes authSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes authPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* Overlay */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+  overflow: hidden;
+}
+
+/* Animated background */
+.auth-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.auth-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.4;
+}
+
+.auth-blob-1 {
+  width: 400px;
+  height: 400px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  top: -10%;
+  left: -5%;
+  animation: authBlobFloat1 20s ease-in-out infinite;
+}
+
+.auth-blob-2 {
+  width: 350px;
+  height: 350px;
+  background: linear-gradient(135deg, #06b6d4, #3b82f6);
+  bottom: -10%;
+  right: -5%;
+  animation: authBlobFloat2 25s ease-in-out infinite;
+}
+
+.auth-blob-3 {
+  width: 300px;
+  height: 300px;
+  background: linear-gradient(135deg, #8b5cf6, #ec4899);
+  top: 50%;
+  left: 60%;
+  animation: authBlobFloat3 18s ease-in-out infinite;
+}
+
+.auth-blob-4 {
+  width: 200px;
+  height: 200px;
+  background: linear-gradient(135deg, #10b981, #06b6d4);
+  top: 20%;
+  right: 20%;
+  animation: authBlobFloat1 22s ease-in-out infinite reverse;
+  opacity: 0.25;
+}
+
+/* Card */
+.auth-card {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 16px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 25px 60px -12px rgba(0, 0, 0, 0.5),
+    0 0 120px -20px rgba(59, 130, 246, 0.15);
+  overflow: hidden;
+  animation: authFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Brand */
+.auth-brand {
+  text-align: center;
+  padding: 32px 28px 20px;
+}
+
+.auth-brand-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 14px;
+  box-shadow: 0 8px 24px -4px rgba(59, 130, 246, 0.4);
+}
+
+.auth-brand-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #ffffff;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+}
+
+.auth-brand-sub {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Tabs */
+.auth-tabs {
+  position: relative;
+  display: flex;
+  margin: 0 28px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.auth-tab {
+  flex: 1;
+  position: relative;
+  z-index: 1;
+  padding: 8px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  background: transparent;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.auth-tab-active {
+  color: #ffffff;
+}
+
+.auth-tab-indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  height: calc(100% - 8px);
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+
+.auth-tab-indicator-right {
+  transform: translateX(100%);
+}
+
+/* Form area */
+.auth-form-area {
+  padding: 24px 28px 8px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: authFormEnter 0.3s ease;
+}
+
+/* Input group */
+.auth-input-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth-input-icon {
+  position: absolute;
+  left: 14px;
+  width: 18px;
+  height: 18px;
+  color: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+  transition: color 0.2s ease;
+  z-index: 1;
+}
+
+.auth-input {
+  width: 100%;
+  padding: 13px 44px 13px 44px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  font-size: 14px;
+  color: #ffffff;
+  outline: none;
+  transition: all 0.25s ease;
+  box-sizing: border-box;
+}
+
+.auth-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.auth-input:focus {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15), 0 0 20px -4px rgba(59, 130, 246, 0.2);
+}
+
+.auth-input:focus + .auth-eye-btn,
+.auth-input:focus ~ .auth-eye-btn {
+  /* keep eye visible on focus */
+}
+
+.auth-input:focus ~ .auth-input-icon,
+.auth-input:focus + .auth-input-icon {
+  /* won't work due to DOM order, handled via group focus-within */
+}
+
+.auth-input-group:focus-within .auth-input-icon {
+  color: rgba(59, 130, 246, 0.7);
+}
+
+.auth-eye-btn {
+  position: absolute;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.auth-eye-btn:hover {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Error */
+.auth-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 10px;
+  color: #fca5a5;
+  font-size: 13px;
+  animation: authErrorShake 0.4s ease;
+}
+
+/* Submit button */
+.auth-submit {
+  width: 100%;
+  padding: 13px;
+  margin-top: 4px;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  box-shadow: 0 4px 16px -2px rgba(59, 130, 246, 0.35);
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-submit::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.15), transparent);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px -4px rgba(59, 130, 246, 0.45);
+}
+
+.auth-submit:hover:not(:disabled)::before {
+  opacity: 1;
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.auth-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Loading spinner */
+.auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.auth-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: authSpin 0.7s linear infinite;
+}
+
+/* Footer */
+.auth-footer {
+  text-align: center;
+  padding: 16px 28px 24px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.25);
+  letter-spacing: 0.02em;
+}
+
+/* Responsive */
+@media (max-width: 440px) {
+  .auth-card {
+    margin: 0 12px;
+    border-radius: 16px;
+  }
+  .auth-brand {
+    padding: 24px 20px 16px;
+  }
+  .auth-tabs {
+    margin: 0 20px;
+  }
+  .auth-form-area {
+    padding: 20px 20px 8px;
+  }
+}

@@ -22,6 +22,10 @@ except ImportError as e:
     ) from e
 
 from config.settings import settings
+from config.constants import (
+    MAX_IMAGE_SIZE_MB, MULTIMODAL_MAX_RETRIES,
+    MULTIMODAL_TIMEOUT_SEC, IMAGE_UNDERSTANDING_MAX_TOKENS,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="multimodal_api")
@@ -61,9 +65,9 @@ class SparkMultimodalAPI:
         self.default_model = settings.SPARK_MODEL  # "lite"
 
         # 配置参数
-        self.max_image_size_mb = 10  # 最大图片大小 10MB
-        self.max_retries = 3  # 最大重试次数
-        self.timeout = 60  # 请求超时时间（秒）
+        self.max_image_size_mb = MAX_IMAGE_SIZE_MB
+        self.max_retries = MULTIMODAL_MAX_RETRIES
+        self.timeout = MULTIMODAL_TIMEOUT_SEC
 
         logger.info("✅ 多模态 API 客户端已初始化")
 
@@ -140,7 +144,7 @@ class SparkMultimodalAPI:
             image_path: str | Path,
             prompt: str = "请描述这张图片的内容",
             model: Optional[str] = None,
-            max_tokens: int = 500,
+            max_tokens: int = IMAGE_UNDERSTANDING_MAX_TOKENS,
     ) -> str:
         """
         图片理解（Image-to-Text）

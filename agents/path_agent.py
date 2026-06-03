@@ -1,18 +1,22 @@
 """
 agents/path_agent.py - 软件杯A3 学习路径规划智能体
 - 基于知识依赖关系图生成个性化学习路径
-- 返回 learning_path 列表，不再生成为 ResourceItem（避免非法资源类型）
+- 返回 learning_path 列表，含 prerequisites 和 difficulty
+- 支持动态路径调整（根据掌握度跳过/插入节点）
 """
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 import json
-from pathlib import Path
 
 from agents.base_agent import BaseAgent
 from config.settings import settings
 from config.model_config import PYTHON_KNOWLEDGE_POINTS
-from config.constants import DEFAULT_ESTIMATED_TIME_MIN, EXTENDED_ESTIMATED_TIME_MIN, MAX_LEARNING_PATH_STEPS
+from config.constants import (
+    DEFAULT_ESTIMATED_TIME_MIN, EXTENDED_ESTIMATED_TIME_MIN,
+    MAX_LEARNING_PATH_STEPS, DEFAULT_START_KNOWLEDGE_POINT,
+    PATH_FALLBACK_KP_COUNT, LP_MASTERY_THRESHOLD,
+)
 from utils.agent_helpers import get_profile_from_context
 
 
@@ -55,30 +59,34 @@ class PathAgent(BaseAgent):
         profile = get_profile_from_context(context)
         weak_points = profile.get("weak_points", [])
         mastered = set(profile.get("mastered_points", []))
+        knowledge_mastery = profile.get("knowledge_mastery", {})
 
         # 确定起始知识点
-        start_kp = None
-        if weak_points:
-            start_kp = weak_points[0]
-        elif mastered:
-            # 从已掌握中选一个作为起点（复习路径）
-            start_kp = next(iter(mastered))
-        else:
-            start_kp = "变量与数据类型"  # 默认最基础知识
+        start_kp = self._determine_start_point(weak_points, mastered)
 
         self.logger.info(f"🗺️ 生成学习路径 | 起始知识点：{start_kp}")
 
         # 生成路径列表
         raw_path = self._generate_path(start_kp, mastered)
 
+        # 计算每个知识点的难度（基于依赖深度）
+        difficulty_map = self._calculate_difficulties()
+
         # 格式化为前端可直接展示的结构
         learning_path = []
         for i, kp in enumerate(raw_path, 1):
+            prerequisites = self.dependency_graph.get(kp, [])
+            # 只保留也在路径中的前置条件
+            path_kps = set(raw_path)
+            relevant_prereqs = [p for p in prerequisites if p in path_kps]
+
             learning_path.append({
                 "order": i,
                 "knowledge_point": kp,
                 "estimated_time_min": DEFAULT_ESTIMATED_TIME_MIN if "基础" in kp else EXTENDED_ESTIMATED_TIME_MIN,
                 "type": "review" if kp in mastered else "new",
+                "prerequisites": relevant_prereqs,
+                "difficulty": difficulty_map.get(kp, 0.5),
             })
 
         self.logger.info(f"✅ 生成 {len(learning_path)} 步学习路径")
@@ -88,13 +96,57 @@ class PathAgent(BaseAgent):
             "updated_at": self._get_current_utc_time(),
         }
 
-    def _generate_path(self, start: str, mastered: set) -> List[str]:
-        """基于依赖图生成拓扑排序路径（简单实现）"""
-        # 如果没有依赖图，返回基础顺序
-        if not self.dependency_graph:
-            return PYTHON_KNOWLEDGE_POINTS[:5]
+    def _determine_start_point(
+        self, weak_points: List[str], mastered: Set[str]
+    ) -> str:
+        """确定路径起始知识点"""
+        if weak_points:
+            return weak_points[0]
+        if mastered:
+            return next(iter(mastered))
+        return DEFAULT_START_KNOWLEDGE_POINT
 
-        # 简化逻辑：从起始节点出发，收集依赖链
+    def _calculate_difficulties(self) -> Dict[str, float]:
+        """
+        基于依赖图的拓扑深度计算知识点难度。
+        依赖链越深，难度越高（0.1-0.9）。
+        """
+        if not self.dependency_graph:
+            return {}
+
+        # 计算每个知识点的最大依赖深度
+        depth_cache: Dict[str, int] = {}
+
+        def get_depth(node: str) -> int:
+            if node in depth_cache:
+                return depth_cache[node]
+            deps = self.dependency_graph.get(node, [])
+            if not deps:
+                depth_cache[node] = 0
+                return 0
+            max_dep_depth = max(get_depth(d) for d in deps if d in self.dependency_graph)
+            depth_cache[node] = max_dep_depth + 1
+            return depth_cache[node]
+
+        for kp in self.dependency_graph:
+            get_depth(kp)
+
+        if not depth_cache:
+            return {}
+
+        max_depth = max(depth_cache.values()) or 1
+
+        # 映射到 0.1-0.9 的难度范围
+        return {
+            kp: round(0.1 + (depth / max_depth) * 0.8, 2)
+            for kp, depth in depth_cache.items()
+        }
+
+    def _generate_path(self, start: str, mastered: set) -> List[str]:
+        """基于依赖图生成拓扑排序路径"""
+        if not self.dependency_graph:
+            return PYTHON_KNOWLEDGE_POINTS[:PATH_FALLBACK_KP_COUNT]
+
         path = []
         visited = set()
 
@@ -102,7 +154,6 @@ class PathAgent(BaseAgent):
             if node in visited or node not in self.dependency_graph:
                 return
             visited.add(node)
-            # 先添加前置依赖
             for dep in self.dependency_graph.get(node, []):
                 if dep not in mastered and dep not in visited:
                     add_with_deps(dep)
@@ -111,9 +162,8 @@ class PathAgent(BaseAgent):
 
         add_with_deps(start)
 
-        # 补充未覆盖的其他基础知识点
         for kp in PYTHON_KNOWLEDGE_POINTS:
             if kp not in visited and kp not in mastered:
                 path.append(kp)
 
-        return path[:MAX_LEARNING_PATH_STEPS]  # 限制路径长度
+        return path[:MAX_LEARNING_PATH_STEPS]

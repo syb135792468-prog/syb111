@@ -1,14 +1,15 @@
 """
-全局模型配置与赛题枚举管理（软件杯A3 v5.2 最终修复版）
+全局模型配置与赛题枚举管理（软件杯A3 v5.3）
 - ✅ 分工明确：与 settings.py 分离（敏感/非敏感）
 - ✅ 100%修复所有PyCharm报错/警告
 - ✅ 100%统筹全局：统一管理画像维度、知识点、模型配置、路径
 - ✅ 赛题显式化：明确标注大赛/编号/课程，方便评审
 - ✅ 工程化增强：Pydantic模型、类型注解、配置自检
-- ✅ 技术栈对齐：DeepSeek主模型（稳定）、讯飞Embedding（官方）
+- ✅ 技术栈对齐：小米MiMo主模型、DeepSeek备用模型、讯飞Embedding（官方）
 - ✅ 所有其他模块必须从此导入，杜绝硬编码
 
 更新日志：
+- v5.3 (2026-05-27): 主模型切换为小米MiMo-v2.5-pro，DeepSeek降为备用
 - v5.2 (2026-05-09): 修复3个致命错误，主模型改用DeepSeek，修正Embedding地址和维度
 - v5.2 (2026-04-18): 修复导入语法错误，新增缺失的PYTHON_KB_PATH配置
 - v5.1 (2026-04-18): 修复所有PyCharm报错/警告，修正导入逻辑
@@ -125,33 +126,33 @@ class ModelConfig(BaseModel):
     default_top_p: float = Field(0.9, ge=0.0, le=1.0, description="默认top_p")
     timeout: int = Field(60, gt=0, description="请求超时时间（秒）")
 
-# 🔴 修复致命错误1：主模型改用DeepSeek（稳定不报错）
+# 主模型：DeepSeek
 PRIMARY_MODEL_CONFIG = ModelConfig(
     provider="deepseek",
     model_name="deepseek-chat",
-    base_url="https://api.deepseek.com/v1",
+    base_url=settings.DEEPSEEK_BASE_URL,
     default_temperature=0.7,
     default_max_tokens=4096,
     default_top_p=0.9,
     timeout=60,
 )
 
-# 备用模型：DeepSeek（同主模型，防止单点故障）
+# 备用模型：小米 MiMo（保留，但当前不启用）
 DEEPSEEK_MODEL_CONFIG = ModelConfig(
-    provider="deepseek",
-    model_name="deepseek-chat",
-    base_url="https://api.deepseek.com/v1",
+    provider="mimo",
+    model_name="mimo-v2.5-pro",
+    base_url=settings.MIMO_BASE_URL,
     default_temperature=0.7,
     default_max_tokens=4096,
     default_top_p=0.9,
-    timeout=60,
+    timeout=10,
 )
 
 # 多模态生成：讯飞 SeeDance（当前未启用，保留框架供后续加分项）
 class SeeDanceConfig(BaseModel):
     """SeeDance视频生成配置"""
     provider: str = "seedance"
-    api_url: str = "https://seedance.xf-yun.com/v1/generate"
+    api_url: str = settings.SEEDANCE_BASE_URL
     default_duration: int = 60
     default_resolution: str = "1080p"
     timeout: int = 300
@@ -164,7 +165,7 @@ class EmbeddingConfig(BaseModel):
     """Embedding配置"""
     provider: str = "spark"
     model_name: str = "embedding-v1"  # 讯飞官方实际模型名
-    base_url: str = "https://emb-cn-huabei-1.xf-yun.com/"  # 讯飞Embedding官方独立域名
+    base_url: str = settings.EMBEDDING_BASE_URL  # 讯飞Embedding官方独立域名
     dimension: int = 2560  # 讯飞官方Embedding维度
     timeout: int = 30
     max_text_length: int = 256
@@ -174,7 +175,7 @@ EMBEDDING_CONFIG = EmbeddingConfig()
 # 内容安全配置（已废弃主动API，改用被动拦截）
 CONTENT_SECURITY_CONFIG = {
     "provider": "spark",
-    "api_url": "https://spark-api-open.xf-yun.com/v1/moderations",
+    "api_url": settings.MODERATION_BASE_URL,
     "check_input": False,
     "check_output": False,
     "timeout": 10,
@@ -218,10 +219,13 @@ SCENE_CONFIG: Dict[str, SceneConfig] = {
     "document_generation": SceneConfig(temperature=0.6, max_tokens=4096, description="课程讲解文档生成"),
     "quiz_generation": SceneConfig(temperature=0.4, max_tokens=4096, description="练习题生成"),
     "mindmap_generation": SceneConfig(temperature=0.3, max_tokens=2048, description="思维导图结构生成"),
+    "mindmap_node_expand": SceneConfig(temperature=0.4, max_tokens=1024, description="思维导图节点按需展开"),
     "code_generation": SceneConfig(temperature=0.2, max_tokens=2048, description="Python代码案例生成"),
     "tutoring": SceneConfig(temperature=0.6, max_tokens=2048, description="智能答疑辅导"),
     "path_planning": SceneConfig(temperature=0.2, max_tokens=2048, description="个性化学习路径规划"),
     "evaluation": SceneConfig(temperature=0.3, max_tokens=2048, description="学习效果评估"),
+    "unified_routing": SceneConfig(temperature=0.1, max_tokens=128, description="统一路由：意图+资源类型识别"),
+    "video_html_generation": SceneConfig(temperature=0.7, max_tokens=16000, description="HTML教学动画生成"),
 }
 
 # ============================================================
@@ -229,8 +233,8 @@ SCENE_CONFIG: Dict[str, SceneConfig] = {
 # ============================================================
 PRIMARY_MODEL = "deepseek"
 FALLBACK_MODEL_ORDER = ["deepseek"]
-ENABLE_FALLBACK = True
-MAX_RETRIES_PER_MODEL = 3
+ENABLE_FALLBACK = False
+MAX_RETRIES_PER_MODEL = 1
 
 # ============================================================
 # 9. 个性化资源生成业务配置（赛题核心，100%合规）
@@ -352,7 +356,7 @@ if __name__ == "__main__":
         errors.append(f"无法创建知识库目录: {e}")
 
     # 4. 模型名称基本校验
-    print(f"🤖 主模型: {PRIMARY_MODEL_CONFIG.model_name} (DeepSeek，稳定不报错)")
+    print(f"🤖 主模型: {PRIMARY_MODEL_CONFIG.model_name} (DeepSeek)")
     print(f"📊 向量化模型: {EMBEDDING_CONFIG.model_name} (讯飞官方，维度 {EMBEDDING_CONFIG.dimension})")
 
     # 5. 赛题硬性合规检查
@@ -366,7 +370,7 @@ if __name__ == "__main__":
         print(f"✅ 赛题合规：{len(profile_cnt)}维画像、{len(resource_cnt)}种资源")
 
     # 6. 关键环境变量提醒
-    required_env_vars = ["DEEPSEEK_API_KEY", "SPARK_APP_ID", "SPARK_API_KEY_RAW", "SPARK_API_SECRET"]
+    required_env_vars = ["MIMO_API_KEY", "DEEPSEEK_API_KEY", "SPARK_APP_ID", "SPARK_API_KEY_RAW", "SPARK_API_SECRET"]
     missing_env = [v for v in required_env_vars if not getattr(settings, v, None)]
     if missing_env:
         warnings.append(f"缺少环境变量: {missing_env}，请检查 .env 文件")

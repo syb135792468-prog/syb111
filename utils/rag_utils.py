@@ -28,7 +28,7 @@ from chromadb.api.models.Collection import Collection
 from config.settings import settings
 from config.model_config import VECTOR_DB_CONFIG
 from utils.logger import get_logger
-from config.constants import DEFAULT_DISTANCE_THRESHOLD, RAG_QUERY_MULTIPLIER
+from config.constants import DEFAULT_DISTANCE_THRESHOLD, RAG_QUERY_MULTIPLIER, RAG_DISTANCE_PRECISION, RAG_SIMILARITY_DIVISOR
 
 logger = get_logger(__name__, task_id="rag_core")
 
@@ -207,8 +207,8 @@ class VectorDBManager:
                     relevant_docs.append({
                         "content": doc,
                         "metadata": meta or {},
-                        "distance": round(float(distance), 4),
-                        "similarity": round(1 - distance / 2, 4)  # 🔴 余弦距离正确转相似度
+                        "distance": round(float(distance), RAG_DISTANCE_PRECISION),
+                        "similarity": round(1 - distance / RAG_SIMILARITY_DIVISOR, RAG_DISTANCE_PRECISION)  # 🔴 余弦距离正确转相似度
                     })
 
             # 按相似度降序排列

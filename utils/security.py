@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
+from config.constants import SECURITY_MAX_INPUT_LENGTH
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="security")
@@ -19,7 +20,7 @@ BANNED_PATTERNS = [
 ]
 
 
-def validate_user_input(text: str, max_length: int = 2000) -> Tuple[bool, Optional[str]]:
+def validate_user_input(text: str, max_length: int = SECURITY_MAX_INPUT_LENGTH) -> Tuple[bool, Optional[str]]:
     """
     校验用户输入是否合法。
 
@@ -38,8 +39,8 @@ def validate_user_input(text: str, max_length: int = 2000) -> Tuple[bool, Option
 def sanitize_input(text: str) -> str:
     """清理用户输入：去除首尾空白、限制长度"""
     text = text.strip()
-    if len(text) > 2000:
-        text = text[:2000]
+    if len(text) > SECURITY_MAX_INPUT_LENGTH:
+        text = text[:SECURITY_MAX_INPUT_LENGTH]
     return text
 
 

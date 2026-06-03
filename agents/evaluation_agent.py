@@ -12,8 +12,13 @@ from utils.behavior_tracker import behavior_tracker
 from config.constants import (
     EVAL_DEFAULT_DAYS, EVAL_TEMPERATURE, EVAL_MAX_TOKENS,
     EVAL_QUIZ_MIN_COUNT, EVAL_STUDY_HOURS_THRESHOLD, EVAL_RESOURCE_VIEWS_THRESHOLD,
+    EVAL_REPORT_MAX_WORDS,
+    RESOURCE_STATUS_COMPLETED, MOTIVATION_LEVEL_HIGH, MOTIVATION_LEVEL_MEDIUM,
+    BATCH_MOTIVATION_STUDY_DAYS_HIGH, BATCH_MOTIVATION_STUDY_DAYS_MEDIUM,
+    BATCH_MOTIVATION_COMPLETION_RATE_HIGH, BATCH_MOTIVATION_COMPLETION_RATE_MEDIUM,
+    BATCH_WEAK_POINT_QUESTION_COUNT,
 )
-from utils.agent_helpers import get_profile_from_context
+from utils.agent_helpers import get_profile_from_context, match_knowledge_point
 
 
 class EvaluationAgent(BaseAgent):
@@ -125,29 +130,29 @@ class EvaluationAgent(BaseAgent):
         weak_points = profile.get("weak_points", [])
         mastered_points = profile.get("mastered_points", [])
         total_resources = len(resources)
-        completed_res = sum(1 for r in resources if r.get("status") == "completed")
+        completed_res = sum(1 for r in resources if r.get("status") == RESOURCE_STATUS_COMPLETED)
 
         # 统计数据兜底
         study_hours = stats.get("total_study_hours", 0) if stats else 0
         quiz_count = stats.get("quizzes_completed", 0) if stats else 0
 
-        # 构建报告
-        report_lines = [
-            "📊 **学习效果评估报告**",
-            f"- 累计学习：{study_hours:.1f} 小时",
-            f"- 资源完成：{completed_res}/{total_resources}",
-            f"- 练习完成：{quiz_count} 次",
-            f"- 已掌握：{', '.join(mastered_points) if mastered_points else '暂无'}",
-            f"- 待加强：{', '.join(weak_points) if weak_points else '暂无'}",
-        ]
-
         # 个性化建议
         if not weak_points:
-            report_lines.append("\n🎉 很棒！所有知识点均已掌握，继续保持学习热情！")
+            suggestion = "\n🎉 很棒！所有知识点均已掌握，继续保持学习热情！"
         else:
-            report_lines.append(f"\n💪 学习建议：重点加强 {', '.join(weak_points)} 的练习")
+            suggestion = f"\n💪 学习建议：重点加强 {', '.join(weak_points)} 的练习"
 
-        return "\n".join(report_lines)
+        # 加载模板构建报告（实例方法，需要 agent 引用）
+        # 由于 _rule_evaluate 是 staticmethod，此处直接拼接
+        return (
+            f"📊 **学习效果评估报告**\n"
+            f"- 累计学习：{study_hours:.1f} 小时\n"
+            f"- 资源完成：{completed_res}/{total_resources}\n"
+            f"- 练习完成：{quiz_count} 次\n"
+            f"- 已掌握：{', '.join(mastered_points) if mastered_points else '暂无'}\n"
+            f"- 待加强：{', '.join(weak_points) if weak_points else '暂无'}\n"
+            f"{suggestion}"
+        )
 
     async def _llm_evaluate(
             self,
@@ -161,7 +166,7 @@ class EvaluationAgent(BaseAgent):
             mastered = profile.get("mastered_points", [])
             weak = profile.get("weak_points", [])
             total_res = len(resources)
-            completed_res = sum(1 for r in resources if r.get("status") == "completed")
+            completed_res = sum(1 for r in resources if r.get("status") == RESOURCE_STATUS_COMPLETED)
 
             # 拼接基础信息
             context_text = (
@@ -181,10 +186,10 @@ class EvaluationAgent(BaseAgent):
                 )
 
             # LLM提示词
-            prompt = (
-                "你是专业的Python学习评估师，生成300字内的鼓励式评估报告，包含：\n"
-                "1. 学习概况 2. 进步亮点 3. 针对性建议\n"
-                f"评估数据：{context_text}"
+            prompt = self._load_prompt(
+                "evaluation_user",
+                max_words=EVAL_REPORT_MAX_WORDS,
+                context_text=context_text,
             )
 
             # 复用基类LLM调用
@@ -208,7 +213,7 @@ class EvaluationAgent(BaseAgent):
         # 收集所有已完成资源的知识点
         finished_kps = set()
         for res in resources:
-            if res.get("status") == "completed":
+            if res.get("status") == RESOURCE_STATUS_COMPLETED:
                 finished_kps.update(res.get("knowledge_points", []))
 
         # 更新掌握/薄弱列表
@@ -246,8 +251,122 @@ class EvaluationAgent(BaseAgent):
         study_hours = stats.get("total_study_hours", 0)
         resource_views = stats.get("resources_viewed", 0)
         if study_hours > EVAL_STUDY_HOURS_THRESHOLD:
-            new_profile["motivation_level"] = "high"
+            new_profile["motivation_level"] = MOTIVATION_LEVEL_HIGH
         elif resource_views > EVAL_RESOURCE_VIEWS_THRESHOLD:
-            new_profile["motivation_level"] = "medium"
+            new_profile["motivation_level"] = MOTIVATION_LEVEL_MEDIUM
 
         return new_profile
+
+    # ============================================================
+    # 批量更新（每天凌晨执行）
+    # ============================================================
+    @staticmethod
+    async def batch_update_all_users() -> Dict[str, int]:
+        """
+        批量更新所有用户的 motivation_level 和频率型 weak_points。
+        由定时任务调度器每天凌晨调用。
+        """
+        from models.database import AsyncSessionLocal
+        from models.profile import UserProfile
+        from models.user import User
+        from sqlalchemy import select
+        from utils.api_helpers import get_current_utc_time
+
+        updated = 0
+        failed = 0
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(User.id))
+            user_ids = [row[0] for row in result.all()]
+
+        for uid in user_ids:
+            try:
+                stats = await behavior_tracker.get_user_stats(uid, days=7)
+                if not stats:
+                    continue
+
+                async with AsyncSessionLocal() as session:
+                    db_result = await session.execute(
+                        select(UserProfile).where(UserProfile.user_id == uid)
+                    )
+                    profile = db_result.scalar_one_or_none()
+                    if not profile:
+                        continue
+
+                    changed = False
+
+                    # 1. 更新 motivation_level
+                    study_days = stats.get("study_days", 0)
+                    total_quizzes = stats.get("quizzes_completed", 0)
+                    total_views = stats.get("resources_viewed", 0)
+                    # 简单完成率：quizzes / (quizzes + views)，避免除零
+                    denom = total_quizzes + total_views
+                    completion_rate = total_quizzes / denom if denom > 0 else 0
+
+                    if study_days >= BATCH_MOTIVATION_STUDY_DAYS_HIGH and completion_rate >= BATCH_MOTIVATION_COMPLETION_RATE_HIGH:
+                        new_motivation = MOTIVATION_LEVEL_HIGH
+                    elif study_days >= BATCH_MOTIVATION_STUDY_DAYS_MEDIUM and completion_rate >= BATCH_MOTIVATION_COMPLETION_RATE_MEDIUM:
+                        new_motivation = MOTIVATION_LEVEL_MEDIUM
+                    else:
+                        new_motivation = "low"
+
+                    if profile.motivation_level != new_motivation:
+                        profile.motivation_level = new_motivation
+                        changed = True
+
+                    # 2. 基于提问频率添加 weak_points
+                    question_by_point = stats.get("question_by_point", {})
+                    weak_list = list(profile.weak_points or [])
+                    for kp, count in question_by_point.items():
+                        if count >= BATCH_WEAK_POINT_QUESTION_COUNT and kp not in weak_list:
+                            weak_list.append(kp)
+                            changed = True
+
+                    if changed:
+                        profile.updated_at = get_current_utc_time()
+                        await session.commit()
+                        updated += 1
+            except Exception as e:
+                failed += 1
+
+        return {"updated": updated, "failed": failed, "total": len(user_ids)}
+
+    async def update_motivation_on_milestone(self, user_id: int) -> None:
+        """
+        用户完成里程碑时（如连续完成3个资源），立即更新动力水平。
+        """
+        from models.database import AsyncSessionLocal
+        from models.profile import UserProfile
+        from sqlalchemy import select
+        from utils.api_helpers import get_current_utc_time
+
+        stats = await behavior_tracker.get_user_stats(user_id, days=7)
+        if not stats:
+            return
+
+        study_days = stats.get("study_days", 0)
+        total_quizzes = stats.get("quizzes_completed", 0)
+        total_views = stats.get("resources_viewed", 0)
+        denom = total_quizzes + total_views
+        completion_rate = total_quizzes / denom if denom > 0 else 0
+
+        if study_days >= BATCH_MOTIVATION_STUDY_DAYS_HIGH and completion_rate >= BATCH_MOTIVATION_COMPLETION_RATE_HIGH:
+            new_motivation = MOTIVATION_LEVEL_HIGH
+        elif study_days >= BATCH_MOTIVATION_STUDY_DAYS_MEDIUM and completion_rate >= BATCH_MOTIVATION_COMPLETION_RATE_MEDIUM:
+            new_motivation = MOTIVATION_LEVEL_MEDIUM
+        else:
+            new_motivation = "low"
+
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(UserProfile).where(UserProfile.user_id == user_id)
+                )
+                profile = result.scalar_one_or_none()
+                if profile and profile.motivation_level != new_motivation:
+                    profile.motivation_level = new_motivation
+                    profile.updated_at = get_current_utc_time()
+                    await session.commit()
+                    self.logger.info(f"🎯 里程碑触发动力更新: user={user_id}, level={new_motivation}")
+        except Exception as e:
+            self.logger.warning(f"⚠️ 里程碑动力更新失败: {e}")

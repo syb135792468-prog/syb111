@@ -8,7 +8,8 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List
 
 from agents.base_agent import BaseAgent
-from config.constants import DEFAULT_RAG_TOP_K, TUTOR_HISTORY_WINDOW, TUTOR_INPUT_TRUNCATE_LENGTH
+from ai.real_time_adaptation import real_time_adaptation_engine
+from config.constants import DEFAULT_RAG_TOP_K, TUTOR_HISTORY_WINDOW, TUTOR_INPUT_TRUNCATE_LENGTH, DEFAULT_TOPIC
 from utils.agent_helpers import match_knowledge_point, get_profile_from_context
 
 
@@ -80,82 +81,77 @@ class TutorAgent(BaseAgent):
     ) -> str:
         """LLM生成答案：复用基类LLM调用，严格基于RAG知识防幻觉"""
         try:
-            # 提取最近4轮对话上下文
+            # 提取最近对话上下文
             chat_history = context.get("chat_history", []) if context else []
             recent_history = chat_history[-TUTOR_HISTORY_WINDOW:]
             history_text = "\n".join(
                 f"{'学生' if m['role'] == 'user' else '老师'}: {m['content']}" for m in recent_history
             )
 
-            # 系统提示词（防幻觉核心）
-            system_prompt = f"""
-你是专业且耐心的Python一对一辅导老师，必须严格遵守规则：
-1. 仅基于【教材参考】内容回答，绝不编造知识
-2. 语言通俗易懂，条理清晰，可附带简单示例
-3. 结合【对话历史】理解上下文，保持对话连贯
-4. 无相关知识时，诚实告知并给出学习建议
-
-【对话历史】
-{history_text}
-
-【教材参考】
-{rag_context}
+            # 提取用户画像（跨会话记忆核心）
+            profile = get_profile_from_context(context)
+            profile_text = ""
+            if profile:
+                level_map = {"beginner": "零基础初学者", "intermediate": "有一定基础", "advanced": "进阶学习者"}
+                goal_map = {"exam": "考试备考", "interest": "兴趣学习", "employment": "就业求职", "competition": "竞赛提升"}
+                style_map = {"visual": "视觉型（喜欢看图/视频）", "auditory": "听觉型（喜欢听讲解）", "kinesthetic": "动手型（喜欢练习）", "mixed": "混合型"}
+                profile_text = f"""
+【用户画像】
+- 水平：{level_map.get(profile.get('knowledge_level', ''), '未知')}
+- 目标：{goal_map.get(profile.get('learning_goal', ''), '未知')}
+- 风格：{style_map.get(profile.get('learning_style', ''), '未知')}
+- 薄弱点：{', '.join(profile.get('weak_points', [])) or '暂无'}
+- 已掌握：{', '.join(profile.get('mastered_points', [])) or '暂无'}
 """
+
+            # 实时适应：根据会话内学习状态调整讲解策略
+            user_id = context.get("user_id") if context else None
+            session_id = context.get("session_id") if context else None
+            adaptation_text = ""
+            if user_id and session_id:
+                # A/B 实验：检查是否启用实时适应
+                should_inject_adaptation = True
+                try:
+                    from ai.experiment_engine import experiment_engine
+                    from models.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as exp_db:
+                        adapt_config = await experiment_engine.get_variant_config(
+                            int(user_id), "realtime_adaptation", exp_db
+                        )
+                    if adapt_config and not adapt_config.get("inject_learning_state", True):
+                        should_inject_adaptation = False
+                except Exception:
+                    pass
+
+                if should_inject_adaptation:
+                    try:
+                        adaptation_prompt = real_time_adaptation_engine.get_explanation_prompt(
+                            int(user_id), str(session_id)
+                        )
+                        adaptation_text = f"\n【实时讲解策略】\n{adaptation_prompt}"
+                    except (ValueError, TypeError):
+                        pass
+
+            # 系统提示词（防幻觉 + 用户画像 + 跨会话记忆 + 实时适应）
+            system_prompt = self._load_prompt(
+                "tutoring_system",
+                profile_text=profile_text + adaptation_text,
+                history_text=history_text,
+                rag_context=rag_context,
+            )
 
             # 复用基类封装LLM（自动重试+降级）
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
+                {"role": "user", "content": self._load_prompt("tutoring_user", question=question)},
             ]
             return await self._call_llm(messages)
 
         except Exception as e:
-            self.logger.warning(f"⚠️ LLM调用失败，自动降级为规则模式：{str(e)}")
-            return self._rule_answer(question)
-
-    @staticmethod
-    def _rule_answer(user_input: str) -> str:
-        """规则模式兜底：关键词快速应答，无LLM也可演示"""
-        input_text = user_input.lower()
-
-        if any(key in input_text for key in ["循环", "for", "while"]):
-            return (
-                "Python 循环知识点：\n"
-                "1. for 循环：遍历列表、字符串等序列\n"
-                "2. while 循环：条件为真时持续执行\n"
-                "示例代码：\n"
-                "```python\nfor i in range(5):\n    print(i)\n```\n"
-                "⚠️ 注意：避免死循环，合理使用 break/continue"
-            )
-
-        elif any(key in input_text for key in ["函数", "def"]):
-            return (
-                "Python 函数定义：\n"
-                "1. 使用 def 关键字定义函数\n"
-                "2. 支持参数、默认参数、返回值\n"
-                "示例代码：\n"
-                "```python\ndef greet(name):\n    return f'Hello {name}'\n```"
-            )
-
-        else:
-            return "我可以为你解答Python相关问题！你可以询问循环、函数、列表等知识点~"
+            self.logger.warning(f"⚠️ LLM调用失败：{str(e)}")
+            return "抱歉，AI辅导服务暂时不可用，请稍后再试。你也可以先查看相关学习文档和思维导图来辅助理解。"
 
     @staticmethod
     def _extract_query(user_input: str, context: Optional[Dict] = None) -> str:
-        """统一规则：提取RAG检索关键词（与全项目Agent逻辑一致）"""
-        input_text = user_input.lower()
-
-        # 优先匹配标准知识点
-        matched = match_knowledge_point(input_text)
-        if matched:
-            return matched
-
-        # 兜底：用户薄弱知识点
-        profile = get_profile_from_context(context)
-        if profile:
-            weak_points = profile.get("weak_points", [])
-            if weak_points:
-                return weak_points[0]
-
-        # 最终兜底：截取用户问题
-        return user_input[:TUTOR_INPUT_TRUNCATE_LENGTH]
+        """直接使用用户输入作为检索关键词"""
+        return user_input.strip()[:TUTOR_INPUT_TRUNCATE_LENGTH] or DEFAULT_TOPIC

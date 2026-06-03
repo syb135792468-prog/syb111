@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
+
 from api.schemas import (
     BaseResponse, ConversationCreateRequest, ConversationResponse,
 )
@@ -14,7 +16,15 @@ from models.user import User
 from models.conversation import Conversation
 from models.chat_message import ChatMessage
 from models.database import get_db
-from config.constants import HTTP_OK, HTTP_BAD_REQUEST
+from utils.content_blocks import legacy_to_content_blocks
+from config.constants import (
+    HTTP_OK, HTTP_BAD_REQUEST, DEFAULT_CONVERSATION_TITLE,
+    MSG_PREVIEW_TRUNCATE_LENGTH,
+)
+from config.messages import (
+    MSG_SUCCESS, MSG_CONVERSATION_CREATED, MSG_CONVERSATION_DELETED,
+    MSG_CONVERSATION_NOT_FOUND, MSG_CONVERSATION_UPDATED,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__, task_id="conversation")
@@ -29,7 +39,7 @@ async def create_conversation(
 ):
     conv = Conversation(
         user_id=current_user.id,
-        title=req.title or "新对话",
+        title=req.title or DEFAULT_CONVERSATION_TITLE,
     )
     db.add(conv)
     await db.flush()
@@ -38,7 +48,7 @@ async def create_conversation(
     logger.info(f"创建对话: user={current_user.username}, conv_id={conv.id}")
     return BaseResponse(
         code=HTTP_OK,
-        message="对话已创建",
+        message=MSG_CONVERSATION_CREATED,
         data=ConversationResponse(
             id=conv.id,
             title=conv.title,
@@ -87,10 +97,10 @@ async def list_conversations(
             created_at=conv.created_at,
             updated_at=conv.updated_at,
             message_count=msg_count,
-            last_message=last_msg[:50] + "..." if last_msg and len(last_msg) > 50 else last_msg,
+            last_message=last_msg[:MSG_PREVIEW_TRUNCATE_LENGTH] + "..." if last_msg and len(last_msg) > MSG_PREVIEW_TRUNCATE_LENGTH else last_msg,
         ).model_dump(mode="json"))
 
-    return BaseResponse(code=HTTP_OK, message="success", data=conv_list)
+    return BaseResponse(code=HTTP_OK, message=MSG_SUCCESS, data=conv_list)
 
 
 @router.get("/{conversation_id}", response_model=BaseResponse, summary="获取对话详情")
@@ -107,7 +117,7 @@ async def get_conversation(
     )
     conv = result.scalar_one_or_none()
     if conv is None:
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="对话不存在")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_CONVERSATION_NOT_FOUND)
 
     # 获取对话下的所有消息
     msg_result = await db.execute(
@@ -119,7 +129,7 @@ async def get_conversation(
 
     return BaseResponse(
         code=HTTP_OK,
-        message="success",
+        message=MSG_SUCCESS,
         data={
             "conversation": ConversationResponse(
                 id=conv.id,
@@ -129,7 +139,12 @@ async def get_conversation(
                 message_count=len(messages),
             ).model_dump(mode="json"),
             "messages": [
-                {"role": m.role, "content": m.content, "created_at": m.created_at.isoformat() if m.created_at else None}
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "content_blocks": json.loads(m.content_blocks_json) if getattr(m, 'content_blocks_json', None) else legacy_to_content_blocks(m.content, []),
+                }
                 for m in messages
             ],
         },
@@ -149,13 +164,13 @@ async def update_conversation(
     )
     conv = result.scalar_one_or_none()
     if conv is None:
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="对话不存在")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_CONVERSATION_NOT_FOUND)
 
     if req.title:
         conv.title = req.title
     await db.commit()
 
-    return BaseResponse(code=HTTP_OK, message="更新成功")
+    return BaseResponse(code=HTTP_OK, message=MSG_CONVERSATION_UPDATED)
 
 
 @router.delete("/{conversation_id}", response_model=BaseResponse, summary="删除对话")
@@ -170,10 +185,10 @@ async def delete_conversation(
     )
     conv = result.scalar_one_or_none()
     if conv is None:
-        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail="对话不存在")
+        raise HTTPException(status_code=HTTP_BAD_REQUEST, detail=MSG_CONVERSATION_NOT_FOUND)
 
     await db.delete(conv)
     await db.commit()
 
     logger.info(f"删除对话: user={current_user.username}, conv_id={conversation_id}")
-    return BaseResponse(code=HTTP_OK, message="对话已删除")
+    return BaseResponse(code=HTTP_OK, message=MSG_CONVERSATION_DELETED)

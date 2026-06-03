@@ -1,0 +1,172 @@
+你是一位计算机科学教学动画设计师。用GSAP动画库创建一个自包含的HTML教学动画页面，讲解{topic}。
+
+【GSAP简介】
+GSAP是专业的JavaScript动画库，通过CDN加载后全局可用。核心API：
+- gsap.to(元素, {{属性}}) — 从当前状态动画到目标状态
+- gsap.from(元素, {{属性}}) — 从指定状态动画到当前状态
+- gsap.timeline() — 创建时间线，按顺序编排多个动画
+- 属性用camelCase：backgroundColor, borderRadius, autoAlpha（代替opacity+visibility）
+- 缓动字符串：power1.out（默认）, power2.inOut, back.out(1.7), elastic.out(1,0.3)
+- transform别名：x/y（位移）, scale（缩放）, rotation（旋转）, scaleX/scaleY
+- stagger：多个元素的错开延迟，如stagger: 0.1
+- repeat: -1（无限重复）, yoyo: true（来回播放）
+
+【你必须实现的控制接口（引擎会调用这些全局函数）】
+在script标签中定义以下全局函数，引擎通过按钮和键盘调用它们：
+
+function startAnimation() — 用户点击"开始学习"按钮时调用，负责隐藏开始界面、显示播放界面、启动动画
+function pauseAnimation() — 用户点击"暂停"时调用，暂停所有动画和语音
+function resumeAnimation() — 用户点击"继续"时调用，恢复动画和语音
+function restartAnimation() — 用户点击"重播"时调用，重置所有状态并重新开始
+function seekTo(percent) — 用户点击进度条时调用，percent是0-100的数字，跳转到对应进度
+
+同时设置 window.isPlaying = true/false 来标记播放状态。
+
+【页面结构 - ID必须严格一致】
+div id="startScreen"：开始界面，包含h1 id="mainTitle"和button id="startButton"
+div id="playerScreen" style="display:none"：播放器界面，包含：
+  h1 id="mainTitle"：主标题
+  p id="subtitle"：副标题
+  div id="speechBubble"：语音文字气泡
+  div id="codeDisplay"：代码区，内含div id="codeLine1", div id="codeLine2"等
+  div id="controls"：控制栏，内含button id="playPauseButton"（显示⏸）, button id="restartButton"（显示🔄）, div id="progressBar"包含div id="progressFill"
+
+【控制逻辑参考实现】
+startButton的点击事件由引擎自动绑定，你只需要实现startAnimation()函数。引擎自动绑定的事件：
+- startButton → 调用 startAnimation()
+- playPauseButton → 根据 window.isPlaying 调用 pauseAnimation() 或 resumeAnimation()
+- restartButton → 调用 restartAnimation()
+- progressBar 点击 → 计算百分比，调用 seekTo(percent)
+- 空格键 → playPauseButton.click()
+- R键 → restartButton.click()
+
+【语音合成】
+用浏览器原生SpeechSynthesis API朗读讲解文字：
+const utterance = new SpeechSynthesisUtterance(text);
+utterance.lang = 'zh-CN';
+utterance.rate = 0.95;
+window.speechSynthesis.speak(utterance);
+
+【视觉设计规范】
+1. 全屏布局：100vw x 100vh，无滚动条
+2. 渐变背景：linear-gradient(135deg, #667eea 0%, #764ba2 100%)
+3. 毛玻璃卡片：backdrop-filter: blur(10px)
+4. 代码区深色背景：rgba(0, 0, 0, 0.8)
+5. 现代简洁风格
+6. 移动端适配：@media (max-width: 768px)，字体不小于16px，按钮不小于48x48px
+
+【教学内容规范】
+- 主题：{topic}
+- 包含3-5个代码示例，由浅入深排列
+- 每个代码示例配一段中文讲解，用语音朗读并同步显示在speechBubble中
+- 代码注释用中文
+- 动画风格：{style}，目标时长：{duration}秒
+
+【风格指引（当前：{style}）】
+- tutorial：标准教程，循序渐进
+- code_demo：以代码演示为主
+- visualization：多用流程图、色块辅助
+- story：故事化场景引入
+
+【动画设计建议】
+- 用gsap.timeline()编排整个教学流程，每个阶段包含代码行出现、高亮、讲解文字切换、语音朗读
+- 代码行用gsap.from(el, {{autoAlpha: 0, y: 20}})做入场动画
+- 当前讲解的代码行用背景色高亮（如gsap.to(el, {{backgroundColor: 'rgba(255,255,0,0.3)'}})）
+- 讲解文字切换时用淡入淡出过渡
+- 用timeline的add()方法在特定时间点触发语音朗读
+- 整体节奏：每段讲解5-8秒，动画过渡0.3-0.5秒
+
+【完整示例结构】
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{topic} · 教学动画</title>
+  <style>
+    /* 你的CSS样式 */
+  </style>
+</head>
+<body>
+  <div id="startScreen">
+    <h1 id="mainTitle">标题</h1>
+    <button id="startButton">开始学习</button>
+  </div>
+  <div id="playerScreen" style="display:none">
+    <h1 id="mainTitle">标题</h1>
+    <p id="subtitle">副标题</p>
+    <div id="speechBubble">讲解文字</div>
+    <div id="codeDisplay">
+      <div id="codeLine1">代码行1</div>
+      <div id="codeLine2">代码行2</div>
+    </div>
+    <div id="controls">
+      <button id="playPauseButton">⏸</button>
+      <button id="restartButton">🔄</button>
+      <div id="progressBar"><div id="progressFill"></div></div>
+    </div>
+  </div>
+  <script>
+    // 你的GSAP动画代码
+    let mainTimeline;
+    window.isPlaying = false;
+
+    function buildTimeline() {{
+      mainTimeline = gsap.timeline({{ paused: true }});
+      // 在这里编排所有动画...
+      mainTimeline.add(() => speak('讲解文字'), 0);
+      mainTimeline.to('#codeLine1', {{ autoAlpha: 1, y: 0, duration: 0.5 }}, 0);
+      // ...更多动画步骤
+    }}
+
+    function startAnimation() {{
+      document.getElementById('startScreen').style.display = 'none';
+      document.getElementById('playerScreen').style.display = 'block';
+      window.isPlaying = true;
+      buildTimeline();
+      mainTimeline.play();
+    }}
+
+    function pauseAnimation() {{
+      window.isPlaying = false;
+      if (mainTimeline) mainTimeline.pause();
+      window.speechSynthesis.pause();
+    }}
+
+    function resumeAnimation() {{
+      window.isPlaying = true;
+      if (mainTimeline) mainTimeline.resume();
+      window.speechSynthesis.resume();
+    }}
+
+    function restartAnimation() {{
+      window.speechSynthesis.cancel();
+      if (mainTimeline) mainTimeline.kill();
+      window.isPlaying = false;
+      document.getElementById('playerScreen').style.display = 'none';
+      document.getElementById('startScreen').style.display = 'flex';
+      document.getElementById('progressFill').style.width = '0%';
+    }}
+
+    function seekTo(percent) {{
+      if (!mainTimeline) return;
+      window.speechSynthesis.cancel();
+      const time = (percent / 100) * mainTimeline.duration();
+      mainTimeline.seek(time);
+      window.isPlaying = true;
+      mainTimeline.resume();
+    }}
+
+    function speak(text) {{
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN';
+      u.rate = 0.95;
+      window.speechSynthesis.speak(u);
+    }}
+  </script>
+</body>
+</html>
+
+【输出格式】
+直接输出完整的HTML代码，从<!DOCTYPE html>开始到</html>结束。

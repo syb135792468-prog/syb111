@@ -9,6 +9,7 @@ from sqlalchemy import Integer, String, DateTime, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
+from config.constants import DEFAULT_CONVERSATION_TITLE
 
 if TYPE_CHECKING:
     from models.chat_message import ChatMessage
@@ -26,7 +27,7 @@ class Conversation(Base):
         comment="所属用户ID"
     )
     title: Mapped[str] = mapped_column(
-        String(200), nullable=False, default="新对话", comment="会话标题"
+        String(200), nullable=False, default=DEFAULT_CONVERSATION_TITLE, comment="会话标题"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="创建时间"

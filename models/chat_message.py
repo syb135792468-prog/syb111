@@ -35,6 +35,9 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(
         Text, nullable=False, comment="消息内容"
     )
+    content_blocks_json: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="结构化内容块 JSON（content_blocks 架构）"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="创建时间"
     )

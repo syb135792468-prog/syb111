@@ -7,6 +7,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from config.model_config import PYTHON_KB_PATH
+from config.constants import FAST_BUILD_CHUNK_SIZE, FAST_BUILD_API_INTERVAL_SEC
 from utils.rag_utils import get_db_manager
 
 
@@ -26,8 +27,8 @@ async def main():
     chunks = []
     for f in files:
         text = f.read_text(encoding="utf-8")
-        for i in range(0, len(text), 800):
-            chunk = text[i:i + 800].strip()
+        for i in range(0, len(text), FAST_BUILD_CHUNK_SIZE):
+            chunk = text[i:i + FAST_BUILD_CHUNK_SIZE].strip()
             if chunk:
                 chunks.append((chunk, f.name))
 
@@ -45,7 +46,7 @@ async def main():
 
         # 🔴 修改3：显式控制请求频率（每条间隔0.6秒，避免API限流）
         if idx < total - 1:
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(FAST_BUILD_API_INTERVAL_SEC)
 
         # 显示进度
         pct = (idx + 1) / total * 100

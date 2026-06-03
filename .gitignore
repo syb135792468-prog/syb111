@@ -50,3 +50,42 @@ frontend/dist/
 task_plan.md
 findings.md
 progress.md
+
+# Memory system
+user_memory.json
+backup/
+
+# Old/deprecated code
+D1/
+frontend_old/
+
+# Debug and temp files
+debug_*.txt
+debug_*.json
+test_result*.json
+test_reply.txt
+socratic_response.txt
+
+# Temp scripts
+测试3.py
+测试文本1.py
+测试文本2.py
+脚本生成文件.py
+verify_profile.py
+browser_open.py
+screenshot.py
+
+# Screenshots
+*.png
+
+# Browser data
+browser_data/
+
+# Database files
+data/app.db
+data/learning_assistant.db
+*.db-wal
+*.db-shm
+
+# Claude Code
+CLAUDE.md
