@@ -19,7 +19,7 @@ interface FullscreenQuizProps {
 const FullscreenQuiz: React.FC<FullscreenQuizProps> = ({ data }) => {
   const questions: Question[] = data?.questions || []
   const [currentIndex, setCurrentIndex] = useState(0)
-  const [answers, setAnswers] = useState<Record<number, string>>({})
+  const [answers, setAnswers] = useState<Record<number, string | string[]>>({})
   const [submitted, setSubmitted] = useState<Record<number, boolean>>({})
   const [results, setResults] = useState<Record<number, boolean>>({})
   const [showSummary, setShowSummary] = useState(false)
@@ -29,22 +29,41 @@ const FullscreenQuiz: React.FC<FullscreenQuizProps> = ({ data }) => {
   }
 
   const q = questions[currentIndex]
-  const currentAnswer = answers[currentIndex] || ''
+  const isMultiple = q.type === 'multiple'
+  const rawAnswer = answers[currentIndex]
+  const currentAnswer: string | string[] = isMultiple
+    ? (Array.isArray(rawAnswer) ? rawAnswer : rawAnswer ? [rawAnswer] : [])
+    : (typeof rawAnswer === 'string' ? rawAnswer : '')
   const isSubmitted = submitted[currentIndex]
 
   const handleSelect = (option: string) => {
     if (isSubmitted) return
-    setAnswers(prev => ({ ...prev, [currentIndex]: option }))
+    if (isMultiple) {
+      setAnswers(prev => {
+        const prevArr = Array.isArray(prev[currentIndex]) ? prev[currentIndex] as string[] : []
+        const next = prevArr.includes(option)
+          ? prevArr.filter(o => o !== option)
+          : [...prevArr, option]
+        return { ...prev, [currentIndex]: next }
+      })
+    } else {
+      setAnswers(prev => ({ ...prev, [currentIndex]: option }))
+    }
   }
 
   const handleSubmit = () => {
-    if (!currentAnswer) return
+    const hasAnswer = isMultiple ? (currentAnswer as string[]).length > 0 : !!currentAnswer
+    if (!hasAnswer) return
     const correct = q.correctAnswer
     let isCorrect = false
-    if (Array.isArray(correct)) {
-      isCorrect = correct.includes(currentAnswer)
+    if (isMultiple && Array.isArray(correct)) {
+      const selected = (currentAnswer as string[]).map(a => a.trim().toLowerCase())
+      const expected = correct.map(c => c.trim().toLowerCase())
+      isCorrect = selected.length === expected.length && expected.every(c => selected.includes(c))
+    } else if (Array.isArray(correct)) {
+      isCorrect = correct.includes(currentAnswer as string)
     } else if (correct) {
-      isCorrect = currentAnswer.trim().toLowerCase() === correct.trim().toLowerCase()
+      isCorrect = (currentAnswer as string).trim().toLowerCase() === correct.trim().toLowerCase()
     }
     setSubmitted(prev => ({ ...prev, [currentIndex]: true }))
     setResults(prev => ({ ...prev, [currentIndex]: isCorrect }))
@@ -121,7 +140,7 @@ const FullscreenQuiz: React.FC<FullscreenQuizProps> = ({ data }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
           {q.options.map((opt, oi) => {
             const letter = String.fromCharCode(65 + oi)
-            const selected = currentAnswer === opt
+            const selected = isMultiple ? (currentAnswer as string[]).includes(opt) : currentAnswer === opt
             const isCorrectOpt = isSubmitted && (Array.isArray(q.correctAnswer) ? q.correctAnswer.includes(opt) : q.correctAnswer === opt)
             const isWrong = isSubmitted && selected && !isCorrectOpt
 
@@ -139,13 +158,13 @@ const FullscreenQuiz: React.FC<FullscreenQuizProps> = ({ data }) => {
                 }}
               >
                 <span style={{
-                  width: 28, height: 28, borderRadius: '50%', fontSize: 13, fontWeight: 600,
+                  width: 28, height: 28, borderRadius: isMultiple ? 6 : '50%', fontSize: 13, fontWeight: 600,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: selected ? '#8b5cf6' : '#f3f4f6',
                   color: selected ? '#fff' : '#6b7280',
                   flexShrink: 0,
                 }}>
-                  {letter}
+                  {selected ? '✓' : letter}
                 </span>
                 <span style={{ color: '#374151' }}>{opt}</span>
               </button>
@@ -196,9 +215,9 @@ const FullscreenQuiz: React.FC<FullscreenQuizProps> = ({ data }) => {
           </button>
         )}
         {!isSubmitted ? (
-          <button onClick={handleSubmit} disabled={!currentAnswer} style={{
-            background: currentAnswer ? '#8b5cf6' : '#d1d5db', color: '#fff', border: 'none',
-            borderRadius: 10, padding: '10px 20px', fontSize: 14, cursor: currentAnswer ? 'pointer' : 'default',
+          <button onClick={handleSubmit} disabled={isMultiple ? (currentAnswer as string[]).length === 0 : !currentAnswer} style={{
+            background: isMultiple ? (currentAnswer as string[]).length > 0 ? '#8b5cf6' : '#d1d5db' : currentAnswer ? '#8b5cf6' : '#d1d5db', color: '#fff', border: 'none',
+            borderRadius: 10, padding: '10px 20px', fontSize: 14, cursor: isMultiple ? (currentAnswer as string[]).length > 0 ? 'pointer' : 'default' : currentAnswer ? 'pointer' : 'default',
           }}>
             提交
           </button>

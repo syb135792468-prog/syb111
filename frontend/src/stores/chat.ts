@@ -3,7 +3,7 @@ import { listConversations, getConversation, deleteConversation as apiDeleteConv
 
 export interface ContentCardRef {
   id: string
-  type: 'quiz' | 'mindmap' | 'code' | 'video' | 'document'
+  type: 'quiz' | 'mindmap' | 'code' | 'video' | 'document' | 'slides'
   title: string
   data: any
   collapsed?: boolean
@@ -11,7 +11,7 @@ export interface ContentCardRef {
 
 // --- Content Block 类型（统一内容块架构） ---
 export interface TextBlock { type: 'text'; text: string }
-export interface CodeBlock { type: 'code'; code: string; language: string }
+export interface CodeBlock { type: 'code'; code: string; language: string; title?: string }
 export interface ThinkingBlock { type: 'thinking'; text: string }
 export interface CardBlock {
   type: 'card'
@@ -26,10 +26,13 @@ export type ContentBlock = TextBlock | CodeBlock | ThinkingBlock | CardBlock
 export type StreamingContentBlock = ContentBlock & { _blockId?: string }
 
 interface Message {
+  id?: number
   role: 'user' | 'assistant' | 'system'
   content: string
   cards?: ContentCardRef[]
   content_blocks?: ContentBlock[]
+  image_urls?: string[]
+  is_bookmarked?: boolean
   created_at?: string
 }
 
@@ -61,11 +64,12 @@ interface ChatState {
   thinkingCompleted: boolean
   socraticThreadId: string | null
   masteryData: MasteryData | null
+  streamingConversationId: number | string | null
 
   startNewChat: () => void
-  addMessage: (role: 'user' | 'assistant' | 'system', content: string) => void
+  addMessage: (role: 'user' | 'assistant' | 'system', content: string, imageUrls?: string[]) => void
   appendToLastAssistant: (text: string) => void
-  setStreaming: (val: boolean) => void
+  setStreaming: (val: boolean, conversationId?: number | string | null) => void
   setAbortController: (controller: AbortController | null) => void
   abort: () => void
   loadConversations: () => Promise<void>
@@ -87,9 +91,22 @@ interface ChatState {
   appendBlockDelta: (blockId: string, delta: string) => void
   finishContentBlock: (blockId: string) => void
   setContentBlocks: (blocks: ContentBlock[]) => void
+  updateMessageBookmark: (index: number, isBookmarked: boolean) => void
 }
 
 let abortController: AbortController | null = null
+let socraticPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+function persistSocraticMessages(threadId: string, msgs: Message[]) {
+  if (socraticPersistTimer) clearTimeout(socraticPersistTimer)
+  socraticPersistTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(`socratic_msgs_${threadId}`, JSON.stringify(msgs))
+    } catch (e) {
+      console.warn('Failed to persist socratic messages:', e)
+    }
+  }, 500)
+}
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
@@ -103,22 +120,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
   thinkingCompleted: false,
   socraticThreadId: localStorage.getItem('socratic_thread_id') || null,
   masteryData: null,
+  streamingConversationId: null,
 
   startNewChat: () => {
+    if (get().isStreaming) {
+      get().abort()
+    }
     const oldThreadId = get().socraticThreadId
     if (oldThreadId) {
       localStorage.removeItem(`socratic_msgs_${oldThreadId}`)
       localStorage.removeItem('socratic_thread_id')
     }
-    set({ messages: [], currentConversationId: null, currentIntent: '', lastLearningPath: null, thinkingSteps: [], thinkingCompleted: false, socraticThreadId: null, masteryData: null })
+    set({ messages: [], currentConversationId: null, currentIntent: '', lastLearningPath: null, thinkingSteps: [], thinkingCompleted: false, socraticThreadId: null, masteryData: null, streamingConversationId: null, isStreaming: false })
   },
 
-  addMessage: (role, content) => {
+  addMessage: (role, content, imageUrls) => {
     set((state) => {
-      const newMsgs = [...state.messages, { role, content, created_at: new Date().toISOString() }]
-      // 自动持久化 Socratic 会话消息
+      const newMsgs = [...state.messages, { role, content, image_urls: imageUrls, created_at: new Date().toISOString() }]
       if (state.socraticThreadId) {
-        try { localStorage.setItem(`socratic_msgs_${state.socraticThreadId}`, JSON.stringify(newMsgs)) } catch {}
+        persistSocraticMessages(state.socraticThreadId, newMsgs)
       }
       return { messages: newMsgs }
     })
@@ -133,15 +153,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } else {
         msgs.push({ role: 'assistant' as const, content: text, created_at: new Date().toISOString() })
       }
-      // 持久化 Socratic 会话消息（节流：仅在文本较长时保存）
-      if (state.socraticThreadId && msgs[msgs.length - 1]?.content?.length > 50) {
-        try { localStorage.setItem(`socratic_msgs_${state.socraticThreadId}`, JSON.stringify(msgs)) } catch {}
+      if (state.socraticThreadId) {
+        persistSocraticMessages(state.socraticThreadId, msgs)
       }
       return { messages: msgs }
     })
   },
 
-  setStreaming: (val) => set({ isStreaming: val }),
+  setStreaming: (val, conversationId) => set(val
+    ? { isStreaming: true, streamingConversationId: conversationId ?? null }
+    : { isStreaming: false, streamingConversationId: null }
+  ),
 
   setAbortController: (controller) => {
     abortController = controller
@@ -166,8 +188,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   switchConversation: async (conversationId) => {
-    if (get().isStreaming) return
-    set({ isLoadingConversation: true, currentConversationId: conversationId, currentIntent: '' })
+    if (get().isStreaming) {
+      get().abort()
+    }
+    set({ isLoadingConversation: true, currentConversationId: conversationId, currentIntent: '', streamingConversationId: null })
     try {
       const resp = await getConversation(conversationId)
       if (resp.code === 200 && resp.data) {
@@ -322,20 +346,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const last = msgs[msgs.length - 1]
       if (!last?.content_blocks) return state
       const blocks = [...last.content_blocks]
-      // 找到最后一个同类型的空 block（流式构建中的 block）
       for (let i = blocks.length - 1; i >= 0; i--) {
         const b = blocks[i] as any
         if ((b.type === 'text' || b.type === 'thinking') && b._blockId === blockId) {
           blocks[i] = { ...b, text: (b.text || '') + delta }
-          msgs[msgs.length - 1] = { ...last, content_blocks: blocks }
-          return { messages: msgs }
-        }
-      }
-      // 如果没找到带 _blockId 的，找最后一个同类型的空 block
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const b = blocks[i] as any
-        if ((b.type === 'text' || b.type === 'thinking') && (b.text === '' || b._blockId === undefined)) {
-          blocks[i] = { ...b, text: (b.text || '') + delta, _blockId: blockId }
           msgs[msgs.length - 1] = { ...last, content_blocks: blocks }
           return { messages: msgs }
         }
@@ -370,6 +384,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return rest
         })
         msgs[msgs.length - 1] = { ...last, content_blocks: cleanBlocks }
+        return { messages: msgs }
+      }
+      return state
+    })
+  },
+
+  updateMessageBookmark: (index, isBookmarked) => {
+    set((state) => {
+      const msgs = [...state.messages]
+      if (msgs[index]) {
+        msgs[index] = { ...msgs[index], is_bookmarked: isBookmarked }
         return { messages: msgs }
       }
       return state

@@ -17,7 +17,7 @@ from config.constants import (
     MINDMAP_DEFINITION_MIN_LENGTH, MINDMAP_EXPAND_RAG_TOP_K,
     MINDMAP_EXPAND_MAX_CHILDREN, MINDMAP_SQL_DETECT_PATTERN,
     MINDMAP_ER_RAG_TOP_K, MINDMAP_ER_GENERATE_TIMEOUT_SEC,
-    MINDMAP_EXPAND_TIMEOUT_SEC,
+    MINDMAP_EXPAND_TIMEOUT_SEC, RESOURCE_GENERATE_TIMEOUT_SEC,
 )
 from utils.sql_parser import parse_sql_tables, generate_ddl_doc_markdown
 
@@ -31,6 +31,9 @@ class MindmapAgent(BaseAgent):
     FORMAT_MERMAID: ClassVar[str] = "mermaid"
     FORMAT_RANDOM: ClassVar[str] = "random"
     ALL_FORMATS: ClassVar[List[str]] = [FORMAT_JSON, FORMAT_MARKDOWN, FORMAT_MERMAID]
+
+    # JSON mode：让模型在解码层保证输出合法 JSON，省掉 _validate_json 的截断/补全修复
+    JSON_MODE: ClassVar[Dict[str, Any]] = {"type": "json_object"}
 
     def __init__(
             self,
@@ -46,7 +49,7 @@ class MindmapAgent(BaseAgent):
             task_id=task_id,
         )
         self.output_format = output_format
-        self.logger.info(f"🗺️ 思维导图生成已启用，格式：{output_format}")
+        self.logger.info(f"🗺️ 思维导图生成已启用，格式：{output_format}（DeepSeek 主模型）")
 
     async def process(
             self,
@@ -68,6 +71,7 @@ class MindmapAgent(BaseAgent):
 
         if fmt == self.FORMAT_JSON:
             content = self._ensure_depth(content)
+            content = self._validate_node_quality(content)
 
         resource = self._build_resource(content, target_kp, fmt)
         new_resources = self._append_resource(context, resource)
@@ -127,6 +131,7 @@ class MindmapAgent(BaseAgent):
         try:
             content = self._validate_json(content)
             content = self._ensure_depth(content)
+            content = self._validate_node_quality(content)
         except Exception as exc:
             self.logger.warning(f"⚠️ ER 图 JSON 验证失败：{exc}，使用 Python 兜底")
             content = self._generate_er_fallback(tables, db_name, doc_markdown)
@@ -188,13 +193,13 @@ class MindmapAgent(BaseAgent):
             "mindmap_er_diagram_user", db_name=db_name, tables_json=tables_json
         )
 
-        # 调用 LLM
+        # 调用 LLM（ER 图返回 JSON，启用 JSON mode）
         import asyncio
         resp = await asyncio.wait_for(
             self._call_llm([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
-            ]),
+            ], response_format=self.JSON_MODE),
             timeout=MINDMAP_ER_GENERATE_TIMEOUT_SEC,
         )
         self.logger.info(f"🤖 ER 图 LLM 原始输出长度：{len(resp)}")
@@ -475,13 +480,13 @@ class MindmapAgent(BaseAgent):
         )
 
         try:
-            # 3. 调用 LLM（带内部超时）
+            # 3. 调用 LLM（带内部超时，返回 JSON 数组启用 JSON mode）
             import asyncio
             resp = await asyncio.wait_for(
                 self._call_llm([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_msg}
-                ]),
+                ], response_format=self.JSON_MODE),
                 timeout=MINDMAP_EXPAND_TIMEOUT_SEC,
             )
             self.logger.info(f"🤖 节点展开 LLM 原始输出长度：{len(resp)}")
@@ -494,11 +499,20 @@ class MindmapAgent(BaseAgent):
             # 5. 解析 JSON 数组
             children = self._validate_expand_json(cleaned)
 
-            # 6. 为每个子节点生成 id
+            # 6. 为每个子节点生成 id + 质量校验
+            advice_re = [re.compile(p) for p in self._TEMPLATE_ADVICE_PATTERNS]
+            pitfall_re = [re.compile(p) for p in self._TEMPLATE_PITFALL_PATTERNS]
             for idx, child in enumerate(children):
                 child["id"] = f"{parent_node_id}_{idx + 1}" if parent_node_id else f"expand_{idx + 1}"
                 if "children" not in child:
                     child["children"] = []
+                # 清理模板化内容
+                advice = (child.get("advice") or "").strip()
+                if advice and any(pat.match(advice) for pat in advice_re):
+                    child["advice"] = ""
+                raw_pitfalls = child.get("pitfalls") or []
+                if isinstance(raw_pitfalls, list):
+                    child["pitfalls"] = [p for p in raw_pitfalls if isinstance(p, str) and not any(pat.match(p.strip()) for pat in pitfall_re)]
 
             self.logger.info(f"✅ 节点展开成功，生成 {len(children)} 个子节点")
             return children
@@ -525,82 +539,32 @@ class MindmapAgent(BaseAgent):
 
     @staticmethod
     def _validate_expand_json(text: str) -> List[Dict[str, Any]]:
-        """校验并修复节点展开返回的 JSON 数组"""
+        """校验节点展开返回的 JSON 数组。JSON mode 已保证语法合法，只做解析+提取。"""
         import logging
         logger = logging.getLogger("agent.mindmap")
 
-        # 去掉注释和尾部逗号
-        text = re.sub(r'//[^\n]*', '', text)
-        text = re.sub(r',\s*([}\]])', r'\1', text)
+        cleaned = re.sub(r'//[^\n]*', '', text)
+        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
 
-        # 尝试直接解析
         try:
-            data = json.loads(text)
-            if isinstance(data, list):
-                return data
-            # 如果是对象且包含数组字段，尝试提取
-            if isinstance(data, dict):
-                for key in ("children", "nodes", "items", "data"):
-                    if key in data and isinstance(data[key], list):
-                        return data[key]
-            raise ValueError("JSON 不是数组格式")
+            data = json.loads(cleaned)
         except json.JSONDecodeError:
-            pass
+            logger.warning(f"JSON 数组解析失败，原始输出前 500 字符: {text[:500]}")
+            raise ValueError("LLM 返回的 JSON 数组格式不正确")
 
-        # 正则提取 [...]
-        match = re.search(r'\[[\s\S]*\]', text)
-        if match:
-            try:
-                data = json.loads(match.group(0))
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
-                pass
-
-            # 截断修复
-            candidate = match.group(0)
-            for i in range(len(candidate) - 1, len(candidate) // 2, -1):
-                if candidate[i] == ']':
-                    chunk = candidate[:i + 1]
-                    open_b = chunk.count('[') - chunk.count(']')
-                    chunk += ']' * max(0, open_b)
-                    try:
-                        data = json.loads(chunk)
-                        if isinstance(data, list):
-                            logger.info(f"截断修复成功（位置 {i + 1}）")
-                            return data
-                    except json.JSONDecodeError:
-                        continue
-
-        logger.warning(f"JSON 数组解析失败，原始输出前 500 字符: {text[:500]}")
-        raise ValueError("LLM 返回的 JSON 数组格式不正确")
+        if isinstance(data, list):
+            return data
+        # 对象里包了数组字段，提取出来
+        if isinstance(data, dict):
+            for key in ("children", "nodes", "items", "data"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+        raise ValueError("LLM 返回的不是 JSON 数组")
 
     @staticmethod
     def _generate_expand_fallback(topic: str, parent_id: str = "") -> List[Dict[str, Any]]:
-        """节点展开失败时的兜底模板"""
-        base_id = parent_id or "expand"
-        return [
-            {
-                "id": f"{base_id}_1",
-                "topic": f"{topic[:6]}要点",
-                "definition": f"关于{topic}的核心知识点和关键要点。",
-                "syntax": "",
-                "examples": [],
-                "pitfalls": [],
-                "advice": f"重点理解{topic}的核心概念。",
-                "children": [],
-            },
-            {
-                "id": f"{base_id}_2",
-                "topic": f"{topic[:6]}示例",
-                "definition": f"通过具体示例来理解{topic}的实际应用。",
-                "syntax": "",
-                "examples": [],
-                "pitfalls": [],
-                "advice": f"多动手练习{topic}相关代码。",
-                "children": [],
-            },
-        ]
+        """节点展开失败时返回空数组，避免模板化"要点/示例"节点无限套娃"""
+        return []
 
     @staticmethod
     def _generate_generic_json(kp: str) -> str:
@@ -769,11 +733,16 @@ class MindmapAgent(BaseAgent):
             user_msg = self._load_prompt("mindmap_generation_markdown_user", kp=kp)
 
         try:
-            # 3. 调用 LLM
-            resp = await self._call_llm([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg}
-            ])
+            # 3. 调用 LLM（带超时保护）；JSON 格式启用 JSON mode 保证输出合法
+            import asyncio
+            json_mode = self.JSON_MODE if fmt == self.FORMAT_JSON else None
+            resp = await asyncio.wait_for(
+                self._call_llm([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg}
+                ], response_format=json_mode),
+                timeout=RESOURCE_GENERATE_TIMEOUT_SEC,
+            )
             self.logger.info(f"🤖 LLM 原始输出长度：{len(resp)}")
 
             # 4. 清理可能的代码块包裹
@@ -783,10 +752,9 @@ class MindmapAgent(BaseAgent):
 
             self.logger.info(f"🧹 清理后前 500 字符: {cleaned[:500]}")
 
-            # 5. JSON 格式校验
+            # 5. JSON 格式校验（ensure_depth 由 process 统一调用）
             if fmt == self.FORMAT_JSON:
                 cleaned = self._validate_json(cleaned)
-                cleaned = self._ensure_depth(cleaned)
 
             self.logger.info(f"🤖 LLM 思维导图生成成功，清理后长度：{len(cleaned)}")
             return cleaned
@@ -795,7 +763,10 @@ class MindmapAgent(BaseAgent):
             self.logger.warning(f"⚠️ LLM 思维导图生成失败：{exc}，使用通用结构兜底")
             if fmt == self.FORMAT_JSON:
                 return self._generate_generic_json(kp)
-            return json.dumps({"nodeData": {"id": "root", "topic": kp, "definition": f"{kp}是Python中的重要知识点。", "children": []}}, ensure_ascii=False)
+            if fmt == self.FORMAT_MERMAID:
+                return f"graph TD\n    root[\"{kp}\"]\n    root --> A[\"基本概念\"]\n    root --> B[\"语法格式\"]\n    root --> C[\"常见应用\"]\n    root --> D[\"注意事项\"]"
+            # Markdown
+            return f"# {kp}\n\n## 基本概念\n{kp}的核心概念和基本定义。\n\n## 语法格式\n{kp}的语法格式和使用方式。\n\n## 常见应用\n{kp}在实际开发中的应用场景。\n\n## 注意事项\n学习{kp}时需要注意的常见问题。"
 
     def _build_json_prompt(self, kp: str, rag_context: str) -> str:
         rag_text = rag_context if rag_context else "无参考资料"
@@ -803,130 +774,118 @@ class MindmapAgent(BaseAgent):
 
     @staticmethod
     def _validate_json(text: str) -> str:
-        """校验并修复 JSON 格式，自动处理 LLM 输出的各种变体"""
+        """
+        校验 JSON 输出。JSON mode 已在解码层保证语法合法，这里只做：
+        1. 基本清理（去 // 注释、尾部逗号）
+        2. 解析
+        3. 补 nodeData 包装
+        解析失败直接抛错，交给上层 fallback。
+        """
         import logging
         logger = logging.getLogger("agent.mindmap")
 
-        def fix_json_string(s):
-            """修复 JSON 中常见的字符串问题"""
-            # 去掉 // 注释
-            s = re.sub(r'//[^\n]*', '', s)
-            # 去掉尾部逗号
-            s = re.sub(r',\s*([}\]])', r'\1', s)
-            # 修复未转义的换行符（在字符串值中）
-            # 先尝试解析，如果失败再做更激进的修复
-            return s
+        # 基本清理：去 // 注释、尾部逗号（JSON mode 下正常用不到，留着防个别模型不严格遵守）
+        cleaned = re.sub(r'//[^\n]*', '', text)
+        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
 
-        def try_parse(t):
-            t = fix_json_string(t)
-            return json.loads(t)
-
-        def try_parse_with_fixes(t):
-            """尝试多种修复策略"""
-            # 策略1: 基本清理
-            try:
-                return try_parse(t)
-            except json.JSONDecodeError:
-                pass
-
-            # 策略2: 修复未转义的控制字符
-            fixed = t
-            # 在字符串值中，将实际的换行符替换为 \n
-            fixed = re.sub(r'(?<=: ")(.*?)(?=",\s*")', lambda m: m.group(0).replace('\n', '\\n'), fixed, flags=re.DOTALL)
-            # 更简单的方法：将所有不在转义序列中的实际换行符替换掉
-            result = []
-            in_string = False
-            escape_next = False
-            for ch in fixed:
-                if escape_next:
-                    result.append(ch)
-                    escape_next = False
-                    continue
-                if ch == '\\':
-                    result.append(ch)
-                    escape_next = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    result.append(ch)
-                    continue
-                if in_string and ch == '\n':
-                    result.append('\\n')
-                    continue
-                if in_string and ch == '\t':
-                    result.append('\\t')
-                    continue
-                result.append(ch)
-            fixed = ''.join(result)
-            try:
-                return json.loads(fixed)
-            except json.JSONDecodeError:
-                pass
-
-            # 策略3: 使用正则提取 key-value 并重建
-            raise json.JSONDecodeError("无法修复", t, 0)
-
-        def ensure_node_data(data):
-            """确保数据有 nodeData 包装"""
-            if "nodeData" in data:
-                return json.dumps(data, ensure_ascii=False)
-            if "topic" in data or "children" in data:
-                logger.info("JSON 缺少 nodeData 包装，自动补充")
-                if "id" not in data:
-                    data["id"] = "root"
-                return json.dumps({"nodeData": data}, ensure_ascii=False)
-            return None
-
-        # 1. 直接解析
         try:
-            data = try_parse_with_fixes(text)
-            result = ensure_node_data(data)
-            if result:
-                return result
-        except (json.JSONDecodeError, Exception) as e:
-            logger.info(f"直接解析失败: {e}")
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.warning(f"JSON 解析失败，LLM 原始输出前 500 字符: {text[:500]}")
+            raise ValueError("LLM 返回的 JSON 格式不正确")
 
-        # 2. 正则提取 JSON 块
-        json_match = re.search(r'(\{[\s\S]*\})', text)
-        if json_match:
-            candidate = json_match.group(1)
-            try:
-                data = try_parse_with_fixes(candidate)
-                result = ensure_node_data(data)
-                if result:
-                    return result
-            except (json.JSONDecodeError, Exception) as e:
-                logger.info(f"正则提取后解析失败: {e}")
+        # 补 nodeData 包装
+        if "nodeData" in data:
+            return json.dumps(data, ensure_ascii=False)
+        if "topic" in data or "children" in data:
+            logger.info("JSON 缺少 nodeData 包装，自动补充")
+            data.setdefault("id", "root")
+            return json.dumps({"nodeData": data}, ensure_ascii=False)
 
-                # 3. 尝试截断到最后一个 } 再解析（处理 LLM 输出被截断的情况）
-                for i in range(len(candidate) - 1, len(candidate) // 2, -1):
-                    if candidate[i] == '}':
-                        # 先去掉不完整的字符串尾部
-                        chunk = candidate[:i+1]
-                        # 如果引号数量是奇数，去掉最后一个引号后的内容
-                        if chunk.count('"') % 2 != 0:
-                            last_q = chunk.rfind('"')
-                            if last_q > 0:
-                                chunk = chunk[:last_q]
-                        # 补全缺失的括号
-                        open_b = chunk.count('{') - chunk.count('}')
-                        open_s = chunk.count('[') - chunk.count(']')
-                        chunk += ']' * max(0, open_s) + '}' * max(0, open_b)
-                        try:
-                            data = json.loads(chunk)
-                            result = ensure_node_data(data)
-                            if result:
-                                logger.info(f"截断修复成功（位置 {i+1}）")
-                                return result
-                        except json.JSONDecodeError:
-                            continue
-
-        logger.warning(f"JSON 解析失败，LLM 原始输出前 500 字符: {text[:500]}")
-        raise ValueError("LLM 返回的 JSON 格式不正确")
+        raise ValueError("LLM 返回的 JSON 缺少思维导图节点结构")
 
     # ============================================================
     # 6. 工具方法
     # ============================================================
+
+    # 通用模板化 advice 黑名单（正则匹配）
+    _TEMPLATE_ADVICE_PATTERNS: ClassVar[List[str]] = [
+        r'^先理解上一级',
+        r'^建议先看定义',
+        r'^先理解基本概念',
+        r'^多写代码练习',
+        r'^动手实践是',
+        r'^查阅官方文档',
+        r'^结合实际场景学习',
+        r'^遇到错误不要怕',
+        r'^遵循最佳实践',
+        r'^建议结合实际练习',
+        r'^重点理解.{2,10}的核心概念$',
+        r'^多动手练习.{2,10}相关代码$',
+        r'^先抓住当前节点',
+        r'^当前节点更适合',
+        r'^理解概念是第一步',
+        r'^掌握术语有助于',
+        r'^尝试在项目中使用',
+        r'^通过练习巩固',
+        r'^多看官方文档和示例',
+        r'^每张表必须有主键',
+        r'^合理选择数据类型',
+        r'^关键字段设置',
+        r'^建议为所有表',
+        r'^为外键字段建立索引',
+        r'^统一字段命名规范',
+    ]
+
+    _TEMPLATE_PITFALL_PATTERNS: ClassVar[List[str]] = [
+        r'^注意常见错误',
+        r'^注意.{2,10}的常见错误用法$',
+    ]
+
+    @classmethod
+    def _validate_node_quality(cls, json_str: str) -> str:
+        """后处理：清理 LLM 输出中的模板化空话和空区块"""
+        import logging
+        logger = logging.getLogger("agent.mindmap")
+
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, TypeError):
+            return json_str
+
+        node = data.get("nodeData")
+        if not node:
+            return json_str
+
+        advice_re = [re.compile(p) for p in cls._TEMPLATE_ADVICE_PATTERNS]
+        pitfall_re = [re.compile(p) for p in cls._TEMPLATE_PITFALL_PATTERNS]
+
+        def clean(n: dict) -> None:
+            # 清理 advice：匹配模板则清空
+            advice = (n.get("advice") or "").strip()
+            if advice and any(pat.match(advice) for pat in advice_re):
+                logger.debug(f"过滤模板 advice: {advice[:40]}")
+                n["advice"] = ""
+
+            # 清理 pitfalls：过滤模板化条目
+            raw_pitfalls = n.get("pitfalls") or []
+            if isinstance(raw_pitfalls, list):
+                filtered = []
+                for p in raw_pitfalls:
+                    if isinstance(p, str) and any(pat.match(p.strip()) for pat in pitfall_re):
+                        logger.debug(f"过滤模板 pitfall: {p[:40]}")
+                        continue
+                    filtered.append(p)
+                n["pitfalls"] = filtered
+
+            # 递归子节点
+            for child in (n.get("children") or []):
+                if isinstance(child, dict):
+                    clean(child)
+
+        clean(node)
+        return json.dumps(data, ensure_ascii=False)
+
     @staticmethod
     def _ensure_depth(json_str: str) -> str:
         """确保思维导图至少有2层深度，为空children的节点自动补充子节点（仅在必要时）"""

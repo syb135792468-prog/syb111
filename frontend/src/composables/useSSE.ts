@@ -2,7 +2,81 @@ import { useState, useCallback } from 'react'
 import { chatStream, deepChatStream, socraticChatStream } from '../api/chat'
 import { useChatStore, ContentCardRef, ContentBlock, CardBlock } from '../stores/chat'
 import { useAppStore } from '../stores/app'
+import { useTaskStore } from '../stores/taskStore'
 import { INTENT_MAP } from '../utils/constants'
+
+const TASK_POLL_INTERVAL = 3000
+const TASK_POLL_MAX_RETRIES = 60  // 最多 3 分钟
+const STREAM_READ_TIMEOUT_MS = 30000  // 30秒无数据则判定连接卡死
+
+// 防止 sendMessage 并发执行的模块级锁
+let _sendMessageInFlight = false
+
+// 记录 content_block_start 标记为 card 类型的 blockId，供 content_block_data 查表
+const cardBlockIds = new Set<string>()
+
+// 带超时的 stream read，防止 reader.read() 永久阻塞
+function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return Promise.race([
+    reader.read(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`stream_read_timeout_${timeoutMs}ms`)), timeoutMs)
+    ),
+  ])
+}
+
+async function pollTaskStatus(taskId: string, streamConvId: number | string | null) {
+  let retries = 0
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.status === 'pending') {
+        if (++retries > TASK_POLL_MAX_RETRIES) {
+          useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '轮询超时' })
+          return
+        }
+        setTimeout(poll, TASK_POLL_INTERVAL)
+      } else if (data.status === 'completed') {
+        useTaskStore.getState().updateTask(taskId, { status: 'completed', data: data.data })
+        // 守卫：对话已切换时不追加卡片（资源已入库，可在资源库查看）
+        if (useChatStore.getState().currentConversationId !== streamConvId) {
+          useAppStore.getState().showToast('资源已生成，可在资源库查看', 'info')
+          return
+        }
+        // 将完成的资源插入聊天卡片
+        const task = useTaskStore.getState().tasks.find(t => t.taskId === taskId)
+        if (task && data.data) {
+          for (const item of data.data) {
+            const card: ContentCardRef = {
+              id: item.db_id?.toString() || crypto.randomUUID(),
+              type: task.resourceType as ContentCardRef['type'],
+              title: item.title || task.topic,
+              data: item.content ? tryParseJSON(item.content) : item,
+              collapsed: false,
+            }
+            useChatStore.getState().appendCardToLastAssistant(card)
+          }
+        }
+        useAppStore.getState().showToast('资源生成完成', 'success')
+      } else {
+        useTaskStore.getState().updateTask(taskId, { status: 'failed', error: data.error })
+        useAppStore.getState().showToast('资源生成失败', 'error')
+      }
+    } catch {
+      if (++retries > TASK_POLL_MAX_RETRIES) {
+        useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '网络错误' })
+        return
+      }
+      setTimeout(poll, TASK_POLL_INTERVAL)
+    }
+  }
+  poll()
+}
 
 function tryParseJSON(str: string): any {
   try { return JSON.parse(str) } catch { return str }
@@ -11,19 +85,25 @@ function tryParseJSON(str: string): any {
 export function useSSE() {
   const [error, setError] = useState<string | null>(null)
 
-  const sendMessage = useCallback(async (message: string, mode: 'fast' | 'deep' | 'socratic' = 'fast') => {
+  const sendMessage = useCallback(async (message: string, mode: 'fast' | 'deep' | 'socratic' = 'fast', images?: string[]) => {
+    if (_sendMessageInFlight) { console.warn('[SSE] sendMessage already in flight, skipping'); return }
+    _sendMessageInFlight = true
     setError(null)
     const store = useChatStore.getState()
     const conversationId = store.currentConversationId
+    const streamConvId = conversationId  // 捕获当前对话 ID，后续用于守卫
+
+    // 如果只有图片没有文字，使用默认提示词
+    const effectiveMessage = message.trim() || (images && images.length > 0 ? '请分析这张图片' : message)
 
     // Clear thinking steps for new message
     store.clearThinkingSteps()
 
     // Add user message
-    store.addMessage('user', message)
+    store.addMessage('user', message || (images && images.length > 0 ? '[图片]' : ''), images)
 
     // Prepare streaming
-    store.setStreaming(true)
+    store.setStreaming(true, streamConvId)
     const controller = new AbortController()
     store.setAbortController(controller)
 
@@ -36,24 +116,33 @@ export function useSSE() {
       if (mode === 'socratic') {
         const threadId = store.socraticThreadId
         const action: 'start' | 'answer' = threadId ? 'answer' : 'start'
-        response = await socraticChatStream(message, conversationId, action, threadId, controller.signal)
+        response = await socraticChatStream(effectiveMessage, conversationId, action, threadId, controller.signal, images)
       } else {
         response = mode === 'deep'
-          ? await deepChatStream(message, conversationId, controller.signal)
-          : await chatStream(message, conversationId, controller.signal)
+          ? await deepChatStream(effectiveMessage, conversationId, controller.signal, images)
+          : await chatStream(effectiveMessage, conversationId, controller.signal, images)
       }
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`)
       }
-
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let fullReply = ''
 
       while (true) {
-        const { done, value } = await reader.read()
+        let readResult: ReadableStreamReadResult<Uint8Array>
+        try {
+          readResult = await readWithTimeout(reader, STREAM_READ_TIMEOUT_MS)
+        } catch (readErr) {
+          // 读取超时：连接可能已卡死，主动中止
+          console.error('[SSE] Stream read timed out, aborting')
+          controller.abort()
+          useAppStore.getState().showToast('连接超时，请重试', 'error')
+          break
+        }
+        const { done, value } = readResult
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
@@ -76,6 +165,10 @@ export function useSSE() {
           }
 
           if (!dataStr) continue
+
+          // 守卫：对话已切换（新建/切换到其他对话），忽略旧流的数据
+          const curConvId = useChatStore.getState().currentConversationId
+          if (curConvId !== streamConvId) break
 
           try {
             const data = JSON.parse(dataStr)
@@ -106,8 +199,7 @@ export function useSSE() {
                 const store = useChatStore.getState()
                 store.ensureAssistantMessage()
                 if (d.block_type === 'card') {
-                  // card block 在 start 时不创建，等 data 带完整数据
-                  // 但需要记录 blockId 用于后续匹配
+                  cardBlockIds.add(blockId)
                 } else if (d.block_type === 'text') {
                   store.startContentBlock({ type: 'text', text: '', _blockId: blockId })
                 } else if (d.block_type === 'thinking') {
@@ -120,24 +212,21 @@ export function useSSE() {
                 const d = data.data || {}
                 const delta = d.delta || ''
                 const store = useChatStore.getState()
-                const lastMsg = store.messages[store.messages.length - 1]
 
-                // 检查是否是 card block 的 delta（JSON 数据）
-                if (delta.startsWith('{') && delta.includes('"type":"card"')) {
+                // card block 的 delta 是完整 JSON，由 start 事件的 block_type 标记
+                if (cardBlockIds.has(d.block_id)) {
                   try {
                     const parsed = JSON.parse(delta)
-                    if (parsed.type === 'card') {
-                      const cardBlock: CardBlock = {
-                        type: 'card',
-                        card_type: parsed.card_type,
-                        card_id: parsed.card_id,
-                        title: parsed.title || '',
-                        data: parsed.data,
-                      }
-                      store.startContentBlock(cardBlock)
-                      break
+                    const cardBlock: CardBlock = {
+                      type: 'card',
+                      card_type: parsed.card_type,
+                      card_id: parsed.card_id,
+                      title: parsed.title || '',
+                      data: parsed.data,
                     }
-                  } catch { /* not a card block, treat as text delta */ }
+                    store.startContentBlock(cardBlock)
+                  } catch { /* card delta 解析失败，丢弃，不当 text 处理 */ }
+                  break
                 }
 
                 // text/thinking block delta
@@ -148,6 +237,7 @@ export function useSSE() {
               }
 
               case 'content_block_stop': {
+                cardBlockIds.delete(data.data?.block_id)
                 useChatStore.getState().finishContentBlock(data.data?.block_id)
                 break
               }
@@ -199,6 +289,10 @@ export function useSSE() {
                 if (thinkingText) {
                   useChatStore.getState().addThinkingStep(thinkingText)
                 }
+                // 提前保存 conversation_id（后端在首个 thinking 事件中附带）
+                if (data.data?.conversation_id) {
+                  useChatStore.setState({ currentConversationId: data.data.conversation_id })
+                }
                 break
               }
 
@@ -223,13 +317,7 @@ export function useSSE() {
                 const content = socraticData.content || ''
                 if (content) {
                   fullReply += content
-                  const state = useChatStore.getState()
-                  const msgs = [...state.messages]
-                  const last = msgs[msgs.length - 1]
-                  if (last && last.role === 'assistant') {
-                    msgs[msgs.length - 1] = { ...last, content: fullReply }
-                    useChatStore.setState({ messages: msgs })
-                  }
+                  useChatStore.getState().appendToLastAssistant(content)
                 }
                 // 保存 thread_id
                 if (socraticData.thread_id) {
@@ -260,10 +348,30 @@ export function useSSE() {
                 break
               }
 
+              case 'task_started': {
+                const taskData = data.data || {}
+                const { task_id, resource_type, topic } = taskData
+                if (task_id) {
+                  useTaskStore.getState().addTask({
+                    taskId: task_id,
+                    resourceType: resource_type || 'unknown',
+                    topic: topic || '',
+                    status: 'pending',
+                    createdAt: Date.now(),
+                  })
+                  pollTaskStatus(task_id, streamConvId)
+                }
+                break
+              }
+
               case 'end': {
                 const endData = data.data || {}
                 if (endData.conversation_id) {
-                  useChatStore.setState({ currentConversationId: endData.conversation_id })
+                  // 守卫：仅在对话未切换时更新 conversationId
+                  const s = useChatStore.getState()
+                  if (s.currentConversationId === streamConvId) {
+                    useChatStore.setState({ currentConversationId: endData.conversation_id })
+                  }
                 }
                 // 如果 end 事件带了 content_blocks，用它覆盖（最终权威数据）
                 if (endData.content_blocks && endData.content_blocks.length > 0) {
@@ -286,27 +394,34 @@ export function useSSE() {
         }
       }
 
-      // Final update
-      const state = useChatStore.getState()
-      const finalMsg = state.messages[state.messages.length - 1]
-      if (finalMsg && finalMsg.role === 'assistant' && fullReply) {
-        const msgs = [...state.messages]
-        msgs[msgs.length - 1] = { ...finalMsg, content: fullReply }
-        useChatStore.setState({ messages: msgs })
+      // Final update（仅在对话未切换时写入）
+      const finalConvId = useChatStore.getState().currentConversationId
+      if (finalConvId === streamConvId) {
+        const state = useChatStore.getState()
+        const finalMsg = state.messages[state.messages.length - 1]
+        if (finalMsg && finalMsg.role === 'assistant' && fullReply) {
+          const msgs = [...state.messages]
+          msgs[msgs.length - 1] = { ...finalMsg, content: fullReply }
+          useChatStore.setState({ messages: msgs })
+        }
+        await useChatStore.getState().loadConversations()
       }
-
-      // Reload conversations
-      await useChatStore.getState().loadConversations()
 
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') {
-        useChatStore.getState().addMessage('system', '已停止生成')
+        if (useChatStore.getState().currentConversationId === streamConvId) {
+          useChatStore.getState().addMessage('system', '已停止生成')
+        }
       } else {
         const msg = e instanceof Error ? e.message : String(e)
         setError(msg)
-        useChatStore.getState().addMessage('system', `错误：${msg}`)
+        if (useChatStore.getState().currentConversationId === streamConvId) {
+          useChatStore.getState().addMessage('system', `错误：${msg}`)
+        }
       }
     } finally {
+      _sendMessageInFlight = false
+      // 无条件清除流式状态，确保不会卡在"正在生成"
       useChatStore.getState().setStreaming(false)
       useChatStore.getState().setAbortController(null)
     }
@@ -317,13 +432,14 @@ export function useSSE() {
     const store = useChatStore.getState()
     const threadId = store.socraticThreadId
     const conversationId = store.currentConversationId
+    const streamConvId = conversationId
 
     if (!threadId) {
       setError('没有活跃的苏格拉底会话')
       return
     }
 
-    store.setStreaming(true)
+    store.setStreaming(true, streamConvId)
     const controller = new AbortController()
     store.setAbortController(controller)
 
@@ -362,7 +478,16 @@ export function useSSE() {
       let fullReply = ''
 
       while (true) {
-        const { done, value } = await reader.read()
+        let readResult: ReadableStreamReadResult<Uint8Array>
+        try {
+          readResult = await readWithTimeout(reader, STREAM_READ_TIMEOUT_MS)
+        } catch (readErr) {
+          console.error('[SSE] Socratic stream read timed out, aborting')
+          controller.abort()
+          useAppStore.getState().showToast('连接超时，请重试', 'error')
+          break
+        }
+        const { done, value } = readResult
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
@@ -386,6 +511,10 @@ export function useSSE() {
 
           if (!dataStr) continue
 
+          // 守卫：对话已切换，忽略旧流的数据
+          const curConvId = useChatStore.getState().currentConversationId
+          if (curConvId !== streamConvId) break
+
           try {
             const data = JSON.parse(dataStr)
 
@@ -403,13 +532,7 @@ export function useSSE() {
                 const content = socraticData.content || ''
                 if (content) {
                   fullReply += content
-                  const state = useChatStore.getState()
-                  const msgs = [...state.messages]
-                  const last = msgs[msgs.length - 1]
-                  if (last && last.role === 'assistant') {
-                    msgs[msgs.length - 1] = { ...last, content: fullReply }
-                    useChatStore.setState({ messages: msgs })
-                  }
+                  useChatStore.getState().appendToLastAssistant(content)
                 }
                 if (socraticData.thread_id) {
                   useChatStore.getState().setSocraticThreadId(socraticData.thread_id)
@@ -435,7 +558,10 @@ export function useSSE() {
               case 'socratic_end': {
                 const endData = data.data || {}
                 if (endData.conversation_id) {
-                  useChatStore.setState({ currentConversationId: endData.conversation_id })
+                  const s = useChatStore.getState()
+                  if (s.currentConversationId === streamConvId) {
+                    useChatStore.setState({ currentConversationId: endData.conversation_id })
+                  }
                 }
                 window.dispatchEvent(new CustomEvent('learning-profile-dirty'))
                 break
@@ -458,11 +584,15 @@ export function useSSE() {
 
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') {
-        useChatStore.getState().addMessage('system', '已停止')
+        if (useChatStore.getState().currentConversationId === streamConvId) {
+          useChatStore.getState().addMessage('system', '已停止')
+        }
       } else {
         const msg = e instanceof Error ? e.message : String(e)
         setError(msg)
-        useChatStore.getState().addMessage('system', `错误：${msg}`)
+        if (useChatStore.getState().currentConversationId === streamConvId) {
+          useChatStore.getState().addMessage('system', `错误：${msg}`)
+        }
       }
     } finally {
       useChatStore.getState().setStreaming(false)

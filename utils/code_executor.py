@@ -8,11 +8,13 @@ utils/code_executor.py - 安全代码执行沙箱（加固版）
 """
 from __future__ import annotations
 import asyncio
+import subprocess
 import sys
 import tempfile
 import os
 import time
 from typing import Dict, Any
+from dataclasses import dataclass
 from collections import defaultdict
 from utils.logger import get_logger
 from config.constants import (
@@ -141,7 +143,33 @@ def _set_resource_limits() -> None:
 
 
 # ============================================================
-# 5. 核心执行函数
+# 5. 子进程执行（线程安全，兼容 Windows + Python 3.14）
+# ============================================================
+@dataclass
+class _SubprocessResult:
+    stdout_bytes: bytes
+    stderr_bytes: bytes
+    returncode: int
+
+
+def _run_subprocess(executable: str, script_path: str, env: dict, timeout: int) -> _SubprocessResult:
+    """在子进程中同步执行脚本（供 asyncio.to_thread 调用）"""
+    result = subprocess.run(
+        [executable, script_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        timeout=timeout,
+    )
+    return _SubprocessResult(
+        stdout_bytes=result.stdout,
+        stderr_bytes=result.stderr,
+        returncode=result.returncode,
+    )
+
+
+# ============================================================
+# 6. 核心执行函数
 # ============================================================
 async def execute_python_code(code: str, timeout: int = CODE_EXEC_DEFAULT_TIMEOUT) -> Dict[str, Any]:
     """
@@ -176,20 +204,12 @@ async def execute_python_code(code: str, timeout: int = CODE_EXEC_DEFAULT_TIMEOU
         async with sem:
             try:
                 child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-                # Unix: 使用 preexec_fn 设置资源限制
-                # Windows: 跳过（resource 模块不可用）
-                preexec = _set_resource_limits if sys.platform != "win32" else None
 
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, tmp_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=child_env,
-                    preexec_fn=preexec,
+                proc = await asyncio.to_thread(
+                    _run_subprocess, sys.executable, tmp_path, child_env, timeout
                 )
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
+                stdout_bytes = proc.stdout_bytes
+                stderr_bytes = proc.stderr_bytes
                 elapsed = time.monotonic() - start_time
 
                 stdout = stdout_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "")[:CODE_EXEC_MAX_STDOUT_LENGTH]
@@ -216,13 +236,8 @@ async def execute_python_code(code: str, timeout: int = CODE_EXEC_DEFAULT_TIMEOU
                     "metrics": _metrics.summary(),
                 }
 
-            except asyncio.TimeoutError:
+            except subprocess.TimeoutExpired:
                 elapsed = time.monotonic() - start_time
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
                 _metrics.record(success=False, timed_out=True, exec_time=elapsed)
                 logger.warning(f"代码执行超时 | timeout={timeout}s")
 

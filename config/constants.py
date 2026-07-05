@@ -51,7 +51,7 @@ EMBEDDING_MAX_TEXT_LENGTH = 256
 # ============================================================
 DEFAULT_RESOURCE_LIMIT = 20
 MAX_RESOURCE_LIMIT = 100
-RESOURCE_GENERATE_TIMEOUT_SEC = 120
+RESOURCE_GENERATE_TIMEOUT_SEC = 300
 RESOURCE_PROGRESS_COMPLETE = 100
 
 # ============================================================
@@ -139,19 +139,42 @@ TUTOR_INPUT_TRUNCATE_LENGTH = 50
 # ============================================================
 QUIZ_RAG_TOP_K = 2
 CODE_RAG_TOP_K = 2
-MINDMAP_RAG_TOP_K = 3
+MINDMAP_RAG_TOP_K = 5
 
 # ============================================================
 # 12. 视频 Agent
 # ============================================================
-VIDEO_MAX_TOKENS = 16000
-VIDEO_MIN_HTML_LINES = 200
-VIDEO_MAX_RETRIES = 2
-VIDEO_DEFAULT_VOICE_RATE = 0.95
+VIDEO_MAX_TOKENS = 24000
+VIDEO_MIN_HTML_LINES = 400
+VIDEO_MAX_RETRIES = 1
+VIDEO_DEFAULT_VOICE_RATE = 1.15
 VIDEO_DEFAULT_VOICE_LANG = "zh-CN"
 VIDEO_DEFAULT_STYLE = "tutorial"
-VIDEO_DEFAULT_DURATION = 60
+VIDEO_DEFAULT_DURATION = 120
+VIDEO_MIN_CODE_LINES = 0       # 最少代码行数（LLM命名不固定，跳过此检查）
+VIDEO_MIN_SPEAK_CALLS = 5      # 最少讲解段数（speak() 调用次数）
 VIDEO_GSAP_CDN_URL = "https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"
+
+# ============================================================
+# 12b. 视频渲染（HTML → WebM/MP4）
+# ============================================================
+VIDEO_RENDER_FPS = 15
+VIDEO_RENDER_WIDTH = 1280
+VIDEO_RENDER_HEIGHT = 720
+VIDEO_RENDER_TIMEOUT_SEC = 300
+VIDEO_OUTPUT_DIR = "static/videos"
+
+# ============================================================
+# 12c. 视频 TTS 配音（火山引擎语音合成）
+# ============================================================
+VIDEO_TTS_API_ENDPOINT = "https://openspeech.bytedance.com/api/v1/tts"
+VIDEO_TTS_TIMEOUT_SEC = 30
+VIDEO_TTS_MAX_RETRIES = 2
+VIDEO_TTS_MAX_CONCURRENCY = 4
+VIDEO_TTS_AUDIO_SUBDIR = "audio"
+VIDEO_TTS_SAMPLE_RATE = 24000
+VIDEO_TTS_AUDIO_ENCODING = "mp3"
+VIDEO_TTS_MAX_TEXT_LENGTH = 500
 
 # ============================================================
 # 13. Base Agent 回退默认值
@@ -348,7 +371,7 @@ RESOURCE_PLANNER_MAX_RESOURCES_PER_PLAN = 20
 # ============================================================
 # 35. 预初始化与健康检查列表
 # ============================================================
-PREINIT_AGENT_TYPES = ["quiz", "code", "mindmap", "doc", "video"]
+PREINIT_AGENT_TYPES = ["quiz", "code", "mindmap", "doc", "video", "slides"]
 HEALTH_CHECK_SERVICES = ["chat", "profile", "resource", "database"]
 DEV_RELOAD_DIRS = ["api", "models", "agents", "utils"]
 
@@ -387,6 +410,9 @@ EXPERIMENT_SIGNIFICANCE_LEVEL = 0.05
 QUIZ_TYPE_MULTI = "multi"
 RESOURCE_TYPE_QUIZ = "quiz"
 RESOURCE_TYPE_MINDMAP = "mindmap"
+RESOURCE_TYPE_DAILY_CHALLENGE = "daily_challenge"
+RESOURCE_TYPE_DAILY_EXTRA = "daily_extra"
+RESOURCE_TYPE_SLIDES = "slides"
 DIFFICULTY_AUTO = "auto"
 INTENT_GENERATE_RESOURCE = "generate_resource"
 INTENT_START_LEARNING = "start_learning"
@@ -400,3 +426,21 @@ KNOWLEDGE_LEVEL_INTERMEDIATE = "intermediate"
 KNOWLEDGE_LEVEL_ADVANCED = "advanced"
 MOTIVATION_LEVEL_HIGH = "high"
 MOTIVATION_LEVEL_MEDIUM = "medium"
+
+# ============================================================
+# 39. 多模态代码分析
+# ============================================================
+MULTIMODAL_OMNI_MAX_RETRIES = 3
+MULTIMODAL_OMNI_TIMEOUT_SEC = 60
+MULTIMODAL_OMNI_MAX_IMAGE_SIZE_MB = 10
+MULTIMODAL_OMNI_RATE_LIMIT_PER_MIN = 20
+MULTIMODAL_OMNI_CACHE_TTL_SEC = 3600
+MULTIMODAL_ANALYSIS_MAX_TOKENS = 4096
+MULTIMODAL_CODE_RECOGNITION_MAX_TOKENS = 2048
+
+# ============================================================
+# 40. 每日一题
+# ============================================================
+DAILY_CHALLENGE_QUESTION_TYPE = "code"
+DAILY_CHALLENGE_STREAK_RECOVERY_COUNT = 3
+DAILY_CHALLENGE_DATE_FORMAT = "%Y-%m-%d"

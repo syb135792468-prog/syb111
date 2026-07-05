@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
-import { listResources, generateResource } from '../api/resource'
+import { useLearningCenterStore } from '../stores/learningCenter'
+import { listResources, generateResource, deleteResource, addToLibrary } from '../api/resource'
 import AppHeader from '../components/layout/AppHeader'
 import ResourceCard from '../components/resource/ResourceCard'
 import ResourceDetail from '../components/resource/ResourceDetail'
+import ConfirmDialog from '../components/common/ConfirmDialog'
 import GenerateModal from '../components/resource/GenerateModal'
 import QuizView from '../components/quiz/QuizView'
 import { BookOpen, Plus } from 'lucide-react'
@@ -15,6 +17,8 @@ interface Resource {
   title: string
   content: string
   resource_type: string
+  knowledge_points?: string[]
+  in_library?: boolean
   [key: string]: unknown
 }
 
@@ -28,11 +32,14 @@ interface GeneratePayload {
 const ResourcesView: React.FC = () => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
+  const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
 
   // --- 状态 ---
   const [resources, setResources] = useState<Resource[]>([])
   const [loading, setLoading] = useState(true)
   const [typeFilter, setTypeFilter] = useState('')
+  const [libraryFilter, setLibraryFilter] = useState<'all' | 'library'>('all')
+  const [savedIds, setSavedIds] = useState<Set<number | string>>(new Set())
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -45,12 +52,18 @@ const ResourcesView: React.FC = () => {
   const [showQuiz, setShowQuiz] = useState(false)
   const [quizResourceId, setQuizResourceId] = useState('')
 
+  // --- 删除状态 ---
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
   // --- 加载资源列表 ---
   const fetchResources = useCallback(async () => {
     setLoading(true)
     try {
       const resp = await listResources(authStore.userId, {
         resourceType: typeFilter || undefined,
+        inLibrary: libraryFilter === 'library' ? true : undefined,
       })
       if (!mountedRef.current) return
       if (resp.code === 200 && resp.data) {
@@ -63,7 +76,7 @@ const ResourcesView: React.FC = () => {
     } finally {
       if (mountedRef.current) setLoading(false)
     }
-  }, [authStore.userId, typeFilter])
+  }, [authStore.userId, typeFilter, libraryFilter])
 
   // --- 初始加载 ---
   useEffect(() => {
@@ -72,14 +85,37 @@ const ResourcesView: React.FC = () => {
 
   // --- 打开详情 ---
   const openDetail = useCallback((r: Resource) => {
+    const knowledgePoints = Array.isArray(r.knowledge_points)
+      ? r.knowledge_points.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : []
+    const resourceId = typeof r.id === 'number'
+      ? r.id
+      : Number.isNaN(Number(r.id))
+        ? undefined
+        : Number(r.id)
+
+    recordLearningEvent({
+      userId: authStore.userId,
+      sourcePage: 'resources',
+      actionType: 'resource_viewed',
+      topic: r.title,
+      knowledgePoint: knowledgePoints[0] || undefined,
+      knowledgePoints,
+      resourceId,
+    })
+
     if (r.resource_type === 'quiz') {
       setQuizResourceId(String(r.id))
       setShowQuiz(true)
-    } else {
+    } else if (r.resource_type === 'video' || r.resource_type === 'slides') {
+      // video/slides 需要完整渲染，打开全屏弹窗
       setDetailResource(r)
       setShowDetail(true)
+    } else {
+      // 打开右侧面板
+      appStore.openRightPanel('resource-summary', { resource: r })
     }
-  }, [])
+  }, [appStore, authStore.userId, recordLearningEvent])
 
   // --- 生成资源 ---
   const handleGenerate = useCallback(async ({ topic, type, config = {} }: GeneratePayload) => {
@@ -105,54 +141,139 @@ const ResourcesView: React.FC = () => {
     setTypeFilter(e.target.value)
   }, [])
 
+  // --- 收藏/取消收藏 ---
+  const handleSave = useCallback(async (r: Resource) => {
+    try {
+      const resp = await addToLibrary(r.id, authStore.userId)
+      if (resp.code === 200) {
+        const newState = (resp.data as { in_library: boolean })?.in_library
+        if (newState) {
+          setSavedIds(prev => new Set(prev).add(r.id))
+        } else {
+          setSavedIds(prev => { const s = new Set(prev); s.delete(r.id); return s })
+        }
+        appStore.showToast(newState ? '已收藏到资源库' : '已取消收藏', 'success')
+        // 更新列表中该资源的 in_library 状态
+        setResources(prev => prev.map(item => item.id === r.id ? { ...item, in_library: newState } : item))
+      } else {
+        appStore.showToast(resp.message || '操作失败', 'error')
+      }
+    } catch {
+      appStore.showToast('操作失败，请重试', 'error')
+    }
+  }, [authStore.userId, appStore])
+
+  // --- 删除资源 ---
+  const askDelete = useCallback((r: Resource) => {
+    setDeletingId(r.id)
+    setShowDeleteConfirm(true)
+  }, [])
+
+  const confirmDelete = useCallback(async () => {
+    if (deleting || deletingId === null) return
+    setDeleting(true)
+    try {
+      const resp = await deleteResource(deletingId, authStore.userId)
+      if (!mountedRef.current) return
+      if (resp.code === 200) {
+        appStore.showToast('已删除', 'success')
+        setResources(prev => prev.filter(r => r.id !== deletingId))
+      } else {
+        appStore.showToast(resp.message || '删除失败', 'error')
+      }
+    } catch (e: unknown) {
+      if (!mountedRef.current) return
+      const msg = e instanceof Error ? e.message : '网络错误'
+      appStore.showToast('删除失败：' + msg, 'error')
+    } finally {
+      if (mountedRef.current) {
+        setDeleting(false)
+        setShowDeleteConfirm(false)
+        setDeletingId(null)
+      }
+    }
+  }, [deleting, deletingId, authStore.userId, appStore])
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <AppHeader title="学习资源">
-        <select
-          value={typeFilter}
-          onChange={handleFilterChange}
-          className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="">全部类型</option>
-          <option value="quiz">练习题</option>
-          <option value="code">代码案例</option>
-          <option value="mindmap">思维导图</option>
-          <option value="doc">讲解文档</option>
-          <option value="video">教学动画</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-2xl border border-slate-300/80 bg-white/84 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.84),0_10px_22px_rgba(148,163,184,0.08)]">
+            <button
+              onClick={() => setLibraryFilter('all')}
+              className={`px-3 py-1.5 text-xs rounded-xl transition-all ${libraryFilter === 'all' ? 'bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(232,240,252,0.92))] text-brand-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_16px_rgba(148,163,184,0.08)]' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              全部
+            </button>
+            <button
+              onClick={() => setLibraryFilter('library')}
+              className={`px-3 py-1.5 text-xs rounded-xl transition-all ${libraryFilter === 'library' ? 'bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(232,240,252,0.92))] text-brand-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.88),0_8px_16px_rgba(148,163,184,0.08)]' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              已收藏
+            </button>
+          </div>
+          <select
+            value={typeFilter}
+            onChange={handleFilterChange}
+            className="text-sm border border-slate-300/80 bg-white/84 rounded-xl px-3 py-2 text-slate-600 shadow-[inset_0_1px_0_rgba(255,255,255,0.84),0_10px_22px_rgba(148,163,184,0.08)] focus:outline-none focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="">全部类型</option>
+            <option value="quiz">练习题</option>
+            <option value="code">代码案例</option>
+            <option value="mindmap">思维导图</option>
+            <option value="doc">讲解文档</option>
+            <option value="video">教学动画</option>
+            <option value="slides">幻灯片</option>
+          </select>
+        </div>
         <button
           onClick={() => setShowGenerate(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white text-sm rounded-lg hover:bg-brand-700 transition-colors"
+          className="btn-primary"
         >
           <Plus className="w-4 h-4" />
           生成资源
         </button>
       </AppHeader>
 
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="page-scroll-area">
         {/* Loading */}
         {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
+          <div className="page-content flex items-center justify-center h-64">
+            <div className="page-panel-soft flex items-center gap-3 px-5 py-4">
+              <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-brand-600" />
+              <span className="text-sm text-slate-500">正在整理学习资源...</span>
+            </div>
           </div>
         ) : resources.length === 0 ? (
           /* Empty */
-          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-            <BookOpen className="w-12 h-12 mb-3 opacity-40" />
-            <p className="text-sm">暂无学习资源</p>
+          <div className="page-content">
+            <div className="page-panel flex flex-col items-center justify-center h-72 text-slate-400">
+              <BookOpen className="w-12 h-12 mb-3 opacity-40" />
+              <p className="text-sm font-medium text-slate-600">暂无学习资源</p>
+              <p className="mt-1 text-xs text-slate-400">先生成一份文档、练习题或动画资源</p>
             <button
               onClick={() => setShowGenerate(true)}
-              className="mt-3 text-sm text-brand-600 hover:text-brand-700"
+                className="mt-4 text-sm text-brand-600 hover:text-brand-700"
             >
               生成第一个资源
             </button>
+            </div>
           </div>
         ) : (
           /* Grid */
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
+          <div className="page-content">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 max-w-6xl mx-auto">
             {resources.map(r => (
-              <ResourceCard key={r.id} resource={r} onClick={() => openDetail(r)} />
+              <ResourceCard
+                key={r.id}
+                resource={r}
+                onClick={() => openDetail(r)}
+                onDelete={() => askDelete(r)}
+                onSave={() => handleSave(r)}
+                saved={savedIds.has(r.id) || r.in_library}
+              />
             ))}
+            </div>
           </div>
         )}
       </div>
@@ -170,6 +291,7 @@ const ResourcesView: React.FC = () => {
           content={detailResource.content}
           type={detailResource.resource_type}
           resourceId={String(detailResource.id || '')}
+          extraMetadata={detailResource.extra_metadata as Record<string, unknown> | null}
           onClose={() => setShowDetail(false)}
         />
       )}
@@ -180,6 +302,17 @@ const ResourcesView: React.FC = () => {
           onClose={() => setShowQuiz(false)}
         />
       )}
+
+      <ConfirmDialog
+        show={showDeleteConfirm}
+        title="删除学习资源"
+        message="确定要删除这个资源吗？此操作不可撤销。"
+        confirmText="确认删除"
+        dangerLevel="warning"
+        isLoading={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   )
 }

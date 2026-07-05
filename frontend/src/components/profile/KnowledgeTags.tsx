@@ -18,17 +18,17 @@ const KnowledgeTags: React.FC<KnowledgeTagsProps> = ({ mastered = [], weak = [] 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Mastered */}
-      <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+      <div className="page-panel p-5">
         <div className="flex items-center gap-2 mb-3">
           <CheckCircle className="w-4 h-4 text-green-500" />
-          <h3 className="text-sm font-semibold text-gray-700">已掌握知识点</h3>
+          <h3 className="text-sm font-semibold text-slate-700">已掌握知识点</h3>
         </div>
         {mastered.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {mastered.map(p => (
               <span
                 key={p.id}
-                className="px-3 py-1 bg-green-50 text-green-700 text-xs rounded-full border border-green-200 transition-all duration-300"
+                className="px-3 py-1.5 bg-emerald-50/90 text-emerald-700 text-xs rounded-full border border-emerald-200 transition-all duration-300"
               >
                 {p.name} ({p.mastery}%)
               </span>
@@ -40,17 +40,17 @@ const KnowledgeTags: React.FC<KnowledgeTagsProps> = ({ mastered = [], weak = [] 
       </div>
 
       {/* Weak */}
-      <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+      <div className="page-panel p-5">
         <div className="flex items-center gap-2 mb-3">
           <AlertTriangle className="w-4 h-4 text-orange-500" />
-          <h3 className="text-sm font-semibold text-gray-700">薄弱知识点</h3>
+          <h3 className="text-sm font-semibold text-slate-700">薄弱知识点</h3>
         </div>
         {weak.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {weak.map(p => (
               <span
                 key={p.id}
-                className="px-3 py-1 bg-orange-50 text-orange-700 text-xs rounded-full border border-orange-200 transition-all duration-300"
+                className="px-3 py-1.5 bg-orange-50/90 text-orange-700 text-xs rounded-full border border-orange-200 transition-all duration-300"
               >
                 {p.name} ({p.mastery}%)
               </span>

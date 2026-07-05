@@ -84,6 +84,14 @@ export async function apiPut<T = unknown>(url: string, data?: unknown): Promise<
   return resp.json()
 }
 
+export async function apiPatch<T = unknown>(url: string, data?: unknown): Promise<ApiResponse<T>> {
+  const resp = await apiFetch(url, {
+    method: 'PATCH',
+    body: data ? JSON.stringify(data) : undefined,
+  })
+  return resp.json()
+}
+
 export async function apiDelete<T = unknown>(url: string): Promise<ApiResponse<T>> {
   const resp = await apiFetch(url, { method: 'DELETE' })
   return resp.json()

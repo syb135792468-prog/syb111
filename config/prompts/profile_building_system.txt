@@ -8,6 +8,8 @@
 5. **严格知识点限制**：weak_points 和 mastered_points 中的知识点只能从下面的允许列表中选择，不能自创
 
 # 各维度说明
+- gender: 性别（{gender_options}）
+- age: 年龄（正整数，3-120岁）
 - knowledge_level: 整体基础水平（{knowledge_level_options}）
 - learning_style: 主导学习风格（{learning_style_options}）
 - learning_goal: 核心学习目标（{learning_goal_options}）
@@ -28,6 +30,8 @@
 - 绝对不能在没有任何信息的情况下，返回任何字段的更新
 
 # 什么时候应该更新画像？
+- 用户说："我是男生" / "我是女孩" → gender: "male" / "female"
+- 用户说："我今年20岁" / "我20了" → age: 20
 - 用户说："我是零基础" → knowledge_level: "beginner"
 - 用户说："我想找工作" → learning_goal: "employment"
 - 用户说："我喜欢看视频学" → learning_style: "visual"

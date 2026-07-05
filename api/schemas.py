@@ -56,6 +56,8 @@ class BaseResponse(BaseSchema, Generic[T]):
     code: int = Field(HTTP_OK, description="业务状态码")
     message: str = Field("success", description="响应消息")
     data: Optional[T] = Field(None, description="响应数据")
+    error_code: Optional[str] = Field(None, description="结构化错误码，便于前端识别失败类型")
+    error_detail: Optional[str] = Field(None, description="错误详情，便于日志排查")
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC).replace(tzinfo=None),
         description="服务器时间戳"
@@ -109,16 +111,22 @@ class UserInfoResponse(BaseSchema):
 class ChatRequest(BaseSchema):
     """用户对话请求"""
     user_id: Optional[str] = Field(None, min_length=1, max_length=64, description="用户唯一标识（可选，优先使用token中的用户）")
-    message: str = Field(..., min_length=1, max_length=MESSAGE_MAX_LENGTH, description="用户输入内容")
+    message: str = Field("", max_length=MESSAGE_MAX_LENGTH, description="用户输入内容")
     thread_id: Optional[str] = Field(None, description="工作流线程ID，用于多轮对话")
     conversation_id: Optional[int] = Field(None, description="对话ID，用于关联到指定对话")
     mode: Literal["fast", "deep"] = Field("fast", description="对话模式：fast=快速回答，deep=深度思考（多Agent协作）")
+    images: Optional[List[str]] = Field(default=None, description="已上传图片的URL列表（通过 /api/images/upload 获取）")
 
     @field_validator("message")
     @classmethod
     def trim_message(cls, v: str) -> str:
         """自动去除首尾空白字符"""
         return v.strip()
+
+    def model_post_init(self, __context) -> None:
+        """校验：消息和图片至少有一个"""
+        if not self.message and not self.images:
+            raise ValueError("消息内容和图片不能同时为空")
 
 
 class SocraticChatRequest(BaseSchema):
@@ -130,6 +138,7 @@ class SocraticChatRequest(BaseSchema):
         "start",
         description="操作类型：start=开始新会话，answer=提交回答，hint=请求提示，give_up=直接给答案，end=结束学习，confused=没听懂"
     )
+    images: Optional[List[str]] = Field(default=None, description="已上传图片的URL列表")
 
     @field_validator("message")
     @classmethod
@@ -175,27 +184,31 @@ class ChatResponseData(BaseSchema):
 # 3. 用户画像接口（严格7维，与profile_agent完全对齐）
 # ============================================================
 class ProfileData(BaseSchema):
-    """用户7维学习画像数据"""
+    """用户学习画像数据"""
+    gender: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["gender"])]] = Field(
+        None, description="性别"
+    )
+    age: Optional[int] = Field(None, ge=3, le=120, description="年龄")
     knowledge_level: Literal[tuple(PROFILE_DIMENSION_OPTIONS["knowledge_level"])] = Field(
-        "beginner", description="1. 整体知识水平"
+        "beginner", description="整体知识水平"
     )
     learning_goal: Literal[tuple(PROFILE_DIMENSION_OPTIONS["learning_goal"])] = Field(
-        "interest", description="2. 核心学习目标"
+        "interest", description="核心学习目标"
     )
     learning_style: Literal[tuple(PROFILE_DIMENSION_OPTIONS["learning_style"])] = Field(
-        "mixed", description="3. 主导学习风格"
+        "mixed", description="主导学习风格"
     )
     duration_preference: Literal[tuple(PROFILE_DIMENSION_OPTIONS["duration_preference"])] = Field(
-        "medium", description="4. 单次学习时长偏好"
+        "medium", description="单次学习时长偏好"
     )
     weak_points: List[Literal[tuple(PYTHON_KNOWLEDGE_POINTS)]] = Field(
-        default_factory=list, description="5. 薄弱知识点列表"
+        default_factory=list, description="薄弱知识点列表"
     )
     mastered_points: List[Literal[tuple(PYTHON_KNOWLEDGE_POINTS)]] = Field(
-        default_factory=list, description="6. 已掌握知识点列表"
+        default_factory=list, description="已掌握知识点列表"
     )
     motivation_level: Literal[tuple(PROFILE_DIMENSION_OPTIONS["motivation_level"])] = Field(
-        "medium", description="7. 当前学习动力"
+        "medium", description="当前学习动力"
     )
     current_topic: Optional[Literal[tuple(PYTHON_KNOWLEDGE_POINTS)]] = Field(
         None, description="当前学习的知识点"
@@ -229,6 +242,8 @@ class ProfileResponse(BaseSchema):
 
 class ProfileUpdateRequest(BaseSchema):
     """更新用户画像请求（所有字段可选）"""
+    gender: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["gender"])]] = None
+    age: Optional[int] = Field(None, ge=3, le=120)
     knowledge_level: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["knowledge_level"])]] = None
     learning_goal: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["learning_goal"])]] = None
     learning_style: Optional[Literal[tuple(PROFILE_DIMENSION_OPTIONS["learning_style"])]] = None
@@ -299,6 +314,16 @@ class ExpandNodeRequest(BaseSchema):
     node_advice: str = Field("", description="节点学习建议")
 
 
+class SaveExternalVideoRequest(BaseSchema):
+    """收藏外部视频到资源库"""
+    user_id: int = Field(..., description="用户ID")
+    title: str = Field(..., min_length=1, max_length=200, description="视频标题")
+    url: str = Field(..., min_length=1, max_length=500, description="视频链接")
+    thumbnail: str = Field("", max_length=500, description="缩略图URL")
+    author: str = Field("", max_length=100, description="作者")
+    description: str = Field("", max_length=500, description="视频简介")
+
+
 class ResourceResponse(BaseSchema):
     """学习资源响应"""
     id: Optional[int] = Field(None, description="资源ID")
@@ -310,6 +335,7 @@ class ResourceResponse(BaseSchema):
     )
     status: Literal[tuple(RESOURCE_STATUS)] = Field("completed", description="生成状态")
     progress_percent: int = Field(RESOURCE_PROGRESS_COMPLETE, ge=0, le=100, description="生成进度百分比")
+    in_library: bool = Field(False, description="是否已加入资源库")
     extra_metadata: Optional[ResourceMetadata] = Field(None, description="扩展元数据")
     created_at: Optional[datetime] = Field(None, description="创建时间")
     updated_at: Optional[datetime] = Field(None, description="更新时间")
@@ -321,13 +347,14 @@ class ResourceResponse(BaseSchema):
 class StreamEvent(BaseSchema):
     """服务端推送的流式事件"""
     event: Literal["intent", "profile", "path", "resource", "tutor", "eval", "token", "end", "error",
-                   "quiz", "code", "doc", "mindmap", "video", "evaluation",
+                   "quiz", "code", "doc", "mindmap", "video", "evaluation", "slides",
                    "thinking", "clear",
                    "socratic_question", "socratic_hint", "socratic_feedback",
                    "socratic_answer", "socratic_summary", "socratic_end",
                    "socratic_explain", "socratic_demo", "socratic_practice", "socratic_relate",
                    "mastery_update", "learning_path", "path_node_resource",
-                   "content_block_start", "content_block_data", "content_block_stop"] = Field(
+                   "content_block_start", "content_block_data", "content_block_stop",
+                   "code_recognition", "multimodal_analysis", "multimodal_exercises"] = Field(
         ..., description="事件类型"
     )
     data: Any = Field(..., description="事件数据")
@@ -463,6 +490,9 @@ class LearningPathGenerateRequest(BaseSchema):
     weak_points: Optional[List[str]] = Field(
         None, description="问卷：用户自认薄弱的知识点列表"
     )
+    target_points: Optional[List[str]] = Field(
+        None, description="问卷：该方向包含的知识点列表（用于过滤路径）"
+    )
 
 
 class LearningPathListResponse(BaseSchema):
@@ -519,3 +549,45 @@ if __name__ == "__main__":
         print(f"   JSON: {obj.model_dump_json(indent=2)[:100]}...\n")
 
     print("🎉 所有Schema自检通过！")
+
+
+# ============================================================
+# 7. 多模态代码分析接口
+# ============================================================
+class MultimodalAnalyzeRequest(BaseSchema):
+    """多模态代码分析请求"""
+    image_url: str = Field(..., description="已上传图片的URL（通过 /api/images/upload 获取）")
+    prompt: Optional[str] = Field(None, max_length=1000, description="可选的自定义提示词")
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, v: str) -> str:
+        if not v.startswith("/static/uploads/images/"):
+            raise ValueError("图片URL格式不正确，应以 /static/uploads/images/ 开头")
+        return v.strip()
+
+
+class CodeProblem(BaseModel):
+    """代码问题"""
+    type: str = Field(..., description="问题类型：语法错误/逻辑错误/最佳实践")
+    description: str = Field(..., description="问题描述")
+    line: Optional[str] = Field(None, description="问题所在行")
+    fix: str = Field(..., description="修复建议")
+
+
+class Exercise(BaseModel):
+    """练习题"""
+    type: str = Field(..., description="题型：choice/fill/code")
+    question: str = Field(..., description="题目内容")
+    options: Optional[List[str]] = Field(None, description="选项列表（选择题）")
+    answer: str = Field(..., description="正确答案")
+    explanation: str = Field(..., description="解析")
+
+
+class MultimodalAnalysisData(BaseModel):
+    """多模态分析结果数据"""
+    code_text: str = Field("", description="识别出的代码")
+    explanation: str = Field("", description="代码解释")
+    problems: List[CodeProblem] = Field(default_factory=list, description="问题诊断")
+    exercises: List[Exercise] = Field(default_factory=list, description="练习题")
+    knowledge_points: List[str] = Field(default_factory=list, description="涉及的知识点")

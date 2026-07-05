@@ -20,7 +20,7 @@ export function renderMarkdown(text: string): string {
   if (!text) return ''
   const raw = marked.parse(text) as string
   const clean = DOMPurify.sanitize(raw, {
-    ADD_TAGS: ['svg', 'path', 'g', 'rect', 'circle', 'line', 'polyline', 'polygon', 'text', 'foreignObject'],
+    ADD_TAGS: ['svg', 'path', 'g', 'rect', 'circle', 'line', 'polyline', 'polygon', 'text'],
     ADD_ATTR: ['viewBox', 'd', 'fill', 'stroke', 'stroke-width', 'transform', 'cx', 'cy', 'r', 'x', 'y', 'width', 'height', 'points'],
   })
   return clean
@@ -50,7 +50,11 @@ export function highlightCodeBlocks(container: HTMLElement): void {
     copyBtn.className = 'copy-btn'
     copyBtn.textContent = '复制'
     copyBtn.onclick = function () {
-      navigator.clipboard.writeText(block.textContent || '').then(() => {
+      // 克隆节点，去掉 <br> 标签（防止 marked breaks:true 注入的多余换行）
+      const clone = block.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('br').forEach(br => br.remove())
+      const text = clone.textContent || ''
+      navigator.clipboard.writeText(text).then(() => {
         copyBtn.textContent = '已复制'
         copyBtn.classList.add('copied')
         setTimeout(() => {
@@ -61,7 +65,6 @@ export function highlightCodeBlocks(container: HTMLElement): void {
     }
     header.appendChild(copyBtn)
 
-    hljs.highlightElement(block as HTMLElement)
     ;(block as HTMLElement).dataset.highlighted = 'true'
   })
 }
@@ -70,4 +73,17 @@ export function escapeHtml(str: string): string {
   const div = document.createElement('div')
   div.textContent = str
   return div.innerHTML
+}
+
+export function highlightCodeToHtml(code: string, lang?: string): string {
+  if (!code) return ''
+  try {
+    const language = lang || 'python'
+    if (hljs.getLanguage(language)) {
+      return hljs.highlight(code, { language }).value
+    }
+    return hljs.highlightAuto(code).value
+  } catch {
+    return escapeHtml(code)
+  }
 }

@@ -1,7 +1,7 @@
 """
 agents/resource_agent.py - 学习路径资源生成智能体（软件杯A3赛题核心功能）
 - 为学习路径节点生成多类型关联资源（doc/quiz/mindmap）
-- 复用现有 DocAgent、QuizAgent、MindmapAgent
+- 复用现有 ContentAgent、QuizAgent、MindmapAgent
 - 支持并发生成多种资源
 - 返回结构化资源数据，供 API 层存储到 LearningPathNodeResource 表
 """
@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, UTC
 
 from agents.base_agent import BaseAgent
-from agents.doc_agent import DocAgent
+from agents.content_agent import ContentAgent, ContentType
 from agents.quiz_agent import QuizAgent
 from agents.mindmap_agent import MindmapAgent
 from utils.agent_helpers import get_profile_from_context
@@ -39,7 +39,9 @@ class ResourceAgent(BaseAgent):
         """懒加载子Agent单例"""
         if resource_type not in self._agents:
             if resource_type == "doc":
-                self._agents[resource_type] = DocAgent(user_id=self.user_id)
+                self._agents[resource_type] = ContentAgent(
+                    content_type=ContentType.DOCUMENT, user_id=self.user_id
+                )
             elif resource_type == "quiz":
                 self._agents[resource_type] = QuizAgent(user_id=self.user_id)
             elif resource_type == "mindmap":

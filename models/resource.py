@@ -31,7 +31,7 @@ try:
 except ImportError:
     # 开发阶段的 fallback，生产环境应确保 config 正确导出
     logger.warning("⚠️  未从 config.model_config 导入枚举，使用默认值")
-    RESOURCE_TYPES = ("doc", "quiz", "mindmap", "code", "video")
+    RESOURCE_TYPES = ("doc", "quiz", "mindmap", "code", "video", "daily_challenge", "daily_extra", "multimodal")
     RESOURCE_STATUS = ("pending", "processing", "completed", "failed")
 
 from models.database import Base
@@ -198,7 +198,24 @@ class Resource(Base):
     )
 
     # ------------------------------
-    # 8. 资源复用标记（加分项）
+    # 8. 资源库标记
+    # ------------------------------
+    in_library: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="0",
+        nullable=False,
+        comment="是否已加入资源库（默认False，用户手动收藏后为True）"
+    )
+
+    note: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="用户对该资源的学习笔记"
+    )
+
+    # ------------------------------
+    # 9. 资源复用标记（加分项）
     # ------------------------------
     is_reusable: Mapped[bool] = mapped_column(
         Boolean,
@@ -415,6 +432,7 @@ class Resource(Base):
             "status": self.status,
             "progress_percent": self.progress_percent,
             "error_message": self.error_message,
+            "in_library": self.in_library,
             "is_reusable": self.is_reusable,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

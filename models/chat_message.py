@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 from datetime import datetime
 
-from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, func
+from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.database import Base
@@ -38,8 +38,15 @@ class ChatMessage(Base):
     content_blocks_json: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="结构化内容块 JSON（content_blocks 架构）"
     )
+    image_urls_json: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="用户消息附带的图片URL列表JSON"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False, comment="创建时间"
+    )
+    is_bookmarked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False,
+        comment="是否已收藏"
     )
 
     # 关联

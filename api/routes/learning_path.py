@@ -38,7 +38,7 @@ from utils.logger import get_logger
 from config.constants import (
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_SERVER_ERROR,
     DEFAULT_ESTIMATED_TIME_MIN, EXTENDED_ESTIMATED_TIME_MIN,
-    MAX_LEARNING_PATH_STEPS, LP_MASTERY_THRESHOLD,
+    LP_MASTERY_THRESHOLD,
     LP_NODE_STATUS_NOT_STARTED, LP_NODE_STATUS_IN_PROGRESS,
     LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_NEEDS_REVIEW,
     LEARNING_PATH_STATUS_ACTIVE, LP_RESOURCE_STATUS_PENDING,
@@ -88,8 +88,8 @@ async def _get_user_profile(session: AsyncSession, user_id: int) -> Dict[str, An
 
 async def _generate_path_with_agent(
     user_id: int, topic: str, goal: Optional[str], profile: Dict[str, Any]
-) -> List[Dict[str, Any]]:
-    """调用PathAgent生成学习路径"""
+) -> Dict[str, Any]:
+    """调用PathAgent生成学习路径，返回 {learning_path, path_title}"""
     from agents.path_agent import PathAgent
 
     agent = PathAgent(user_id=str(user_id))
@@ -102,7 +102,10 @@ async def _generate_path_with_agent(
         agent.process(user_input=topic, context=context),
         timeout=60,
     )
-    return result.get("learning_path", [])
+    return {
+        "learning_path": result.get("learning_path", []),
+        "path_title": result.get("path_title", ""),
+    }
 
 
 async def _save_path_to_db(
@@ -115,6 +118,7 @@ async def _save_path_to_db(
     description: Optional[str] = None,
 ) -> LearningPath:
     """将生成的路径保存到数据库"""
+    now = datetime.now(UTC).replace(tzinfo=None)
     path = LearningPath(
         user_id=user_id,
         title=title,
@@ -124,6 +128,7 @@ async def _save_path_to_db(
         status=LEARNING_PATH_STATUS_ACTIVE,
         total_nodes=len(path_steps),
         completed_nodes=0,
+        updated_at=now,
         total_estimated_time=sum(
             s.get("estimated_time_min", DEFAULT_ESTIMATED_TIME_MIN) for s in path_steps
         ),
@@ -136,7 +141,7 @@ async def _save_path_to_db(
         node = LearningPathNode(
             learning_path_id=path.id,
             knowledge_point=kp,
-            description=f"学习{kp}",
+            description=step.get("description") or f"学习{kp}",
             order=idx + 1,
             prerequisites=step.get("prerequisites", []),
             difficulty=step.get("difficulty", 0.5),
@@ -194,7 +199,7 @@ async def list_learning_paths(
             select(LearningPath)
             .where(*conditions)
             .options(selectinload(LearningPath.nodes))
-            .order_by(LearningPath.updated_at.desc())
+            .order_by(LearningPath.created_at.desc())
         )
         result = await session.execute(stmt)
         paths = result.scalars().all()
@@ -257,28 +262,32 @@ async def generate_learning_path(
             profile["mastered_points"] = req.mastered_points
         if req.weak_points is not None:
             profile["weak_points"] = req.weak_points
+        if req.target_points is not None:
+            profile["target_points"] = req.target_points
 
         # 调用PathAgent生成路径
-        path_steps = await _generate_path_with_agent(
+        agent_result = await _generate_path_with_agent(
             user_id=current_user.id,
             topic=req.topic,
             goal=req.goal,
             profile=profile,
         )
+        path_steps = agent_result.get("learning_path", [])
+        llm_title = agent_result.get("path_title", "")
 
         if not path_steps:
             return BaseResponse(
-                code=HTTP_SERVER_ERROR,
-                message="路径生成失败，请重试",
+                code=HTTP_BAD_REQUEST,
+                message="无法生成学习路径：你已掌握所有相关知识点，试试换个学习方向吧",
                 data=None,
             )
 
         # 限制步数
-        max_steps = req.max_steps or MAX_LEARNING_PATH_STEPS
-        path_steps = path_steps[:max_steps]
+        if req.max_steps:
+            path_steps = path_steps[:req.max_steps]
 
-        # 保存到数据库
-        title = f"{req.topic}学习路径"
+        # 优先使用LLM生成的标题
+        title = llm_title or f"{req.topic}学习路径"
         path = await _save_path_to_db(
             session=session,
             user_id=current_user.id,
@@ -532,19 +541,17 @@ async def submit_quiz_result(
         mastery = _calculate_mastery(req.correct_count, req.total_questions)
         node.update_mastery(mastery)
 
-        # 如果掌握度达标，标记完成
-        if mastery >= LP_MASTERY_THRESHOLD:
-            node.mark_completed()
-            completed_count = sum(
-                1 for n in (path.nodes or [])
-                if n.status == LP_NODE_STATUS_COMPLETED
-            )
-            path.completed_nodes = completed_count
-        elif mastery < LP_MASTERY_THRESHOLD * 0.7:
-            # 掌握度明显不足，标记需要复习
+        # 如果掌握度明显不足，标记需要复习
+        if mastery < LP_MASTERY_THRESHOLD * 0.7:
             if node.status == LP_NODE_STATUS_COMPLETED:
                 node.mark_needs_review()
 
+        # 统一重新计算已完成节点数（无论状态如何变化）
+        completed_count = sum(
+            1 for n in (path.nodes or [])
+            if n.status == LP_NODE_STATUS_COMPLETED
+        )
+        path.completed_nodes = completed_count
         path.update_progress()
         await session.flush()
 

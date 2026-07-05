@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { login as apiLogin, register as apiRegister, getMe } from '../api/auth'
 import { setAuthGetter } from '../api/index'
+import { setImageTokenGetter } from '../api/images'
+import { setMultimodalTokenGetter } from '../api/multimodal'
 
 interface AuthData {
   access_token: string
@@ -104,3 +106,5 @@ setAuthGetter(
   () => useAuthStore.getState().token,
   () => useAuthStore.getState().logout()
 )
+setImageTokenGetter(() => useAuthStore.getState().token)
+setMultimodalTokenGetter(() => useAuthStore.getState().token)

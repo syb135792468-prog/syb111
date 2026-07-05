@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 # 1. 严格复用已有枚举（稳健导入，修复作用域警告）
 # ============================================================
 # 先定义 Fallback 常量，确保任何导入情况都有值
-RESOURCE_TYPES_FALLBACK = ("doc", "quiz", "mindmap", "code", "video")
+RESOURCE_TYPES_FALLBACK = ("doc", "quiz", "mindmap", "code", "video", "reading", "daily_challenge", "daily_extra", "multimodal")
 RESOURCE_STATUS_FALLBACK = ("pending", "processing", "completed", "failed")
 PROFILE_DIMENSION_NAMES_FALLBACK = [
     "knowledge_level", "learning_goal", "learning_style",
@@ -131,6 +131,8 @@ class WorkflowState(BaseModel):
     # ------------------------------
     profile_data: Dict[str, Any] = Field(
         default_factory=lambda: {
+            "gender": None,
+            "age": None,
             "knowledge_level": "beginner",
             "learning_style": "mixed",
             "learning_goal": "interest",

@@ -152,6 +152,8 @@ async def get_profile(
 
         # 🔴 显式构造 ProfileData 对象
         profile_data = ProfileData(
+            gender=profile.gender,
+            age=profile.age,
             knowledge_level=profile.knowledge_level,
             learning_goal=profile.learning_goal,
             learning_style=profile.learning_style,
@@ -342,6 +344,8 @@ async def refresh_profile(
         # 加载当前画像
         profile = await _get_or_create_profile(db, user_id)
         old_profile = {
+            "gender": profile.gender,
+            "age": profile.age,
             "knowledge_level": profile.knowledge_level,
             "learning_style": profile.learning_style,
             "learning_goal": profile.learning_goal,
@@ -360,7 +364,17 @@ async def refresh_profile(
         history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-10:]])
         combined_input = f"以下是用户最近的对话历史，请分析其中的学习画像信息：\n\n{history_text}"
 
-        result = await agent.process(combined_input, {"profile_data": old_profile, "chat_history": chat_history})
+        # 查询知识点进度分数，用于画像分类的证据判断
+        from models.progress import LearningProgress
+        score_result = await db.execute(
+            select(LearningProgress.topic, LearningProgress.score).where(
+                LearningProgress.user_id == user_id,
+                LearningProgress.is_active == True,
+                LearningProgress.score.isnot(None),
+            )
+        )
+        progress_scores = {row[0]: row[1] for row in score_result.all()}
+        result = await agent.process(combined_input, {"profile_data": old_profile, "chat_history": chat_history, "progress_scores": progress_scores})
         profile_update = result.get("_profile_update")
 
         if profile_update and isinstance(profile_update, dict) and len(profile_update) > 0:
@@ -383,6 +397,8 @@ async def refresh_profile(
 
             # 返回更新后的画像
             updated = ProfileData(
+                gender=profile.gender,
+                age=profile.age,
                 knowledge_level=profile.knowledge_level,
                 learning_goal=profile.learning_goal,
                 learning_style=profile.learning_style,
@@ -412,6 +428,54 @@ async def refresh_profile(
         return BaseResponse(
             code=HTTP_SERVER_ERROR,
             message=f"刷新失败: {str(e)}",
+            data=None,
+            request_id=request_id,
+        )
+
+
+@router.post("/{user_id}/suggestions", response_model=BaseResponse, description="AI 学习建议")
+async def get_suggestions(
+    user_id: int = Depends(get_valid_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """基于用户画像生成个性化学习建议"""
+    request_id = generate_request_id()
+    try:
+        from utils.llm_client import get_async_llm_client
+
+        profile = await _get_or_create_profile(db, user_id)
+
+        profile_summary = (
+            f"知识水平: {profile.knowledge_level or '未知'}\n"
+            f"学习目标: {profile.learning_goal or '未知'}\n"
+            f"学习风格: {profile.learning_style or '未知'}\n"
+            f"时长偏好: {profile.duration_preference or '未知'}\n"
+            f"薄弱知识点: {', '.join(profile.weak_points) if profile.weak_points else '无'}\n"
+            f"已掌握知识点: {', '.join(profile.mastered_points) if profile.mastered_points else '无'}\n"
+            f"动力水平: {profile.motivation_level or '未知'}\n"
+            f"当前学习主题: {profile.current_topic or '无'}"
+        )
+
+        client = get_async_llm_client()
+        messages = [
+            {"role": "system", "content": "你是一位专业的Python学习顾问。根据用户的学习画像，给出个性化、具体、可执行的学习建议。建议分3-5个要点，每个要点包含具体行动和原因。控制在500字以内。"},
+            {"role": "user", "content": f"请根据以下学习画像给出个性化建议：\n\n{profile_summary}"},
+        ]
+
+        result = await client.call(messages=messages, max_tokens=800)
+        suggestion = result.get("content", "") if isinstance(result, dict) else str(result)
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={"suggestions": suggestion, "profile_summary": profile_summary},
+            request_id=request_id,
+        )
+    except Exception as e:
+        logger.error(f"❌ 生成建议失败: {str(e)}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(
+            code=HTTP_SERVER_ERROR,
+            message=f"生成建议失败: {str(e)}",
             data=None,
             request_id=request_id,
         )

@@ -85,13 +85,18 @@ def setup_root_logger():
     if root_logger.handlers:
         return
 
-    # 1. 控制台处理器（Windows GBK 兼容：UTF-8 输出）
+    # 1. 控制台处理器（Windows GBK 兼容：UTF-8 输出 + 降级替换）
     try:
         if hasattr(sys.stdout, 'reconfigure'):
             sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
-    console_handler = logging.StreamHandler(sys.stdout)
+    # 用 TextIOWrapper 包装 stdout，确保 emoji 等非 GBK 字符不会导致 [Errno 22]
+    import io
+    safe_stdout = io.TextIOWrapper(
+        sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True
+    ) if hasattr(sys.stdout, 'buffer') else sys.stdout
+    console_handler = logging.StreamHandler(safe_stdout)
     console_handler.setLevel(logging.DEBUG if ENVIRONMENT == "development" else logging.INFO)
     console_handler.setFormatter(CONSOLE_FORMAT)
     root_logger.addHandler(console_handler)

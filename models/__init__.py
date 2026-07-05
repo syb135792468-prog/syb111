@@ -10,10 +10,13 @@ from models.error_book import ErrorBook
 from models.experiment import Experiment, ExperimentAssignment
 from models.socratic_session import SocraticSession
 from models.learning_path import LearningPath, LearningPathNode, LearningPathNodeResource
+from models.daily_challenge import DailyChallenge
+from models.explanation import Explanation
 
 __all__ = [
     "User", "UserProfile", "Resource", "LearningProgress",
     "ChatMessage", "Conversation", "QuizAttempt", "ErrorBook",
     "Experiment", "ExperimentAssignment", "SocraticSession",
     "LearningPath", "LearningPathNode", "LearningPathNodeResource",
+    "DailyChallenge", "Explanation",
 ]

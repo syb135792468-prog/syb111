@@ -59,6 +59,21 @@ class UserProfile(Base):
     )
 
     # ------------------------------
+    # 基础人口统计字段
+    # ------------------------------
+    gender: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        comment="性别: male / female / other"
+    )
+
+    age: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="年龄"
+    )
+
+    # ------------------------------
     # 7 个核心画像维度（与 profile_agent 输出字段完全一致）
     # ------------------------------
     # 1. 编程基础水平
@@ -136,6 +151,30 @@ class UserProfile(Base):
         DateTime,  # SQLite 不支持 timezone，已移除
         nullable=True,
         comment="最近一次学习时间（UTC）"
+    )
+
+    # ------------------------------
+    # 每日一题连续打卡字段
+    # ------------------------------
+    current_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+        comment="当前连续答题天数"
+    )
+    longest_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+        comment="最长连续答题天数"
+    )
+    streak_status: Mapped[str] = mapped_column(
+        String(20), default="active", server_default="'active'", nullable=False,
+        comment="连续状态: active / broken"
+    )
+    recovery_progress: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False,
+        comment="恢复进度(0-3)，断签后需连续答对3题恢复"
+    )
+    last_challenge_date: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True,
+        comment="最后答题日期 YYYY-MM-DD"
     )
 
     # ------------------------------

@@ -24,6 +24,14 @@ const ENCOURAGEMENTS = [
   '进步明显！',
 ]
 
+const REASSURANCES = [
+  '没关系，再试一次！',
+  '继续加油，会更好的！',
+  '复习一下就掌握了！',
+  '别灰心，慢慢来！',
+  '多练几遍就熟练了！',
+]
+
 export function MasteryBar() {
   const masteryData = useChatStore((s) => s.masteryData)
   const [animatingKp, setAnimatingKp] = useState<string | null>(null)
@@ -32,22 +40,23 @@ export function MasteryBar() {
   useEffect(() => {
     if (!masteryData?.changes || Object.keys(masteryData.changes).length === 0) return
 
-    // 找到变化最大的知识点
-    let maxChange = 0
+    // 找到变化幅度最大（绝对值）的知识点
+    let maxAbsChange = 0
     let maxKp = ''
+    let isIncrease = true
     for (const [kp, change] of Object.entries(masteryData.changes)) {
       const diff = change.to - change.from
-      if (diff > maxChange) {
-        maxChange = diff
+      if (Math.abs(diff) > maxAbsChange) {
+        maxAbsChange = Math.abs(diff)
         maxKp = kp
+        isIncrease = diff > 0
       }
     }
 
     if (maxKp) {
       setAnimatingKp(maxKp)
-      // 显示鼓励语
-      const randomEncouragement = ENCOURAGEMENTS[Math.floor(Math.random() * ENCOURAGEMENTS.length)]
-      setEncouragement(randomEncouragement)
+      const messages = isIncrease ? ENCOURAGEMENTS : REASSURANCES
+      setEncouragement(messages[Math.floor(Math.random() * messages.length)])
 
       // 动画结束后清除
       const timer = setTimeout(() => {

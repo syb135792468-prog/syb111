@@ -20,7 +20,7 @@ from ai.prompts.socratic_prompts import (
     PROBLEM_ANALYSIS_PROMPT, TEACHING_DECISION_PROMPT,
     EVALUATE_AND_DECIDE_PROMPT,
     QUESTION_GENERATION_PROMPT, QUESTION_STAGES, LEVEL_GUIDES, DIFFICULTY_DESC,
-    ANSWER_EVALUATION_PROMPT, HINT_GENERATION_PROMPT,
+    HINT_GENERATION_PROMPT,
     CONCEPT_EXPLANATION_PROMPT, CODE_DEMO_PROMPT, CODE_DEMO_EXPLAIN_PROMPT,
     PRACTICE_EXERCISE_PROMPT, SUMMARY_PROMPT, LEARNING_STATE_GUIDES,
 )
@@ -248,6 +248,16 @@ async def analyze_problem(state: SocraticState) -> dict:
 # ============================================================
 async def teaching_decision_engine(state: SocraticState) -> dict:
     """教学决策引擎：根据当前教学上下文决定下一步动作"""
+    # force_end 标记：安全阀触发后的最终讲解完成，强制进入总结
+    if state.get("force_end"):
+        return {
+            "next_action": "summarize",
+            "action_reason": "安全阀最终讲解完成，进入总结",
+            "action_target": "",
+            "current_stage": f"{state.get('original_query', '')}-安全结束",
+            "conversation_ended": True,
+        }
+
     llm = get_async_llm_client()
 
     learning_state = state.get("learning_state", "normal")
@@ -278,8 +288,11 @@ async def teaching_decision_engine(state: SocraticState) -> dict:
             temperature=0.3, max_tokens=128,
         )
         decision = _parse_json_response(response)
+    except (ConnectionError, TimeoutError, OSError, json.JSONDecodeError) as e:
+        logger.warning(f"teaching_decision LLM/解析失败: {type(e).__name__}: {e}")
+        decision = {}
     except Exception as e:
-        logger.warning(f"teaching_decision LLM 失败: {e}")
+        logger.error(f"teaching_decision 未预期异常: {type(e).__name__}: {e}", exc_info=True)
         decision = {}
 
     action = decision.get("action", "ask_question")
@@ -291,6 +304,21 @@ async def teaching_decision_engine(state: SocraticState) -> dict:
                      "rephrase_question", "relate_knowledge", "summarize"}
     if action not in valid_actions:
         action = "ask_question"
+
+    # 防止同一动作+同一知识点连续重复3次（允许1次递进，第3次强制切换）
+    if len(recent_actions) >= 2 and action != "summarize":
+        last_two = recent_actions[-2:]
+        if all(a.get("action") == action and a.get("target") == target for a in last_two):
+            fallback_map = {
+                "explain_concept": "practice_exercise",
+                "code_demo": "ask_question",
+                "rephrase_question": "explain_concept",
+                "relate_knowledge": "ask_question",
+                "ask_question": "explain_concept",
+                "practice_exercise": "explain_concept",
+            }
+            action = fallback_map.get(action, "ask_question")
+            logger.info(f"🔄 防重复(连续2次)：强制切换→{action} (target={target})")
 
     # 安全检查：如果所有知识点都已覆盖且掌握度高，强制 summarize
     pending = state.get("pending_points", [])
@@ -632,62 +660,36 @@ async def practice_exercise(state: SocraticState) -> dict:
 
 
 # ============================================================
-# 节点 9: evaluate_answer（保留用于 hint 流程）
-# ============================================================
-async def evaluate_answer(state: SocraticState) -> dict:
-    """评估用户回答（仅用于 hint 流程的轻量评估）"""
-    llm = get_async_llm_client()
-
-    asked = state.get("asked_questions", [])
-    chat_history = state.get("chat_history", [])
-
-    if not asked:
-        return {"current_response": "没有待评估的问题。", "current_response_type": "feedback", "conversation_ended": True}
-
-    current_question = asked[-1]
-    latest_answer = ""
-    for msg in reversed(chat_history):
-        if msg.get("role") == "user":
-            latest_answer = msg["content"]
-            break
-
-    if not latest_answer:
-        return {"current_response": "未检测到你的回答。", "current_response_type": "feedback"}
-
-    user_answers = state.get("user_answers", [])
-    recent_qa = user_answers[-3:] if user_answers else []
-    qa_summary = ""
-    if recent_qa:
-        lines = [f"  {'✓' if qa.get('correct') else '✗'} {qa.get('question', '')[:40]} → {qa.get('answer', '')[:40]}" for qa in recent_qa]
-        qa_summary = "\n".join(lines)
-
-    prompt = ANSWER_EVALUATION_PROMPT.format(
-        question=current_question, answer=latest_answer,
-        knowledge_points=state.get("knowledge_points", []),
-        mastery=state.get("mastery_level", {}),
-        qa_summary=f"历史：\n{qa_summary}" if qa_summary else "",
-    )
-
-    try:
-        response = await llm.call(messages=[{"role": "system", "content": prompt}], temperature=0.1, max_tokens=256)
-        evaluation = _parse_json_response(response)
-    except Exception as e:
-        logger.warning(f"evaluate_answer LLM 失败: {e}")
-        evaluation = {}
-
-    return _apply_evaluation(state, evaluation, current_question, latest_answer)
-
-
-# ============================================================
-# 节点 9b: evaluate_and_decide（合并评估+决策，省一次LLM调用）
+# 节点 9: evaluate_and_decide（合并评估+决策，省一次LLM调用）
 # ============================================================
 async def evaluate_and_decide(state: SocraticState) -> dict:
     """评估用户回答并决定下一步教学动作（单次LLM调用完成两个任务）"""
-    # 安全阀（Duolingo 模式）：错误>=4 OR hint>=8 → 强制结束
+    # 安全阀（Duolingo 模式）：错误>=4 OR hint>=8 OR 轮次>=20 → 强制结束
     errors = state.get("consecutive_errors", 0)
     hints = state.get("hint_count", 0)
-    if errors >= 4 or hints >= 8:
-        reason = "连续错误过多" if errors >= 4 else "提示请求过多"
+    total_turns = len(state.get("user_answers", []))
+    if errors >= 4 or hints >= 8 or total_turns >= 20:
+        if errors >= 4:
+            reason = "连续错误过多"
+        elif hints >= 8:
+            reason = "提示请求过多"
+        else:
+            reason = "达到最大对话轮次"
+        # hint>=8 时先讲解再结束，其他直接结束
+        if hints >= 8 and errors < 4 and total_turns < 20:
+            return {
+                "next_action": "explain_concept",
+                "action_reason": f"{reason}，讲解后强制结束",
+                "action_target": state.get("action_target", ""),
+                "current_stage": f"{state.get('original_query', '')}-最终讲解",
+                "conversation_ended": False,
+                "force_end": True,
+                "pending_feedback": "",
+                "recent_actions": state.get("recent_actions", []) + [{
+                    "action": "explain_concept", "target": state.get("action_target", ""),
+                    "reason": f"安全阀：{reason}，最终讲解", "ts": datetime.now().isoformat(),
+                }],
+            }
         return {
             "next_action": "summarize",
             "action_reason": f"{reason}，强制结束",
@@ -805,15 +807,18 @@ async def evaluate_and_decide(state: SocraticState) -> dict:
     try:
         response = await llm.call(messages=[{"role": "system", "content": prompt}], temperature=0.2, max_tokens=384)
         result = _parse_json_response(response)
+    except (ConnectionError, TimeoutError, OSError, json.JSONDecodeError) as e:
+        logger.warning(f"evaluate_and_decide LLM/解析失败: {type(e).__name__}: {e}")
+        result = {}
     except Exception as e:
-        logger.warning(f"evaluate_and_decide LLM 失败: {e}")
+        logger.error(f"evaluate_and_decide 未预期异常: {type(e).__name__}: {e}", exc_info=True)
         result = {}
 
     # 提取评估部分
     evaluation_result = _apply_evaluation(state, result, current_question, latest_answer)
 
-    # 提取决策部分
-    action = result.get("action", "ask_question")
+    # 提取决策部分（LLM失败时默认 explain_concept，比 ask_question 更安全）
+    action = result.get("action", "explain_concept")
     reason = result.get("reason", "")
     target = result.get("target", state.get("pending_points", [""])[0] if state.get("pending_points") else "")
 
@@ -864,7 +869,7 @@ async def evaluate_and_decide(state: SocraticState) -> dict:
 
 
 def _apply_evaluation(state: SocraticState, evaluation: dict, current_question: str, latest_answer: str) -> dict:
-    """共享的评估结果应用逻辑（evaluate_answer 和 evaluate_and_decide 共用）"""
+    """共享的评估结果应用逻辑（evaluate_and_decide 调用）"""
     correctness = evaluation.get("correctness", "部分正确")
     feedback = evaluation.get("feedback", "你的回答有一定道理，但还可以更全面。")
     mastery_updates = evaluation.get("mastery_updates", {})
@@ -902,12 +907,14 @@ def _apply_evaluation(state: SocraticState, evaluation: dict, current_question: 
     # 连续错误/正确计数
     consecutive_errors = state.get("consecutive_errors", 0)
     consecutive_correct = state.get("consecutive_correct", 0)
-    if correctness != "是":
-        consecutive_errors += 1
-        consecutive_correct = 0
-    else:
+    if correctness == "是":
         consecutive_errors = 0
         consecutive_correct += 1
+    elif correctness == "部分正确":
+        pass  # 部分正确：不累加错误、不重置正确，保持现状
+    else:
+        consecutive_errors += 1
+        consecutive_correct = 0
 
     # 更新学习状态（记录变化）
     old_learning_state = state.get("learning_state", "normal")
@@ -1402,10 +1409,13 @@ def build_socratic_workflow() -> StateGraph:
         },
     )
 
-    # 所有动作节点 → 合并评估+决策（核心优化：单次LLM调用）
-    for node in ["ask_question", "rephrase_question", "relate_knowledge",
-                 "explain_concept", "code_demo", "practice_exercise"]:
+    # 交互型动作（需要评估用户回答）→ evaluate_and_decide
+    for node in ["ask_question", "practice_exercise"]:
         workflow.add_edge(node, "evaluate_and_decide")
+
+    # 输出型动作（系统单向输出，无需评估）→ 直接回决策引擎
+    for node in ["explain_concept", "code_demo", "rephrase_question", "relate_knowledge"]:
+        workflow.add_edge(node, "teaching_decision_engine")
 
     # 合并节点 → 条件路由到下一个动作
     workflow.add_conditional_edges(
@@ -1445,6 +1455,9 @@ async def get_socratic_workflow() -> Any:
     if _socratic_app is None:
         from graph.checkpointer import get_checkpointer
         checkpointer = await get_checkpointer()
+        if checkpointer is None:
+            logger.error("❌ Checkpointer 不可用，苏格拉底模式无法启动（interrupt 机制依赖 checkpointer）")
+            raise RuntimeError("苏格拉底模式需要 checkpointer 支持，请检查数据库连接配置")
         workflow = build_socratic_workflow()
         _socratic_app = workflow.compile(checkpointer=checkpointer)
         logger.info("✅ 苏格拉底 2.0 工作流初始化完成")

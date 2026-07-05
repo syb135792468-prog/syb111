@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef, useMemo } from 'react'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
+import { useLearningCenterStore, type LearningEvent } from '../stores/learningCenter'
 import { fetchLearningProfile } from '../api/learningProfile'
 import type { LearningProfile } from '../api/learningProfile'
+import { normalizeKnowledgePointKey } from '../stores/learningCenter'
+import { calcKnowledgeLevel, smoothKnowledgeScore } from '../utils/scoringEngine'
 import { resetProgress } from '../api/progress'
 import { resetProfile } from '../api/profile'
 import AppHeader from '../components/layout/AppHeader'
@@ -12,27 +15,284 @@ import StyleChart from '../components/profile/StyleChart'
 import KnowledgeTags from '../components/profile/KnowledgeTags'
 import StudyTimeChart from '../components/profile/StudyTimeChart'
 import ConfirmDialog from '../components/common/ConfirmDialog'
-import { RefreshCw, Activity, RotateCcw, UserCog } from 'lucide-react'
+import { RefreshCw, Activity, RotateCcw, UserCog, Lightbulb } from 'lucide-react'
 
 export interface ProfileViewHandle {
   refresh: () => void
 }
 
+interface ProfileKnowledgePoint {
+  id: string
+  name: string
+  mastery: number
+  category?: string
+}
+
+interface ProfileStudyTimePoint {
+  date: string
+  label: string
+  minutes: number
+}
+
+const EVENT_DURATION_FALLBACK_SECONDS: Partial<Record<LearningEvent['actionType'], number>> = {
+  chat_explained: 90,
+  resource_viewed: 180,
+  multimodal_analyzed: 300,
+  quiz_submitted: 180,
+  quiz_passed: 240,
+  code_run_success: 60,
+  challenge_submitted: 240,
+  challenge_passed: 300,
+  error_reviewed: 240,
+  path_node_completed: 300,
+}
+
+function formatLastStudyLabel(lastStudyAt: string) {
+  if (!lastStudyAt) return '暂无记录'
+
+  const studyDate = new Date(lastStudyAt)
+  if (Number.isNaN(studyDate.getTime())) return '暂无记录'
+
+  return studyDate.toLocaleDateString('zh-CN')
+}
+
+function mergeKnowledgeLists(
+  basePoints: ProfileKnowledgePoint[],
+  livePoints: ProfileKnowledgePoint[],
+  sortDirection: 'asc' | 'desc',
+) {
+  const merged = new Map<string, ProfileKnowledgePoint>()
+
+  basePoints.forEach((point) => {
+    merged.set(normalizeKnowledgePointKey(point.name), point)
+  })
+
+  livePoints.forEach((point) => {
+    const key = normalizeKnowledgePointKey(point.name)
+    const existing = merged.get(key)
+    if (!existing) {
+      merged.set(key, point)
+      return
+    }
+
+    merged.set(key, {
+      ...existing,
+      mastery: sortDirection === 'desc'
+        ? Math.max(existing.mastery, point.mastery)
+        : Math.min(existing.mastery, point.mastery),
+    })
+  })
+
+  return Array.from(merged.values()).sort((a, b) => (
+    sortDirection === 'desc' ? b.mastery - a.mastery : a.mastery - b.mastery
+  ))
+}
+
+function getEventDurationSeconds(event: LearningEvent) {
+  if (typeof event.duration === 'number' && event.duration > 0) return event.duration
+  return EVENT_DURATION_FALLBACK_SECONDS[event.actionType] || 0
+}
+
+function buildRecentStudyTimeBase(baseData: ProfileStudyTimePoint[]) {
+  if (baseData.length > 0) {
+    return baseData.map((item) => ({ ...item }))
+  }
+
+  const dayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+  const result: ProfileStudyTimePoint[] = []
+  for (let i = 6; i >= 0; i -= 1) {
+    const day = new Date()
+    day.setHours(0, 0, 0, 0)
+    day.setDate(day.getDate() - i)
+    result.push({
+      date: `${day.getMonth() + 1}/${day.getDate()}`,
+      label: dayLabels[day.getDay()],
+      minutes: 0,
+    })
+  }
+  return result
+}
+
+function mergeStudyTimeWithEvents(
+  baseData: ProfileStudyTimePoint[],
+  baseTotalHours: number,
+  events: LearningEvent[],
+) {
+  const nextData = buildRecentStudyTimeBase(baseData)
+  const dayIndexByKey = new Map<string, number>()
+
+  nextData.forEach((item, index) => {
+    dayIndexByKey.set(item.date, index)
+  })
+
+  let addedSeconds = 0
+  events.forEach((event) => {
+    const durationSeconds = getEventDurationSeconds(event)
+    if (durationSeconds <= 0) return
+
+    const eventDate = new Date(event.timestamp)
+    if (Number.isNaN(eventDate.getTime())) return
+
+    const dateKey = `${eventDate.getMonth() + 1}/${eventDate.getDate()}`
+    const dayIndex = dayIndexByKey.get(dateKey)
+    if (dayIndex === undefined) return
+
+    nextData[dayIndex] = {
+      ...nextData[dayIndex],
+      minutes: nextData[dayIndex].minutes + Math.max(1, Math.round(durationSeconds / 60)),
+    }
+    addedSeconds += durationSeconds
+  })
+
+  return {
+    dailyStudyTime: nextData,
+    totalStudyHours: Math.round((baseTotalHours + addedSeconds / 3600) * 10) / 10,
+  }
+}
+
+function mergeMotivationWithEvents(
+  baseMotivation: LearningProfile['learningMotivation'],
+  events: LearningEvent[],
+) {
+  if (events.length === 0) return baseMotivation
+
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const recentEvents = events.filter((event) => {
+    const time = new Date(event.timestamp).getTime()
+    return !Number.isNaN(time) && time >= sevenDaysAgo
+  })
+  if (recentEvents.length === 0) return baseMotivation
+
+  const activeDays = new Set(
+    recentEvents.map((event) => {
+      const date = new Date(event.timestamp)
+      return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+    }),
+  ).size
+
+  const totalHours = recentEvents.reduce((sum, event) => sum + getEventDurationSeconds(event), 0) / 3600
+  const eventCount = recentEvents.length
+  const liveValue = Math.min(
+    100,
+    Math.round(activeDays * 10 + totalHours * 8 + Math.min(eventCount, 8) * 4),
+  )
+  const value = Math.max(baseMotivation.value, liveValue)
+  const status = value >= 75 ? '高涨' : value >= 35 ? '适中' : '低迷'
+
+  return { status, value }
+}
+
+function resolveAccuracySample(event: LearningEvent) {
+  switch (event.actionType) {
+    case 'quiz_passed':
+    case 'challenge_passed':
+      return 100
+    case 'quiz_submitted':
+    case 'challenge_submitted':
+      return 0
+    default:
+      return null
+  }
+}
+
+function mergeAccuracyWithEvents(baseAccuracy: number, events: LearningEvent[]) {
+  const samples = events
+    .map(resolveAccuracySample)
+    .filter((value): value is NonNullable<typeof value> => value != null)
+
+  if (samples.length === 0) return baseAccuracy
+
+  if (baseAccuracy <= 0) {
+    return Math.round(samples.reduce<number>((sum, value) => sum + value, 0) / samples.length)
+  }
+
+  const baseSampleWeight = 6
+  const mergedTotal = baseAccuracy * baseSampleWeight + samples.reduce<number>((sum, value) => sum + value, 0)
+  return Math.round(mergedTotal / (baseSampleWeight + samples.length))
+}
+
 // --- 组件 ---
+const KNOWLEDGE_ATTEMPT_ACTIONS = new Set<LearningEvent['actionType']>([
+  'quiz_submitted',
+  'quiz_passed',
+  'challenge_submitted',
+  'challenge_passed',
+])
+
+const KNOWLEDGE_SCORE_FALLBACK: Partial<Record<LearningEvent['actionType'], number>> = {
+  quiz_passed: 90,
+  challenge_passed: 92,
+  code_run_success: 78,
+  path_node_completed: 82,
+}
+
+interface LiveKnowledgeAdjustment {
+  attempts: number
+  bestScore: number
+  passiveCount: number
+}
+
+function resolveKnowledgeTargets(event: LearningEvent) {
+  return Array.from(new Set(
+    [event.knowledgePoint, ...(event.knowledgePoints || [])]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim()),
+  ))
+}
+
+function resolveKnowledgeEventScore(event: LearningEvent) {
+  if (typeof event.score === 'number') {
+    return Math.round(Math.max(0, Math.min(100, event.score)))
+  }
+  return KNOWLEDGE_SCORE_FALLBACK[event.actionType] || 0
+}
+
+function buildLiveKnowledgeAdjustments(events: LearningEvent[]) {
+  const adjustments = new Map<string, LiveKnowledgeAdjustment>()
+
+  events.forEach((event) => {
+    const targets = resolveKnowledgeTargets(event)
+    if (targets.length === 0) return
+
+    const score = resolveKnowledgeEventScore(event)
+    const countsAsAttempt = KNOWLEDGE_ATTEMPT_ACTIONS.has(event.actionType)
+    const countsAsPassive = !countsAsAttempt && score <= 0
+
+    targets.forEach((target) => {
+      const key = normalizeKnowledgePointKey(target)
+      if (!key) return
+
+      const existing = adjustments.get(key) || { attempts: 0, bestScore: 0, passiveCount: 0 }
+      adjustments.set(key, {
+        attempts: existing.attempts + (countsAsAttempt ? 1 : 0),
+        bestScore: Math.max(existing.bestScore, score),
+        passiveCount: existing.passiveCount + (countsAsPassive ? 1 : 0),
+      })
+    })
+  })
+
+  return adjustments
+}
+
 const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
+  const syncProfile = useLearningCenterStore((state) => state.syncProfile)
+  const profileSnapshot = useLearningCenterStore((state) => state.profileSnapshot)
+  const learningEvents = useLearningCenterStore((state) => state.events)
 
   // --- 状态 ---
-  const [profile, setProfile] = useState<LearningProfile | null>(null)
+  const [profile, setProfile] = useState<LearningProfile | null>(profileSnapshot)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [profileLoadedAt, setProfileLoadedAt] = useState<number>(0)
   const mountedRef = useRef(true)
 
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
+
 
   // 重置状态（各自独立）
   const [resettingProgress, setResettingProgress] = useState(false)
@@ -57,6 +317,8 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
       const data = await fetchLearningProfile(authStore.userId)
       if (!mountedRef.current) return
       setProfile(data)
+      syncProfile(data)
+      setProfileLoadedAt(Date.now())
     } catch (e) {
       if (!mountedRef.current) return
       console.error('Failed to load learning profile:', e)
@@ -64,7 +326,92 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
     } finally {
       if (mountedRef.current) setLoading(false)
     }
-  }, [authStore.userId])
+  }, [authStore.userId, syncProfile])
+
+  useEffect(() => {
+    if (!profile && profileSnapshot) {
+      setProfile(profileSnapshot)
+    }
+  }, [profile, profileSnapshot])
+
+  const mergedProfile = useMemo(() => {
+    if (!profile) return null
+    const incrementalEvents = profileLoadedAt <= 0 ? [] : learningEvents.filter((event) => {
+      if (!profileLoadedAt) return true
+      const eventTime = new Date(event.timestamp).getTime()
+      return !Number.isNaN(eventTime) && eventTime > profileLoadedAt
+    })
+
+    // 统计每个知识点的答题次数（用于 P2 平滑）
+    const liveAdjustments = buildLiveKnowledgeAdjustments(incrementalEvents)
+
+    // 画像基准分类集合（用于确定平滑基准分）
+    const profileMasteredKeys = new Set(profile.masteredPoints.map((p) => normalizeKnowledgePointKey(p.name)))
+    const profileWeakKeys = new Set(profile.weakPoints.map((p) => normalizeKnowledgePointKey(p.name)))
+
+    const radarData = profile.radarData.map((point) => {
+      const key = normalizeKnowledgePointKey(point.name)
+      const adjustment = liveAdjustments.get(key)
+      if (!adjustment) return point
+
+      const isMastered = profileMasteredKeys.has(key)
+      const isWeak = profileWeakKeys.has(key)
+      const passiveBoost = Math.min(9, adjustment.passiveCount * 3)
+
+      if (adjustment.bestScore <= 0) {
+        return {
+          ...point,
+          mastery: Math.min(100, point.mastery + passiveBoost),
+        }
+      }
+
+      const targetScore = Math.max(point.mastery, adjustment.bestScore)
+      const attempts = Math.max(adjustment.attempts, targetScore >= 80 ? 2 : 1)
+      const smoothedScore = smoothKnowledgeScore(targetScore, attempts, isMastered, isWeak)
+
+      return {
+        ...point,
+        mastery: Math.max(point.mastery, smoothedScore),
+      }
+    })
+
+    const avgMastery = radarData.length > 0
+      ? radarData.reduce((sum, point) => sum + point.mastery, 0) / radarData.length
+      : 0
+
+    const liveMastered = radarData.filter((point) => point.mastery >= 75)
+    const liveWeak = radarData.filter((point) => point.mastery > 0 && point.mastery <= 35)
+    const latestEventAt = [...incrementalEvents]
+      .map((event) => event.timestamp)
+      .filter(Boolean)
+      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || ''
+    const mergedStudyTime = mergeStudyTimeWithEvents(
+      profile.dailyStudyTime,
+      profile.totalStudyHours,
+      incrementalEvents,
+    )
+    const mergedMotivation = mergeMotivationWithEvents(
+      profile.learningMotivation,
+      incrementalEvents,
+    )
+    const mergedAccuracy = mergeAccuracyWithEvents(
+      profile.accuracy,
+      incrementalEvents,
+    )
+
+    return {
+      ...profile,
+      knowledgeLevel: calcKnowledgeLevel(avgMastery),
+      learningMotivation: mergedMotivation,
+      radarData,
+      masteredPoints: mergeKnowledgeLists(profile.masteredPoints, liveMastered, 'desc'),
+      weakPoints: mergeKnowledgeLists(profile.weakPoints, liveWeak, 'asc'),
+      lastStudyTime: latestEventAt ? formatLastStudyLabel(latestEventAt) : profile.lastStudyTime,
+      dailyStudyTime: mergedStudyTime.dailyStudyTime,
+      totalStudyHours: mergedStudyTime.totalStudyHours,
+      accuracy: mergedAccuracy,
+    }
+  }, [learningEvents, profile, profileLoadedAt])
 
   // --- 暴露给外部调用 ---
   useImperativeHandle(ref, () => ({ refresh: loadProfile }), [loadProfile])
@@ -144,6 +491,13 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <AppHeader title="学习画像">
         <button
+          onClick={() => useAppStore.getState().openRightPanel('ai-suggestion')}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-amber-600 border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100 transition-colors"
+        >
+          <Lightbulb className="w-3.5 h-3.5" />
+          AI 学习建议
+        </button>
+        <button
           onClick={loadProfile}
           className="text-gray-400 hover:text-gray-600 p-2 rounded-lg hover:bg-gray-50 transition-colors"
         >
@@ -151,13 +505,13 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
         </button>
       </AppHeader>
 
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="page-scroll-area">
         {/* 骨架屏加载态 */}
         {loading ? (
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="page-content max-w-5xl mx-auto space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {[1, 2, 3].map(i => (
-                <div key={i} className="rounded-xl overflow-hidden shadow-sm animate-pulse">
+                <div key={i} className="page-panel overflow-hidden animate-pulse">
                   <div className="h-24 bg-gray-200" />
                   <div className="h-12 bg-gray-100" />
                 </div>
@@ -165,7 +519,7 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[1, 2].map(i => (
-                <div key={i} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                <div key={i} className="page-panel p-5">
                   <div className="h-4 w-24 bg-gray-200 rounded mb-4 animate-pulse" />
                   <div className="h-[280px] bg-gray-100 rounded animate-pulse" />
                 </div>
@@ -173,7 +527,7 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[1, 2].map(i => (
-                <div key={i} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                <div key={i} className="page-panel p-5">
                   <div className="h-4 w-28 bg-gray-200 rounded mb-3 animate-pulse" />
                   <div className="flex flex-wrap gap-2">
                     {[1, 2, 3, 4].map(j => (
@@ -186,7 +540,8 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
           </div>
         ) : error ? (
           /* 错误态 */
-          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+          <div className="page-content">
+            <div className="page-panel flex flex-col items-center justify-center h-64 text-gray-400">
             <Activity className="w-10 h-10 mb-3 text-gray-300" />
             <p className="text-sm">{error}</p>
             <button
@@ -195,95 +550,98 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
             >
               重新加载
             </button>
+            </div>
           </div>
-        ) : profile ? (
+        ) : mergedProfile ? (
           /* 正常内容 */
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="page-content max-w-5xl mx-auto space-y-6">
             {/* 顶部状态卡片 */}
             <ProfileCards
-              level={profile.knowledgeLevel}
+              level={mergedProfile.knowledgeLevel}
               levelDesc="根据你的学习表现自动评估"
-              goal={profile.learningGoal}
+              goal={mergedProfile.learningGoal}
               goalDesc="影响推荐资源的类型和难度"
-              motivation={profile.learningMotivation.status}
+              motivation={mergedProfile.learningMotivation.status}
               motivationDesc="基于最近7天学习频率分析"
-              motivationValue={profile.learningMotivation.value}
+              motivationValue={mergedProfile.learningMotivation.value}
             />
 
             {/* 雷达图 + 饼图 */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <RadarChart radarData={profile.radarData} />
-              <StyleChart styleData={profile.learningStyle} />
+              <RadarChart radarData={mergedProfile.radarData} />
+              <StyleChart styleData={mergedProfile.learningStyle} />
             </div>
 
             {/* 学习时间 */}
             <StudyTimeChart
-              data={profile.dailyStudyTime}
-              totalHours={profile.totalStudyHours}
+              data={mergedProfile.dailyStudyTime}
+              totalHours={mergedProfile.totalStudyHours}
             />
 
             {/* 已掌握 / 薄弱知识点 */}
             <KnowledgeTags
-              mastered={profile.masteredPoints}
-              weak={profile.weakPoints}
+              mastered={mergedProfile.masteredPoints}
+              weak={mergedProfile.weakPoints}
             />
 
             {/* 画像详情 */}
-            <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 mb-4">画像详情</h3>
+            <div className="page-panel p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-500 mb-2">Profile Insight</p>
+              <h3 className="text-base font-semibold text-slate-800 mb-4">画像详情</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <p className="text-xs text-gray-400">学习风格</p>
-                  <p className="text-sm font-medium text-gray-700 mt-1">{profile.learningStyle.dominant}</p>
+                  <p className="text-sm font-medium text-gray-700 mt-1">{mergedProfile.learningStyle.dominant}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {({
                       '视觉型': '你喜欢通过图表和示例来学习',
                       '听觉型': '你喜欢通过听讲解来学习',
                       '动手型': '你喜欢通过编写代码来学习',
                       '混合型': '你有均衡的学习风格',
-                    } as Record<string, string>)[profile.learningStyle.dominant] || '你有均衡的学习风格'}
+                    } as Record<string, string>)[mergedProfile.learningStyle.dominant] || '你有均衡的学习风格'}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">时长偏好</p>
-                  <p className="text-sm font-medium text-gray-700 mt-1">{profile.timePreference}</p>
+                  <p className="text-sm font-medium text-gray-700 mt-1">{mergedProfile.timePreference}</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">最后学习</p>
-                  <p className="text-sm font-medium text-gray-700 mt-1">{profile.lastStudyTime}</p>
+                  <p className="text-sm font-medium text-gray-700 mt-1">{mergedProfile.lastStudyTime}</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">答题正确率</p>
                   <p className="text-sm font-medium text-gray-700 mt-1">
-                    {profile.accuracy > 0 ? `${profile.accuracy}%` : '暂无'}
+                    {mergedProfile.accuracy > 0 ? `${mergedProfile.accuracy}%` : '暂无'}
                   </p>
                 </div>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-50">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-brand-50">
                 <div>
                   <p className="text-xs text-gray-400">总学习时长</p>
                   <p className="text-sm font-medium text-gray-700 mt-1">
-                    {profile.totalStudyHours > 0 ? `${profile.totalStudyHours} 小时` : '暂无'}
+                    {mergedProfile.totalStudyHours > 0 ? `${mergedProfile.totalStudyHours} 小时` : '暂无'}
                   </p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">知识水平</p>
-                  <p className="text-sm font-medium text-gray-700 mt-1">{profile.knowledgeLevel}</p>
+                  <p className="text-sm font-medium text-gray-700 mt-1">{mergedProfile.knowledgeLevel}</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">已掌握</p>
-                  <p className="text-sm font-medium text-green-600 mt-1">{profile.masteredPoints.length} 个知识点</p>
+                  <p className="text-sm font-medium text-green-600 mt-1">{mergedProfile.masteredPoints.length} 个知识点</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">薄弱项</p>
-                  <p className="text-sm font-medium text-orange-500 mt-1">{profile.weakPoints.length} 个知识点</p>
+                  <p className="text-sm font-medium text-orange-500 mt-1">{mergedProfile.weakPoints.length} 个知识点</p>
                 </div>
               </div>
             </div>
 
             {/* 重置操作区 */}
-            <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">数据管理</h3>
+            <div className="page-panel p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-brand-500 mb-2">Data Control</p>
+              <h3 className="text-base font-semibold text-slate-800 mb-3">数据管理</h3>
               <p className="text-xs text-gray-400 mb-4">重置操作不可撤销，请谨慎操作</p>
               <div className="flex items-center gap-3">
                 <button

@@ -1,7 +1,7 @@
 """
-大模型统一调用封装（软件杯A3赛题 v5.3）
-- ✅ 主模型：小米 MiMo-v2.5-pro
-- ✅ 备用模型：DeepSeek（自动降级）
+大模型统一调用封装（软件杯A3赛题 v5.5）
+- ✅ 主模型：DeepSeek
+- ✅ 备用模型：火山引擎方舟 GLM（自动降级）
 - ✅ Embedding：讯飞原生（基于官方示例代码，100%正确）
 - ✅ 全局配置统一：100%从 config/settings + config/model_config 读取
 - ✅ 架构适配：同时提供同步 + 异步版本，异步优先适配FastAPI/LangGraph
@@ -32,7 +32,7 @@ from config.model_config import (
     ENABLE_FALLBACK,
     MAX_RETRIES_PER_MODEL,
     PRIMARY_MODEL_CONFIG,
-    DEEPSEEK_MODEL_CONFIG,
+    GLM_FALLBACK_MODEL_CONFIG,
     EMBEDDING_CONFIG,
 )
 from config.constants import LLM_BACKOFF_BASE, EMBEDDING_TIMEOUT_SEC, EMBEDDING_MAX_WORKERS, EMBEDDING_MAX_RETRIES
@@ -44,6 +44,24 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 创建模块专属日志记录器
 logger = get_logger(__name__, task_id="llm_client")
+
+
+# ============================================================
+# 0. GLM 推理模型重试辅助（备用模型专用）
+# ============================================================
+def _needs_glm_retry_for_final_answer(content: Optional[str], reasoning_content: Optional[str], max_tokens: int) -> bool:
+    """GLM-5.2 推理模型：只在 content 为空且 reasoning_content 非空时才重试。
+    提高 max_tokens 阈值到 2048，让 explain 这类小请求一次到位，避免推理重跑。"""
+    if content:
+        return False
+    if not reasoning_content:
+        return False
+    return max_tokens < 2048
+
+
+def _expanded_glm_max_tokens(max_tokens: int) -> int:
+    """为推理模型补足最终回答空间。"""
+    return max(2048, max_tokens * 4)
 
 
 # ============================================================
@@ -112,16 +130,16 @@ class LLMClient:
         self.primary_model = PRIMARY_MODEL_CONFIG.model_name
         logger.info(f"✅ DeepSeek主模型初始化成功：{self.primary_model}")
 
-        # 备用模型：小米 MiMo（当前未启用）
+        # 备用模型：智谱 GLM（主模型失败时降级）
         self.fallback_client = None
-        if settings.MIMO_API_KEY and ENABLE_FALLBACK:
+        if settings.GLM_API_KEY and ENABLE_FALLBACK:
             self.fallback_client = OpenAI(
-                api_key=settings.MIMO_API_KEY,
-                base_url=DEEPSEEK_MODEL_CONFIG.base_url,
-                timeout=DEEPSEEK_MODEL_CONFIG.timeout,
+                api_key=settings.GLM_API_KEY,
+                base_url=GLM_FALLBACK_MODEL_CONFIG.base_url,
+                timeout=GLM_FALLBACK_MODEL_CONFIG.timeout,
             )
-            self.fallback_model = DEEPSEEK_MODEL_CONFIG.model_name
-            logger.info(f"✅ MiMo备用模型初始化成功：{self.fallback_model}")
+            self.fallback_model = GLM_FALLBACK_MODEL_CONFIG.model_name
+            logger.info(f"✅ GLM备用模型初始化成功：{self.fallback_model}")
         else:
             logger.info(f"ℹ️ 备用模型未启用：FALLBACK={ENABLE_FALLBACK}")
 
@@ -135,20 +153,44 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
         provider_name: str,
+        response_format: Optional[dict] = None,
     ) -> str:
         """对指定客户端执行带重试的调用"""
         last_exception = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = client.chat.completions.create(
+                kwargs = dict(
                     model=model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                content = response.choices[0].message.content
-                if content is None:
-                    # MiMo 有时返回 200 但 content 为 None（内容安全过滤或 prompt 太复杂）
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+                response = client.chat.completions.create(**kwargs)
+                message = response.choices[0].message
+                content = message.content
+                reasoning_content = getattr(message, "reasoning_content", None)
+
+                if _needs_glm_retry_for_final_answer(content, reasoning_content, max_tokens):
+                    expanded_tokens = _expanded_glm_max_tokens(max_tokens)
+                    logger.info(
+                        f"[{provider_name}] 检测到仅返回 reasoning_content，自动扩容 max_tokens: "
+                        f"{max_tokens} -> {expanded_tokens}"
+                    )
+                    expand_kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=expanded_tokens,
+                    )
+                    if response_format is not None:
+                        expand_kwargs["response_format"] = response_format
+                    response = client.chat.completions.create(**expand_kwargs)
+                    message = response.choices[0].message
+                    content = message.content
+
+                if not content:
                     logger.warning(f"[{provider_name}] 响应内容为空 (尝试 {attempt}/{self.max_retries})")
                     last_exception = Exception(f"{provider_name} 返回空内容")
                     if attempt < self.max_retries:
@@ -194,10 +236,11 @@ class LLMClient:
         messages: List[dict],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         """同步调用大模型（自动降级）"""
-        temp = temperature if temperature is not None else DEEPSEEK_MODEL_CONFIG.default_temperature
-        tokens = max_tokens if max_tokens is not None else DEEPSEEK_MODEL_CONFIG.default_max_tokens
+        temp = temperature if temperature is not None else PRIMARY_MODEL_CONFIG.default_temperature
+        tokens = max_tokens if max_tokens is not None else PRIMARY_MODEL_CONFIG.default_max_tokens
 
         try:
             return self._call_with_retry(
@@ -207,6 +250,7 @@ class LLMClient:
                 temperature=temp,
                 max_tokens=tokens,
                 provider_name="DeepSeek",
+                response_format=response_format,
             )
         except ContentSecurityError:
             raise
@@ -220,15 +264,16 @@ class LLMClient:
                         messages=messages,
                         temperature=temp,
                         max_tokens=tokens,
-                        provider_name="MiMo备用",
+                        provider_name="GLM备用",
+                        response_format=response_format,
                     )
                 except ContentSecurityError:
                     raise
                 except Exception as fallback_exc:
-                    logger.error(f"MiMo备用模型也失败: {fallback_exc}")
-                    raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
+                    logger.error(f"GLM备用模型也失败: {fallback_exc}")
+                raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
             else:
-                raise Exception("DeepSeek主模型不可用，且未配置备用模型。") from primary_exc
+                raise
 
     def call_embedding_sync(self, texts: List[str], domain: str = "para") -> List[List[float]]:
         """
@@ -352,16 +397,16 @@ class AsyncLLMClient:
         self.primary_model = PRIMARY_MODEL_CONFIG.model_name
         logger.info(f"✅ DeepSeek异步主模型初始化成功：{self.primary_model}")
 
-        # 备用模型：小米 MiMo（异步，当前未启用）
+        # 备用模型：智谱 GLM（异步，主模型失败时降级）
         self.fallback_client = None
-        if settings.MIMO_API_KEY and ENABLE_FALLBACK:
+        if settings.GLM_API_KEY and ENABLE_FALLBACK:
             self.fallback_client = AsyncOpenAI(
-                api_key=settings.MIMO_API_KEY,
-                base_url=DEEPSEEK_MODEL_CONFIG.base_url,
-                timeout=DEEPSEEK_MODEL_CONFIG.timeout,
+                api_key=settings.GLM_API_KEY,
+                base_url=GLM_FALLBACK_MODEL_CONFIG.base_url,
+                timeout=GLM_FALLBACK_MODEL_CONFIG.timeout,
             )
-            self.fallback_model = DEEPSEEK_MODEL_CONFIG.model_name
-            logger.info(f"✅ MiMo异步备用模型初始化成功：{self.fallback_model}")
+            self.fallback_model = GLM_FALLBACK_MODEL_CONFIG.model_name
+            logger.info(f"✅ GLM异步备用模型初始化成功：{self.fallback_model}")
         else:
             logger.info(f"ℹ️ 异步备用模型未启用：FALLBACK={ENABLE_FALLBACK}")
 
@@ -375,19 +420,44 @@ class AsyncLLMClient:
         temperature: float,
         max_tokens: int,
         provider_name: str,
+        response_format: Optional[dict] = None,
     ) -> str:
         """异步对指定客户端执行带重试的调用"""
         last_exception = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = await client.chat.completions.create(
+                kwargs = dict(
                     model=model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                content = response.choices[0].message.content
-                if content is None:
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+                response = await client.chat.completions.create(**kwargs)
+                message = response.choices[0].message
+                content = message.content
+                reasoning_content = getattr(message, "reasoning_content", None)
+
+                if _needs_glm_retry_for_final_answer(content, reasoning_content, max_tokens):
+                    expanded_tokens = _expanded_glm_max_tokens(max_tokens)
+                    logger.info(
+                        f"[{provider_name}] 检测到仅返回 reasoning_content，自动扩容 max_tokens: "
+                        f"{max_tokens} -> {expanded_tokens}"
+                    )
+                    expand_kwargs = dict(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=expanded_tokens,
+                    )
+                    if response_format is not None:
+                        expand_kwargs["response_format"] = response_format
+                    response = await client.chat.completions.create(**expand_kwargs)
+                    message = response.choices[0].message
+                    content = message.content
+
+                if not content:
                     logger.warning(f"[{provider_name}] 异步响应内容为空 (尝试 {attempt}/{self.max_retries})")
                     last_exception = Exception(f"{provider_name} 返回空内容")
                     if attempt < self.max_retries:
@@ -433,10 +503,11 @@ class AsyncLLMClient:
         messages: List[dict],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         """异步调用大模型（自动降级）"""
-        temp = temperature if temperature is not None else DEEPSEEK_MODEL_CONFIG.default_temperature
-        tokens = max_tokens if max_tokens is not None else DEEPSEEK_MODEL_CONFIG.default_max_tokens
+        temp = temperature if temperature is not None else PRIMARY_MODEL_CONFIG.default_temperature
+        tokens = max_tokens if max_tokens is not None else PRIMARY_MODEL_CONFIG.default_max_tokens
 
         try:
             return await self._call_with_retry(
@@ -446,6 +517,7 @@ class AsyncLLMClient:
                 temperature=temp,
                 max_tokens=tokens,
                 provider_name="DeepSeek",
+                response_format=response_format,
             )
         except ContentSecurityError:
             raise
@@ -459,15 +531,45 @@ class AsyncLLMClient:
                         messages=messages,
                         temperature=temp,
                         max_tokens=tokens,
-                        provider_name="MiMo备用",
+                        provider_name="GLM备用",
+                        response_format=response_format,
                     )
                 except ContentSecurityError:
                     raise
                 except Exception as fallback_exc:
-                    logger.error(f"MiMo备用模型也失败: {fallback_exc}")
-                    raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
+                    logger.error(f"GLM备用模型也失败: {fallback_exc}")
+                raise Exception("所有大模型均不可用，请稍后重试。") from fallback_exc
             else:
-                raise Exception("DeepSeek主模型不可用，且未配置备用模型。") from primary_exc
+                raise
+
+    async def call_fallback(
+        self,
+        messages: List[dict],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
+    ) -> str:
+        """直接调用备用模型（GLM），跳过主模型 DeepSeek。
+        适用于 DeepSeek 主模型在重任务上频繁超时/返回空内容的场景。
+        备用客户端未启用时抛 RuntimeError。"""
+        if self.fallback_client is None:
+            raise RuntimeError("备用模型未启用，请将 config/model_config.py 的 ENABLE_FALLBACK 设为 True")
+
+        temp = temperature if temperature is not None else GLM_FALLBACK_MODEL_CONFIG.default_temperature
+        tokens = max_tokens if max_tokens is not None else GLM_FALLBACK_MODEL_CONFIG.default_max_tokens
+
+        try:
+            return await self._call_with_retry(
+                client=self.fallback_client,
+                model=self.fallback_model,
+                messages=messages,
+                temperature=temp,
+                max_tokens=tokens,
+                provider_name="GLM",
+                response_format=response_format,
+            )
+        except ContentSecurityError:
+            raise
 
     async def call_stream(
         self,
@@ -480,8 +582,8 @@ class AsyncLLMClient:
         首 chunk 延迟约 0.5-2s，之后实时输出。
         """
         import time as _time
-        temp = temperature if temperature is not None else DEEPSEEK_MODEL_CONFIG.default_temperature
-        tokens = max_tokens if max_tokens is not None else DEEPSEEK_MODEL_CONFIG.default_max_tokens
+        temp = temperature if temperature is not None else PRIMARY_MODEL_CONFIG.default_temperature
+        tokens = max_tokens if max_tokens is not None else PRIMARY_MODEL_CONFIG.default_max_tokens
 
         async def _try_stream(client, model, provider_name):
             """尝试流式调用，成功则 yield 所有 chunk，失败则抛异常"""
@@ -545,19 +647,19 @@ class AsyncLLMClient:
         except Exception as primary_exc:
             logger.warning(f"DeepSeek流式失败: {primary_exc}")
 
-        # 降级到 MiMo 流式
+        # 降级到 GLM 流式
         if self.fallback_client is not None:
             try:
-                async for chunk in _try_stream(self.fallback_client, self.fallback_model, "MiMo"):
+                async for chunk in _try_stream(self.fallback_client, self.fallback_model, "GLM"):
                     yield chunk
                 return
             except ContentSecurityError:
                 raise
             except Exception as fallback_exc:
-                logger.error(f"MiMo流式也失败: {fallback_exc}")
+                logger.error(f"GLM流式也失败: {fallback_exc}")
                 raise Exception("所有大模型均不可用") from fallback_exc
         else:
-            raise Exception("MiMo不可用且未配置备用模型") from primary_exc
+            raise
 
     async def call_embedding(self, texts: List[str], domain: str = "para") -> List[List[float]]:
         loop = asyncio.get_event_loop()

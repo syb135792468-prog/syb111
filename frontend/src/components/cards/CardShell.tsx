@@ -10,6 +10,7 @@ interface CardShellProps {
   onToggleCollapse: () => void
   onSave?: () => void
   onFullscreen?: () => void
+  saved?: boolean
   children: React.ReactNode
   footer?: React.ReactNode
 }
@@ -23,6 +24,7 @@ const CardShell: React.FC<CardShellProps> = ({
   onToggleCollapse,
   onSave,
   onFullscreen,
+  saved,
   children,
   footer,
 }) => {
@@ -31,15 +33,20 @@ const CardShell: React.FC<CardShellProps> = ({
   const [animating, setAnimating] = useState(false)
 
   useEffect(() => {
-    if (bodyRef.current) {
-      if (!collapsed) {
-        const h = bodyRef.current.scrollHeight
-        setBodyHeight(h)
-      } else {
+    if (!bodyRef.current) return
+    const el = bodyRef.current
+    const updateHeight = () => {
+      if (collapsed) {
         setBodyHeight(0)
+      } else {
+        setBodyHeight(el.scrollHeight)
       }
     }
-  }, [collapsed, children])
+    updateHeight()
+    const ro = new ResizeObserver(updateHeight)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [collapsed])
 
   const handleToggle = () => {
     setAnimating(true)
@@ -59,7 +66,8 @@ const CardShell: React.FC<CardShellProps> = ({
       <div
         onClick={handleToggle}
         style={{
-          background: gradient,
+          background: '#f9fafb',
+          borderBottom: `3px solid ${gradient}`,
           padding: '10px 14px',
           display: 'flex',
           alignItems: 'center',
@@ -71,8 +79,8 @@ const CardShell: React.FC<CardShellProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
           <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
           <div style={{ minWidth: 0 }}>
-            <div style={{ color: '#fff', fontWeight: 600, fontSize: 14, wordBreak: 'break-word' }}>{title}</div>
-            <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 11, marginTop: 1 }}>{typeLabel}</div>
+            <div style={{ color: '#1f2937', fontWeight: 600, fontSize: 14, wordBreak: 'break-word' }}>{title}</div>
+            <div style={{ color: '#6b7280', fontSize: 11, marginTop: 1 }}>{typeLabel}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
@@ -80,14 +88,14 @@ const CardShell: React.FC<CardShellProps> = ({
             <button
               onClick={(e) => { e.stopPropagation(); onFullscreen() }}
               style={{
-                background: 'rgba(255,255,255,0.2)',
+                background: '#e5e7eb',
                 border: 'none',
                 borderRadius: 6,
                 padding: '6px 8px',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                color: '#fff',
+                color: '#4b5563',
                 minHeight: 32, minWidth: 32,
               }}
               title="全屏交互"
@@ -99,22 +107,22 @@ const CardShell: React.FC<CardShellProps> = ({
             <button
               onClick={(e) => { e.stopPropagation(); onSave() }}
               style={{
-                background: 'rgba(255,255,255,0.2)',
+                background: saved ? '#d1fae5' : '#e5e7eb',
                 border: 'none',
                 borderRadius: 6,
                 padding: '6px 8px',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                color: '#fff',
+                color: saved ? '#059669' : '#4b5563',
                 minHeight: 32, minWidth: 32,
               }}
-              title="保存到资源库"
+              title={saved ? '取消收藏' : '收藏到资源库'}
             >
-              <Bookmark size={14} />
+              <Bookmark size={14} fill={saved ? 'currentColor' : 'none'} />
             </button>
           )}
-          {collapsed ? <ChevronDown size={16} color="#fff" /> : <ChevronUp size={16} color="#fff" />}
+          {collapsed ? <ChevronDown size={16} color="#6b7280" /> : <ChevronUp size={16} color="#6b7280" />}
         </div>
       </div>
 

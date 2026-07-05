@@ -106,7 +106,13 @@ class BaseAgent(ABC):
         try:
             template = file_path.read_text(encoding="utf-8").strip()
             if kwargs:
-                template = template.format(**kwargs)
+                # 转义 kwargs 值中的花括号，防止 str.format() 误解析
+                # RAG 上下文常含 Python 代码（dict={}、f-string 等），必须转义
+                safe_kwargs = {
+                    k: v.replace("{", "{{").replace("}", "}}") if isinstance(v, str) else v
+                    for k, v in kwargs.items()
+                }
+                template = template.format(**safe_kwargs)
             self.logger.debug(f"📄 加载 Prompt 模板: {file_path.name}")
             return template
         except FileNotFoundError:
@@ -149,6 +155,7 @@ class BaseAgent(ABC):
                 "profile_data": state.get("profile_data", {}),
                 "resource_list": state.get("resource_list", []),
                 "user_intent": state.get("user_intent"),
+                "chat_history": state.get("chat_history", []),
             }
             result = await self.process(user_input, context)
 
@@ -184,19 +191,22 @@ class BaseAgent(ABC):
         messages: List[Dict[str, str]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         统一 LLM 调用（降级、重试、安全拦截均自动处理）
+        response_format: 可选，如 {"type": "json_object"} 启用 JSON mode 保证输出合法 JSON
         """
         temp = temperature if temperature is not None else self.scene_params.get("temperature", BASE_AGENT_FALLBACK_TEMPERATURE)
         tokens = max_tokens if max_tokens is not None else self.scene_params.get("max_tokens", BASE_AGENT_FALLBACK_MAX_TOKENS)
 
-        self.logger.debug(f"🤖 [{self.agent_name}] 调用 LLM: temp={temp}, max_tokens={tokens}")
+        self.logger.debug(f"🤖 [{self.agent_name}] 调用 LLM: temp={temp}, max_tokens={tokens}, json_mode={response_format is not None}")
         try:
             result = await self.llm_client.call(
                 messages=messages,
                 temperature=temp,
                 max_tokens=tokens,
+                response_format=response_format,
             )
             self.logger.debug(f"✅ LLM 响应: {result[:LOG_TRUNCATE_LENGTH]}...")
             return result

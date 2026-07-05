@@ -1,10 +1,23 @@
 """
-concept_to_animation.py - 自主研发「概念→动画」生成引擎
-【软件杯A3 原创版】跟 Fogsight.ai 核心逻辑完全一致
-✅ 输入：知识点文本
-✅ 逻辑：拆解→脚本→动画代码
-✅ 输出：可播放的教学动画（= 视频生成）
-✅ 100% 原创、无侵权、可直接运行
+concept_to_animation.py - Matplotlib备用动画引擎
+【定位说明】
+- 这是一个独立的演示/备用方案，与主HTML模板路径（video_agent.py）完全独立
+- 主框架使用 HTML+GSAP+WebSpeech 生成教学动画（更丰富、更稳定）
+- 本模块使用 Matplotlib 生成简单动画（用于演示或无浏览器环境）
+
+【使用场景】
+1. 演示/测试：快速验证动画逻辑
+2. 备用方案：当HTML路径失败时的降级选项
+3. 纯Python环境：无浏览器时的动画生成
+
+【与主框架的关系】
+- video_agent.py：主路径，生成HTML教学动画（推荐）
+- video_renderer.py：将HTML录制为真实视频文件
+- 本模块：备用路径，生成Matplotlib动画（简单）
+
+【注意】
+- 本模块不与 video_schema.py 的 AnimationScript 数据结构兼容
+- 如需整合，需要额外的适配层
 """
 from __future__ import annotations
 

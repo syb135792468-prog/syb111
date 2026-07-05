@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import {
   CheckCircle, Clock, AlertTriangle, SkipForward, ChevronDown, ChevronUp,
-  FileText, HelpCircle, GitBranch, Code, PlayCircle, Loader2
+  FileText, HelpCircle, GitBranch, Code, PlayCircle, Loader2, Award
 } from 'lucide-react'
 
 // --- 类型定义 ---
@@ -43,53 +43,68 @@ interface PathStepProps {
   isLast?: boolean
   onNodeClick?: (nodeId: number) => void
   onResourceClick?: (nodeId: number, resourceType: string) => void
+  onComplete?: (nodeId: number) => void
 }
 
-// --- 常量 ---
-const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string; icon: React.ReactNode; label: string }> = {
+// --- 状态配置：py-blue=进行中 / green=完成 / py-yellow=需复习 / faint=未开始 ---
+interface StatusStyle {
+  dotBg: string
+  dotBorder: string
+  dotColor: string
+  label: string
+  icon: React.ReactNode
+  labelColor: string
+}
+
+const STATUS_STYLES: Record<string, StatusStyle> = {
   not_started: {
-    color: 'text-gray-500',
-    bg: 'bg-gray-100',
-    border: 'border-gray-200',
-    icon: <Clock className="w-3.5 h-3.5" />,
+    dotBg: 'var(--paper)',
+    dotBorder: 'var(--rule)',
+    dotColor: 'var(--faint)',
     label: '未开始',
+    icon: <Clock style={{ width: 12, height: 12 }} />,
+    labelColor: 'var(--faint)',
   },
   in_progress: {
-    color: 'text-blue-600',
-    bg: 'bg-blue-50',
-    border: 'border-blue-200',
-    icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
+    dotBg: 'var(--py-blue-tint)',
+    dotBorder: 'var(--py-blue)',
+    dotColor: 'var(--py-blue)',
     label: '学习中',
+    icon: <Loader2 style={{ width: 12, height: 12, animation: 'spin 1.2s linear infinite' }} />,
+    labelColor: 'var(--py-blue)',
   },
   completed: {
-    color: 'text-green-600',
-    bg: 'bg-green-50',
-    border: 'border-green-200',
-    icon: <CheckCircle className="w-3.5 h-3.5" />,
+    dotBg: '#ecfdf5',
+    dotBorder: '#10b981',
+    dotColor: '#059669',
     label: '已完成',
+    icon: <CheckCircle style={{ width: 12, height: 12 }} />,
+    labelColor: '#059669',
   },
   needs_review: {
-    color: 'text-amber-600',
-    bg: 'bg-amber-50',
-    border: 'border-amber-200',
-    icon: <AlertTriangle className="w-3.5 h-3.5" />,
+    dotBg: 'var(--py-yellow-tint)',
+    dotBorder: 'var(--py-yellow-deep)',
+    dotColor: 'var(--py-yellow-deep)',
     label: '需复习',
+    icon: <AlertTriangle style={{ width: 12, height: 12 }} />,
+    labelColor: 'var(--py-yellow-deep)',
   },
   skipped: {
-    color: 'text-gray-400',
-    bg: 'bg-gray-50',
-    border: 'border-gray-100',
-    icon: <SkipForward className="w-3.5 h-3.5" />,
+    dotBg: 'var(--paper-soft)',
+    dotBorder: 'var(--rule-soft)',
+    dotColor: 'var(--faint)',
     label: '已跳过',
+    icon: <SkipForward style={{ width: 12, height: 12 }} />,
+    labelColor: 'var(--faint)',
   },
 }
 
 const RESOURCE_ICONS: Record<string, React.ReactNode> = {
-  doc: <FileText className="w-3.5 h-3.5" />,
-  quiz: <HelpCircle className="w-3.5 h-3.5" />,
-  mindmap: <GitBranch className="w-3.5 h-3.5" />,
-  code: <Code className="w-3.5 h-3.5" />,
-  video: <PlayCircle className="w-3.5 h-3.5" />,
+  doc: <FileText style={{ width: 13, height: 13 }} />,
+  quiz: <HelpCircle style={{ width: 13, height: 13 }} />,
+  mindmap: <GitBranch style={{ width: 13, height: 13 }} />,
+  code: <Code style={{ width: 13, height: 13 }} />,
+  video: <PlayCircle style={{ width: 13, height: 13 }} />,
 }
 
 const RESOURCE_LABELS: Record<string, string> = {
@@ -100,139 +115,199 @@ const RESOURCE_LABELS: Record<string, string> = {
   video: '视频',
 }
 
+function difficultyLabel(d?: number): string {
+  if (d === undefined) return ''
+  if (d <= 0.3) return '入门'
+  if (d <= 0.6) return '进阶'
+  return '高级'
+}
+
 // --- 组件 ---
-const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, onResourceClick }) => {
+const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, onResourceClick, onComplete }) => {
   const [expanded, setExpanded] = useState(false)
+  const [completing, setCompleting] = useState(false)
 
   const isReview = (step.type || step.node_type) === 'review'
   const status = step.status || 'not_started'
-  const statusCfg = STATUS_CONFIG[status] || STATUS_CONFIG.not_started
+  const style = STATUS_STYLES[status] || STATUS_STYLES.not_started
   const mastery = step.mastery ?? 0
   const masteryThreshold = step.mastery_threshold ?? 0.7
   const estimatedTime = step.estimated_time ?? step.estimated_time_min ?? 15
   const resources = step.resources || []
+  const masteryAchieved = mastery >= masteryThreshold
+  const diffLabel = difficultyLabel(step.difficulty)
+  const readyCount = resources.filter(r => r.is_cached).length
 
   const handleToggle = useCallback(() => {
     setExpanded(prev => !prev)
     if (onNodeClick && step.id) {
       onNodeClick(step.id)
     }
-  }, [onNodeClick, step.id])
+  }, [onNodeClick, step.id, step.knowledge_point, status, expanded])
 
-  // 圆点颜色：优先用状态色，复习用橙色
-  const dotColor = status === 'completed'
-    ? 'bg-green-500'
-    : status === 'in_progress'
-      ? 'bg-blue-500'
-      : status === 'needs_review'
-        ? 'bg-amber-500'
-        : isReview
-          ? 'bg-orange-400'
-          : 'bg-gray-300'
+  const handleComplete = useCallback(async () => {
+    if (!step.id || !onComplete || completing) return
+    setCompleting(true)
+    try {
+      await onComplete(step.id)
+    } finally {
+      setCompleting(false)
+    }
+  }, [step.id, onComplete, completing])
 
   return (
-    <div className="flex gap-4">
-      {/* Timeline dot */}
-      <div className="flex flex-col items-center">
+    <div style={{ display: 'flex', gap: 14 }}>
+      {/* 时间线圆点 + 连接线 */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         <div
-          className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 transition-colors ${dotColor}`}
+          style={{
+            width: 28, height: 28, borderRadius: '50%',
+            background: style.dotBg,
+            border: `1.5px solid ${style.dotBorder}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12, fontWeight: 600, color: style.dotColor,
+            boxShadow: status === 'in_progress' ? '0 0 0 4px rgba(48, 105, 152, 0.1)' : 'none',
+            transition: 'all 0.2s ease',
+          }}
         >
           {status === 'completed' ? (
-            <CheckCircle className="w-4 h-4" />
+            <CheckCircle style={{ width: 14, height: 14, color: '#059669' }} />
           ) : (
             step.order
           )}
         </div>
-        {!isLast && <div className="w-0.5 flex-1 bg-gray-200 mt-1" />}
+        {!isLast && (
+          <div style={{
+            width: 2, flex: 1, minHeight: 12, marginTop: 2,
+            background: status === 'completed' ? '#a7f3d0' : 'var(--rule)',
+            transition: 'background 0.2s ease',
+          }} />
+        )}
       </div>
 
-      {/* Content */}
-      <div className="pb-6 flex-1 min-w-0">
+      {/* 节点卡片 */}
+      <div style={{ paddingBottom: 16, flex: 1, minWidth: 0 }}>
         <div
-          className={`rounded-xl border p-4 shadow-sm cursor-pointer transition-all hover:shadow-md ${
-            status === 'completed'
-              ? 'bg-green-50/50 border-green-100'
-              : status === 'in_progress'
-                ? 'bg-blue-50/50 border-blue-100'
-                : 'bg-white border-gray-100'
-          }`}
           onClick={handleToggle}
+          style={{
+            borderRadius: 10,
+            border: '1px solid var(--rule)',
+            background: status === 'completed' ? 'var(--paper-soft)' : 'var(--paper)',
+            padding: '12px 14px',
+            cursor: 'pointer',
+            transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = 'var(--py-blue)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = 'var(--rule)'
+          }}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <h4 className="text-sm font-medium text-gray-800 truncate">
-                {step.knowledge_point}
-              </h4>
-              <span
-                className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 flex-shrink-0 ${
-                  isReview
-                    ? 'bg-orange-50 text-orange-600 border border-orange-200'
-                    : 'bg-brand-50 text-brand-600 border border-brand-200'
-                }`}
-              >
-                {isReview ? '复习' : '新学'}
+          {/* 行 1：标题 + 状态 + 箭头 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h4 style={{
+              fontSize: 14, fontWeight: 600, color: 'var(--ink)', margin: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              flex: 1, minWidth: 0,
+            }}>
+              {step.knowledge_point}
+            </h4>
+            {isReview && (
+              <span style={{
+                fontSize: 11, fontWeight: 500, padding: '1px 6px', borderRadius: 4,
+                background: 'var(--py-yellow-tint)', color: 'var(--py-yellow-deep)',
+                border: '1px solid rgba(255, 212, 59, 0.4)',
+                flexShrink: 0,
+              }}>
+                复习
               </span>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <span className={`text-xs flex items-center gap-1 ${statusCfg.color}`}>
-                {statusCfg.icon}
-                {statusCfg.label}
-              </span>
-              {expanded ? (
-                <ChevronUp className="w-4 h-4 text-gray-400" />
-              ) : (
-                <ChevronDown className="w-4 h-4 text-gray-400" />
-              )}
-            </div>
+            )}
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              fontSize: 11, color: style.labelColor, flexShrink: 0,
+            }}>
+              {style.icon}
+              {style.label}
+            </span>
+            {expanded ? (
+              <ChevronUp style={{ width: 14, height: 14, color: 'var(--faint)', flexShrink: 0 }} />
+            ) : (
+              <ChevronDown style={{ width: 14, height: 14, color: 'var(--faint)', flexShrink: 0 }} />
+            )}
           </div>
 
-          {/* Mastery bar */}
-          {mastery > 0 && (
-            <div className="mt-2">
-              <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                <span>掌握度</span>
-                <span>{Math.round(mastery * 100)}%</span>
-              </div>
-              <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all ${
-                    mastery >= masteryThreshold ? 'bg-green-500' : 'bg-blue-400'
-                  }`}
-                  style={{ width: `${Math.min(100, mastery * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Meta info */}
-          <div className="flex items-center gap-3 mt-2 text-xs text-gray-400">
-            <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" />
+          {/* 行 2：meta（时间 + 难度 + 资源就绪数） */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginTop: 6,
+            fontSize: 12, color: 'var(--faint)',
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <Clock style={{ width: 11, height: 11 }} />
               {estimatedTime} 分钟
             </span>
-            {step.difficulty !== undefined && (
-              <span>
-                难度: {step.difficulty <= 0.3 ? '入门' : step.difficulty <= 0.6 ? '进阶' : '高级'}
-              </span>
+            {diffLabel && (
+              <span>{diffLabel}</span>
             )}
             {resources.length > 0 && (
-              <span className="flex items-center gap-1">
-                {resources.filter(r => r.is_cached).length}/{resources.length} 资源
+              <span>
+                {readyCount}/{resources.length} 资源就绪
               </span>
             )}
           </div>
 
-          {/* Expanded details */}
+          {/* 展开详情 */}
           {expanded && (
-            <div className="mt-3 pt-3 border-t border-gray-100">
-              {/* Prerequisites */}
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--rule-soft)' }}>
+              {/* 掌握度 */}
+              {mastery > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    fontSize: 12, marginBottom: 5,
+                  }}>
+                    <span style={{ color: 'var(--mute)' }}>掌握度</span>
+                    <span style={{
+                      fontFamily: 'var(--font-mono)', fontWeight: 600,
+                      color: masteryAchieved ? '#059669' : 'var(--py-blue)',
+                    }}>
+                      {Math.round(mastery * 100)}{masteryAchieved ? ' ✓' : ''}
+                    </span>
+                  </div>
+                  <div style={{
+                    width: '100%', height: 4, background: 'var(--rule-soft)',
+                    borderRadius: 2, overflow: 'hidden',
+                  }}>
+                    <div
+                      style={{
+                        height: '100%', borderRadius: 2,
+                        background: masteryAchieved ? '#10b981' : 'var(--py-blue)',
+                        width: `${Math.min(100, mastery * 100)}%`,
+                        transition: 'width 0.4s ease, background 0.2s ease',
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 前置知识 */}
               {step.prerequisites && step.prerequisites.length > 0 && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-500 mb-1">前置知识：</p>
-                  <div className="flex flex-wrap gap-1">
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{
+                    fontSize: 12, color: 'var(--mute)', margin: '0 0 6px',
+                  }}>
+                    前置知识
+                  </p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     {step.prerequisites.map((pre, i) => (
-                      <span key={i} className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">
+                      <span key={i} style={{
+                        fontSize: 12, padding: '2px 8px',
+                        background: 'var(--paper-soft)', color: 'var(--mute)',
+                        border: '1px solid var(--rule)',
+                        borderRadius: 4,
+                      }}>
                         {pre}
                       </span>
                     ))}
@@ -240,38 +315,84 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
                 </div>
               )}
 
-              {/* Resources */}
+              {/* 学习资源 */}
               {resources.length > 0 && (
-                <div>
-                  <p className="text-xs text-gray-500 mb-2">学习资源：</p>
-                  <div className="flex flex-wrap gap-2">
-                    {resources.map((res) => (
+                <div style={{ marginBottom: 12 }}>
+                  <p style={{
+                    fontSize: 12, color: 'var(--mute)', margin: '0 0 6px',
+                  }}>
+                    学习资源
+                  </p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {resources.map(res => (
                       <button
                         key={res.id}
-                        onClick={(e) => {
+                        onClick={e => {
                           e.stopPropagation()
                           if (onResourceClick && step.id) {
                             onResourceClick(step.id, res.resource_type)
                           }
                         }}
-                        className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
-                          res.is_cached
-                            ? 'bg-white border-gray-200 text-gray-700 hover:border-brand-300 hover:text-brand-600'
-                            : 'bg-gray-50 border-gray-100 text-gray-400'
-                        }`}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5,
+                          fontSize: 12, padding: '5px 10px', borderRadius: 6,
+                          background: res.is_cached ? 'var(--paper)' : 'var(--paper-soft)',
+                          border: `1px solid ${res.is_cached ? 'var(--rule)' : 'var(--rule-soft)'}`,
+                          color: res.is_cached ? 'var(--ink)' : 'var(--faint)',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                        }}
+                        onMouseEnter={e => {
+                          if (res.is_cached) {
+                            e.currentTarget.style.borderColor = 'var(--py-blue)'
+                            e.currentTarget.style.color = 'var(--py-blue)'
+                            e.currentTarget.style.background = 'var(--py-blue-tint)'
+                          }
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.borderColor = res.is_cached ? 'var(--rule)' : 'var(--rule-soft)'
+                          e.currentTarget.style.color = res.is_cached ? 'var(--ink)' : 'var(--faint)'
+                          e.currentTarget.style.background = res.is_cached ? 'var(--paper)' : 'var(--paper-soft)'
+                        }}
                       >
-                        {RESOURCE_ICONS[res.resource_type] || <FileText className="w-3.5 h-3.5" />}
+                        {RESOURCE_ICONS[res.resource_type] || <FileText style={{ width: 13, height: 13 }} />}
                         {RESOURCE_LABELS[res.resource_type] || res.resource_type}
                         {res.status === 'generating' && (
-                          <Loader2 className="w-3 h-3 animate-spin text-blue-400" />
+                          <Loader2 style={{ width: 11, height: 11, animation: 'spin 0.8s linear infinite', color: 'var(--py-blue)' }} />
                         )}
                         {res.is_cached && (
-                          <CheckCircle className="w-3 h-3 text-green-400" />
+                          <CheckCircle style={{ width: 11, height: 11, color: '#10b981' }} />
                         )}
                       </button>
                     ))}
                   </div>
                 </div>
+              )}
+
+              {/* 完成按钮 */}
+              {step.id && onComplete && status !== 'completed' && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleComplete() }}
+                  disabled={completing}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '6px 14px', fontSize: 13, fontWeight: 500,
+                    background: '#ecfdf5', color: '#059669',
+                    border: '1px solid #a7f3d0', borderRadius: 8,
+                    cursor: completing ? 'not-allowed' : 'pointer',
+                    opacity: completing ? 0.6 : 1,
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={e => { if (!completing) { e.currentTarget.style.background = '#d1fae5'; e.currentTarget.style.borderColor = '#6ee7b7' } }}
+                  onMouseLeave={e => { e.currentTarget.style.background = '#ecfdf5'; e.currentTarget.style.borderColor = '#a7f3d0' }}
+                >
+                  {completing ? (
+                    <Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} />
+                  ) : (
+                    <Award style={{ width: 13, height: 13 }} />
+                  )}
+                  标记为已完成
+                </button>
               )}
             </div>
           )}

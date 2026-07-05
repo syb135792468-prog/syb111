@@ -20,10 +20,9 @@ interface NodeMetadata {
   pitfalls: string[]
   advice: string
   depth?: number
-}
-
-interface DetailNode extends NodeMetadata {
-  text: string
+  parentTopic?: string
+  childTopics?: string[]
+  ancestorTopics?: string[]
 }
 
 interface MindmapViewerProps {
@@ -76,6 +75,42 @@ const THEME = {
 
 // Metadata backup: id → metadata (in case MindElixir strips custom fields)
 const metadataMap = new Map<string, NodeMetadata>()
+
+function normalizeMetadata(meta?: Partial<NodeMetadata>): NodeMetadata {
+  return {
+    definition: meta?.definition || '',
+    syntax: meta?.syntax || '',
+    examples: Array.isArray(meta?.examples) ? meta!.examples : [],
+    pitfalls: Array.isArray(meta?.pitfalls) ? meta!.pitfalls : [],
+    advice: meta?.advice || '',
+    depth: meta?.depth,
+    parentTopic: meta?.parentTopic || '',
+    childTopics: Array.isArray(meta?.childTopics) ? meta!.childTopics : [],
+    ancestorTopics: Array.isArray(meta?.ancestorTopics) ? meta!.ancestorTopics : [],
+  }
+}
+
+function annotateNodeRelations(node: NodeObj, parentTopic = '', ancestorTopics: string[] = [], depth = 0) {
+  const nodeId = String(node.id || '')
+  const topic = String(node.topic || '')
+  const children = Array.isArray(node.children) ? (node.children as NodeObj[]) : []
+  const baseMeta = normalizeMetadata((node.metadata as NodeMetadata) || metadataMap.get(nodeId))
+  const nextMeta: NodeMetadata = {
+    ...baseMeta,
+    depth: baseMeta.depth ?? depth,
+    parentTopic,
+    childTopics: children.map((child) => String(child.topic || '')).filter(Boolean),
+    ancestorTopics,
+  }
+
+  node.metadata = nextMeta
+  if (nodeId) {
+    metadataMap.set(nodeId, nextMeta)
+  }
+
+  const nextAncestors = topic ? [...ancestorTopics, topic] : ancestorTopics
+  children.forEach((child) => annotateNodeRelations(child, topic, nextAncestors, depth + 1))
+}
 
 // --- 工具函数 ---
 function detectContentType(text: string): string {
@@ -316,15 +351,13 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
   ({ content = '', loading = false, resourceId, userId, onSelect }, ref) => {
     const mapRef = useRef<HTMLDivElement>(null)
     const mindRef = useRef<MindElixirInstance | null>(null)
-    const selectHandlerRef = useRef<((nodeObj: NodeObj) => void) | null>(null)
+    const selectHandlerRef = useRef<((nodes: NodeObj<unknown>[]) => void) | null>(null)
     const expandHandlerRef = useRef<((nodeObj: NodeObj) => void) | null>(null)
     const scaleHandlerRef = useRef<((scale: number) => void) | null>(null)
+    const expandingNodesRef = useRef<Set<string>>(new Set())
 
     const [zoomLevel, setZoomLevel] = useState(100)
-    const [detailNode, setDetailNode] = useState<DetailNode | null>(null)
-    const [showDetail, setShowDetail] = useState(false)
     const [renderError, setRenderError] = useState('')
-    const [expandingNodes, setExpandingNodes] = useState<Set<string>>(new Set())
 
     // --- 解析内容 ---
     const parseContent = useCallback((): MindElixirData | null => {
@@ -347,18 +380,19 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
         setRenderError(`解析失败 (类型: ${type}, 长度: ${trimmed.length}, 开头: ${trimmed.substring(0, 50)})`)
         return null
       }
+      annotateNodeRelations(nodeData, '', [], 0)
       return { nodeData, direction: 1 } as unknown as MindElixirData
     }, [content])
 
     // --- 展开第四级节点 ---
     const expandNode = useCallback(async (nodeObj: NodeObj) => {
       if (!resourceId || !userId) return
-      if (expandingNodes.has(nodeObj.id)) return
+      if (expandingNodesRef.current.has(nodeObj.id)) return
 
       const meta = (nodeObj.metadata as NodeMetadata) || metadataMap.get(nodeObj.id)
       if (!meta) return
 
-      setExpandingNodes(prev => new Set(prev).add(nodeObj.id))
+      expandingNodesRef.current.add(nodeObj.id)
 
       try {
         const resp = await expandMindmapNode({
@@ -376,20 +410,18 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
         const respData = resp.data as { children?: Record<string, unknown>[] } | undefined
         if (resp.code === 200 && respData?.children) {
           const children = respData.children
-          const convertedChildren = children.map(c => convertNode(c, 4))
-
-          // Update metadataMap for new children
-          const updateMeta = (nodes: NodeObj[]) => {
-            for (const n of nodes) {
-              if (n.metadata) metadataMap.set(n.id, n.metadata as NodeMetadata)
-              if (n.children) updateMeta(n.children as NodeObj[])
-            }
-          }
-          updateMeta(convertedChildren)
+          const parentDepth = typeof meta.depth === 'number' ? meta.depth : 0
+          const convertedChildren = children.map(c => convertNode(c, parentDepth + 1))
 
           // Attach to parent node and refresh
           nodeObj.children = convertedChildren
           nodeObj.expanded = true
+          annotateNodeRelations(
+            nodeObj,
+            meta.parentTopic || '',
+            Array.isArray(meta.ancestorTopics) ? meta.ancestorTopics : [],
+            parentDepth,
+          )
           if (mindRef.current) {
             const data = mindRef.current.getData()
             mindRef.current.refresh(data)
@@ -398,13 +430,9 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
       } catch (e) {
         console.warn('节点展开失败:', e)
       } finally {
-        setExpandingNodes(prev => {
-          const next = new Set(prev)
-          next.delete(nodeObj.id)
-          return next
-        })
+        expandingNodesRef.current.delete(nodeObj.id)
       }
-    }, [resourceId, userId, expandingNodes])
+    }, [resourceId, userId])
 
     // --- 初始化 MindElixir ---
     const initMindElixir = useCallback(() => {
@@ -460,17 +488,15 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
         }
 
         // 监听节点点击
-        selectHandlerRef.current = (nodeObj: NodeObj) => {
-          const meta = (nodeObj.metadata as NodeMetadata) || metadataMap.get(nodeObj.id) || null
-          setDetailNode(meta ? { text: nodeObj.topic, ...meta } : {
-            text: nodeObj.topic,
-            definition: '', syntax: '', examples: [], pitfalls: [], advice: '',
-          })
-          setShowDetail(true)
+        selectHandlerRef.current = (nodes: NodeObj<unknown>[]) => {
+          const nodeObj = Array.isArray(nodes) ? nodes[0] : nodes
+          if (!nodeObj) return
           onSelect?.(nodeObj)
 
-          // 自动展开：depth>=2 且无子节点的叶子节点
-          if (meta?.depth !== undefined && meta.depth >= 2 && (!nodeObj.children || nodeObj.children.length === 0)) {
+          // 自动展开：仅对二级节点（depth===2）且无子节点的叶子节点展开一次
+          // 限制深度避免无限套娃（兜底模板会生成 depth=3 的"要点/示例"节点，再点又会展开）
+          const meta = (nodeObj.metadata as NodeMetadata) || metadataMap.get(nodeObj.id) || null
+          if (meta?.depth === 2 && (!nodeObj.children || nodeObj.children.length === 0)) {
             expandNode(nodeObj)
           }
         }
@@ -481,20 +507,13 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
           setZoomLevel(Math.round(scale * 100))
         }
 
-        mindRef.current.bus.addListener('selectNewNode', selectHandlerRef.current)
+        mindRef.current.bus.addListener('selectNodes', selectHandlerRef.current)
         mindRef.current.bus.addListener('expandNode', expandHandlerRef.current)
         mindRef.current.bus.addListener('scale', scaleHandlerRef.current)
       }
 
       requestAnimationFrame(() => tryInit())
     }, [parseContent, onSelect, expandNode])
-
-    // --- 关闭详情面板 ---
-    const closeDetail = useCallback(() => {
-      setShowDetail(false)
-      setDetailNode(null)
-      if (mindRef.current) mindRef.current.clearSelection()
-    }, [])
 
     // --- 工具栏方法 ---
     const zoomIn = useCallback(() => {
@@ -544,8 +563,6 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
 
     // --- content 变化时重新渲染（含首次挂载） ---
     useEffect(() => {
-      setShowDetail(false)
-      setDetailNode(null)
       setRenderError('')
       metadataMap.clear()
       if (content) {
@@ -557,7 +574,7 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
     useEffect(() => {
       return () => {
         if (mindRef.current) {
-          if (selectHandlerRef.current) mindRef.current.bus.removeListener('selectNewNode', selectHandlerRef.current)
+          if (selectHandlerRef.current) mindRef.current.bus.removeListener('selectNodes', selectHandlerRef.current)
           if (expandHandlerRef.current) mindRef.current.bus.removeListener('expandNode', expandHandlerRef.current)
           if (scaleHandlerRef.current) mindRef.current.bus.removeListener('scale', scaleHandlerRef.current)
           mindRef.current.destroy()
@@ -597,70 +614,6 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
               </div>
             )}
 
-            {/* 右侧详情面板 */}
-            {showDetail && detailNode && (
-              <div className="mm-panel mm-panel-slide-in">
-                <div className="mm-panel-header">
-                  <h3 className="mm-panel-title">{detailNode.text}</h3>
-                  <button className="mm-panel-close" onClick={closeDetail}>
-                    <svg width="18" height="18" viewBox="0 0 18 18">
-                      <path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                    </svg>
-                  </button>
-                </div>
-                <div className="mm-panel-body">
-                  {detailNode.definition && (
-                    <div className="mm-panel-section">
-                      <div className="mm-panel-label">定义</div>
-                      <p className="mm-panel-text">{detailNode.definition}</p>
-                    </div>
-                  )}
-                  {detailNode.syntax && (
-                    <div className="mm-panel-section">
-                      <div className="mm-panel-label">语法</div>
-                      <pre className="mm-panel-code">{detailNode.syntax}</pre>
-                    </div>
-                  )}
-                  {detailNode.examples && detailNode.examples.length > 0 && (
-                    <div className="mm-panel-section">
-                      <div className="mm-panel-label">示例</div>
-                      {detailNode.examples.map((ex, i) => (
-                        <pre key={i} className="mm-panel-code">{ex}</pre>
-                      ))}
-                    </div>
-                  )}
-                  {detailNode.pitfalls && detailNode.pitfalls.length > 0 && (
-                    <div className="mm-panel-section">
-                      <div className="mm-panel-label">常见坑点</div>
-                      <ul className="mm-panel-list">
-                        {detailNode.pitfalls.map((p, i) => (
-                          <li key={i}>{p}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {detailNode.advice && (
-                    <div className="mm-panel-section">
-                      <div className="mm-panel-label">学习建议</div>
-                      <p className="mm-panel-text mm-panel-advice">{detailNode.advice}</p>
-                    </div>
-                  )}
-                  {!detailNode.definition &&
-                    !detailNode.syntax &&
-                    (!detailNode.examples || detailNode.examples.length === 0) &&
-                    (!detailNode.pitfalls || detailNode.pitfalls.length === 0) &&
-                    !detailNode.advice && (
-                      <div className="mm-panel-empty">该节点无详细内容</div>
-                    )}
-                  {expandingNodes.size > 0 && (
-                    <div className="mm-panel-expanding">
-                      <div className="mm-spinner-small" />
-                      <span>正在展开子节点...</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </>
         )}
 
@@ -687,122 +640,6 @@ const MindmapViewer = forwardRef<MindmapViewerHandle, MindmapViewerProps>(
           }
           .mm-map .map-container {
             background: #f8fafc !important;
-          }
-          .mm-panel {
-            position: absolute;
-            top: 0; right: 0;
-            width: 340px;
-            height: 100%;
-            background: #fff;
-            border-left: 1px solid #e2e8f0;
-            box-shadow: -4px 0 24px rgba(0,0,0,0.06);
-            z-index: 500;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-          }
-          .mm-panel-slide-in {
-            animation: mm-slide-in 0.3s ease forwards;
-          }
-          @keyframes mm-slide-in {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-          }
-          .mm-panel-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-bottom: 1px solid #f1f5f9;
-            flex-shrink: 0;
-          }
-          .mm-panel-title {
-            font-size: 16px;
-            font-weight: 700;
-            color: #1e293b;
-            margin: 0;
-          }
-          .mm-panel-close {
-            width: 28px; height: 28px;
-            border: none; border-radius: 6px;
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer; color: #94a3b8;
-            background: transparent;
-            transition: all 0.15s;
-          }
-          .mm-panel-close:hover { background: #f1f5f9; color: #64748b; }
-          .mm-panel-body {
-            flex: 1;
-            overflow-y: auto;
-            padding: 16px 20px;
-          }
-          .mm-panel-section { margin-bottom: 16px; }
-          .mm-panel-label {
-            font-size: 11px;
-            font-weight: 600;
-            color: #7c3aed;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 6px;
-          }
-          .mm-panel-text {
-            font-size: 13px;
-            color: #475569;
-            line-height: 1.6;
-            margin: 0;
-          }
-          .mm-panel-code {
-            font-size: 12px;
-            color: #1e293b;
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 8px;
-            padding: 10px 12px;
-            margin: 0 0 6px 0;
-            overflow-x: auto;
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            line-height: 1.5;
-            white-space: pre-wrap;
-          }
-          .mm-panel-list {
-            margin: 0;
-            padding: 0 0 0 16px;
-            font-size: 13px;
-            color: #475569;
-            line-height: 1.8;
-          }
-          .mm-panel-list li { margin-bottom: 2px; }
-          .mm-panel-advice {
-            background: linear-gradient(135deg, #eff6ff, #f0fdf4);
-            border: 1px solid #dbeafe;
-            border-radius: 8px;
-            padding: 10px 12px;
-            font-size: 13px;
-            color: #1e40af;
-          }
-          .mm-panel-empty {
-            text-align: center;
-            color: #94a3b8;
-            font-size: 13px;
-            padding: 32px 0;
-          }
-          .mm-panel-expanding {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            justify-content: center;
-            color: #3b82f6;
-            font-size: 12px;
-            padding: 12px 0;
-            margin-top: 8px;
-            border-top: 1px solid #f1f5f9;
-          }
-          .mm-spinner-small {
-            width: 14px; height: 14px;
-            border: 2px solid #e2e8f0;
-            border-top-color: #3b82f6;
-            border-radius: 50%;
-            animation: mm-spin 0.8s linear infinite;
           }
           .mm-loading {
             display: flex; flex-direction: column;

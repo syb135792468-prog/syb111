@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useChatStore } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useSSE } from '../composables/useSSE'
-import { clearChatHistory } from '../api/chat'
+import { toggleMessageBookmark } from '../api/chat'
 import AppHeader from '../components/layout/AppHeader'
 import ChatWelcome from '../components/chat/ChatWelcome'
 import ChatMessage from '../components/chat/ChatMessage'
@@ -10,9 +10,8 @@ import ChatTyping from '../components/chat/ChatTyping'
 import ChatInput from '../components/chat/ChatInput'
 import SocraticControls from '../components/chat/SocraticControls'
 import { MasteryBar } from '../components/chat/MasteryBar'
-import { Trash2, Zap, Brain, GraduationCap } from 'lucide-react'
+import { Trash2, Zap, Brain, GraduationCap, Sparkles } from 'lucide-react'
 
-// --- 类型定义 ---
 interface ModeOption {
   key: string
   placeholder: string
@@ -21,26 +20,46 @@ interface ModeOption {
   desc?: string
 }
 
-// --- 组件 ---
+const MODE_OPTIONS: Array<{
+  key: 'fast' | 'deep' | 'socratic'
+  label: string
+  icon: React.ReactNode
+  description: string
+}> = [
+  { key: 'fast', label: '快速模式', icon: <Zap style={{ width: 12, height: 12 }} />, description: '先给方向，再继续追问' },
+  { key: 'deep', label: '深度思考', icon: <Brain style={{ width: 12, height: 12 }} />, description: '适合系统拆解问题' },
+  { key: 'socratic', label: '交互学习', icon: <GraduationCap style={{ width: 12, height: 12 }} />, description: '通过提问引导理解' },
+]
+
 const ChatView: React.FC = () => {
-  const chatStore = useChatStore()
-  const appStore = useAppStore()
+  const messages = useChatStore((state) => state.messages)
+  const isStreaming = useChatStore((state) => state.isStreaming)
+  const isLoadingConversation = useChatStore((state) => state.isLoadingConversation)
+  const currentConversationId = useChatStore((state) => state.currentConversationId)
+  const currentIntent = useChatStore((state) => state.currentIntent)
+  const thinkingSteps = useChatStore((state) => state.thinkingSteps)
+  const thinkingCompleted = useChatStore((state) => state.thinkingCompleted)
+  const socraticThreadId = useChatStore((state) => state.socraticThreadId)
+  const addThinkingStep = useChatStore((state) => state.addThinkingStep)
+  const abort = useChatStore((state) => state.abort)
+  const startNewChat = useChatStore((state) => state.startNewChat)
+  const deleteConversation = useChatStore((state) => state.deleteConversation)
+  const addMessage = useChatStore((state) => state.addMessage)
+  const setThinkingCompleted = useChatStore((state) => state.setThinkingCompleted)
+  const clearThinkingSteps = useChatStore((state) => state.clearThinkingSteps)
+  const updateMessageBookmark = useChatStore((state) => state.updateMessageBookmark)
+  const showToast = useAppStore((state) => state.showToast)
   const { sendMessage, sendSocraticAction } = useSSE()
 
-  // --- Refs ---
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<{ focus: () => void }>(null)
+  const thinkingClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const userScrolledUp = useRef(false)
 
-  // --- 状态 ---
-  const [showTyping, setShowTyping] = useState(false)
-  const [activeMode, setActiveMode] = useState<string | null>(null)
   const [inputPlaceholder, setInputPlaceholder] = useState('')
   const [chatMode, setChatMode] = useState<'fast' | 'deep' | 'socratic'>('fast')
 
-  // --- 滚动相关 ---
-  const userScrolledUp = useRef(false)
-
-  const scrollToBottom = useCallback((force: boolean = false) => {
+  const scrollToBottom = useCallback((force = false) => {
     if (!messagesContainerRef.current) return
     if (!force && userScrolledUp.current) return
     requestAnimationFrame(() => {
@@ -60,166 +79,211 @@ const ChatView: React.FC = () => {
     userScrolledUp.current = false
   }, [])
 
-  // --- 发送消息 ---
-  const handleSend = useCallback((text: string) => {
-    resetScrollState()
-    setShowTyping(true)
-    setActiveMode(null)
-    setInputPlaceholder('')
-    window.dispatchEvent(new Event('robot-think'))
-    sendMessage(text, chatMode).finally(() => {
-      setShowTyping(false)
-    })
-  }, [sendMessage, resetScrollState, chatMode])
+  const handleSend = useCallback(
+    (text: string, imageUrls?: string[]) => {
+      resetScrollState()
+      setInputPlaceholder('')
+      window.dispatchEvent(new Event('robot-think'))
+      addThinkingStep(chatMode === 'deep' ? '正在调度多智能体分析你的问题...' : '正在整理你的提问重点...')
+      sendMessage(text, chatMode, imageUrls)
+    },
+    [addThinkingStep, sendMessage, resetScrollState, chatMode],
+  )
 
-  // --- 中止 ---
   const handleAbort = useCallback(() => {
-    chatStore.abort()
-  }, [chatStore])
+    abort()
+  }, [abort])
 
-  // --- 清空对话 ---
   const clearChat = useCallback(async () => {
-    try {
-      await clearChatHistory()
-    } catch {
-      // ignore
+    const conversationId = currentConversationId
+    if (conversationId) {
+      const success = await deleteConversation(conversationId)
+      if (!success) {
+        showToast('删除对话失败', 'error')
+        return
+      }
+    } else {
+      startNewChat()
     }
-    chatStore.startNewChat()
-    chatStore.setSocraticThreadId(null)
-    setActiveMode(null)
+
     setInputPlaceholder('')
-    appStore.showToast('对话已清空', 'success')
-  }, [chatStore, appStore])
+    showToast(conversationId ? '对话已删除' : '当前会话已清空', 'success')
+  }, [currentConversationId, deleteConversation, showToast, startNewChat])
 
-  // --- 选择模式 ---
-  const handleSelectMode = useCallback((mode: ModeOption) => {
-    setActiveMode(mode.key)
-    setInputPlaceholder(mode.placeholder)
+  const handleBookmark = useCallback(
+    async (messageIndex: number) => {
+      const message = messages[messageIndex]
+      if (!message?.id) return
+      try {
+        const response = await toggleMessageBookmark(message.id)
+        if (response.code === 200) {
+          const newState = (response.data as { is_bookmarked: boolean })?.is_bookmarked
+          updateMessageBookmark(messageIndex, newState)
+          showToast(newState ? '已收藏回答' : '已取消收藏', 'success')
+        }
+      } catch {
+        showToast('操作失败', 'error')
+      }
+    },
+    [messages, showToast, updateMessageBookmark],
+  )
 
-    // 添加系统引导消息
-    chatStore.addMessage('assistant', mode.guide)
+  const handleSelectMode = useCallback(
+    (mode: ModeOption) => {
+      setInputPlaceholder(mode.placeholder)
 
-    // 聚焦输入框
-    requestAnimationFrame(() => {
-      chatInputRef.current?.focus()
-    })
-  }, [chatStore])
+      if (mode.key === 'socratic') {
+        setChatMode('socratic')
+      }
 
-  // --- 消息变化时自动滚动 ---
+      addMessage('assistant', mode.guide)
+      requestAnimationFrame(() => {
+        chatInputRef.current?.focus()
+      })
+    },
+    [addMessage],
+  )
+
   useEffect(() => {
     scrollToBottom(true)
-  }, [chatStore.messages.length, scrollToBottom])
+  }, [messages.length, thinkingSteps.length, scrollToBottom])
 
-  // --- 流式输出时自动滚动 ---
   useEffect(() => {
-    const last = chatStore.messages[chatStore.messages.length - 1]
+    const last = messages[messages.length - 1]
     if (last?.role === 'assistant') {
       scrollToBottom()
     }
-  }, [chatStore.messages, scrollToBottom])
+  }, [messages, scrollToBottom])
 
-  // --- 卸载时中止 SSE 连接 ---
   useEffect(() => {
-    return () => {
-      if (chatStore.isStreaming) {
-        chatStore.abort()
+    const last = messages[messages.length - 1]
+    if (last?.role === 'assistant') {
+      const hasContent = last.content || (last.content_blocks && last.content_blocks.length > 0)
+      if (hasContent && thinkingSteps.length > 0 && !thinkingCompleted) {
+        setThinkingCompleted(true)
+        thinkingClearTimer.current = setTimeout(() => clearThinkingSteps(), 300)
       }
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [messages, thinkingSteps.length, thinkingCompleted, setThinkingCompleted, clearThinkingSteps])
 
-  // --- 派生状态 ---
-  const messages = chatStore.messages
-  const thinkingSteps = chatStore.thinkingSteps
-  const thinkingCompleted = chatStore.thinkingCompleted
-  const hasMessages = useMemo(() => messages.length > 0, [messages.length])
-  const showWelcome = useMemo(
-    () => !hasMessages && !chatStore.isLoadingConversation,
-    [hasMessages, chatStore.isLoadingConversation]
-  )
-  const showTypingIndicator = useMemo(
-    () => showTyping && !messages.some(m => m.role === 'assistant' && m.content),
-    [showTyping, messages]
-  )
+  useEffect(() => {
+    return () => {
+      if (thinkingClearTimer.current) clearTimeout(thinkingClearTimer.current)
+    }
+  }, [])
+
+  const hasMessages = messages.length > 0
+  const showWelcome = !hasMessages && !isLoadingConversation
+  const showTypingIndicator = useMemo(() => {
+    if (!isStreaming) return false
+    const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
+    if (!lastAssistant) return true
+    const hasContent = lastAssistant.content || (lastAssistant.content_blocks && lastAssistant.content_blocks.length > 0)
+    return !hasContent
+  }, [isStreaming, messages])
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
+    <div className="chat-stage">
       <style>{`
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes local-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       `}</style>
-      {/* Header */}
+
       <AppHeader title="智能对话">
-        {chatStore.currentIntent && (
-          <span style={{ fontSize: 12, color: '#10b981', background: '#f0fdf4', padding: '2px 8px', borderRadius: 6 }}>
-            {chatStore.currentIntent}
+        {currentIntent && (
+          <span
+            className="shell-title-eyebrow"
+            style={{
+              color: 'var(--py-blue-deep)',
+              background: 'rgba(48, 105, 152, 0.08)',
+              border: '1px solid rgba(48, 105, 152, 0.14)',
+            }}
+          >
+            <Sparkles style={{ width: 12, height: 12 }} />
+            {currentIntent}
           </span>
         )}
-        <button
-          onClick={clearChat}
-          style={{ color: '#9ca3af', padding: 6, borderRadius: 6, border: 'none', background: 'transparent', cursor: 'pointer', transition: 'color 0.15s' }}
-          onMouseEnter={e => (e.currentTarget.style.color = '#374151')}
-          onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
-          title="清空对话"
-        >
+
+        <button onClick={clearChat} className="shell-icon-button btn-click-feedback" title="清空对话">
           <Trash2 style={{ width: 16, height: 16 }} />
         </button>
       </AppHeader>
 
-      {/* Messages */}
-      <div
-        ref={messagesContainerRef}
-        onScroll={handleScroll}
-        style={{ flex: 1, overflowY: 'auto', padding: '24px 0', position: 'relative' }}
-      >
+      <div ref={messagesContainerRef} onScroll={handleScroll} className="chat-scroll-zone smooth-scroll">
         {showWelcome ? (
           <ChatWelcome onSelectMode={handleSelectMode} />
         ) : (
-          <div style={{ maxWidth: 800, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 32 }}>
-            {messages.map((msg, i) => (
-              <ChatMessage
-                key={i}
-                role={msg.role as 'user' | 'assistant' | 'system'}
-                content={msg.content}
-                cards={msg.cards}
-                content_blocks={msg.content_blocks}
-                createdAt={msg.created_at}
-                isStreaming={chatStore.isStreaming && i === messages.length - 1 && msg.role === 'assistant'}
-              />
+          <div className="chat-feed">
+            {messages.map((message, index) => (
+              <div key={message.id ?? `${message.role}-${message.created_at ?? index}-${index}`} style={{ paddingBottom: 26 }}>
+                <ChatMessage
+                  id={message.id}
+                  role={message.role as 'user' | 'assistant' | 'system'}
+                  content={message.content}
+                  cards={message.cards}
+                  content_blocks={message.content_blocks}
+                  imageUrls={message.image_urls}
+                  createdAt={message.created_at}
+                  isStreaming={isStreaming && index === messages.length - 1 && message.role === 'assistant'}
+                  isBookmarked={message.is_bookmarked}
+                  onBookmark={message.role === 'assistant' && message.id ? () => handleBookmark(index) : undefined}
+                  conversationId={currentConversationId}
+                />
+              </div>
             ))}
-            {showTypingIndicator && <ChatTyping />}
 
-            {/* Thinking Panel */}
+            {showTypingIndicator && (
+              <div style={{ marginTop: 24 }}>
+                <ChatTyping />
+              </div>
+            )}
+
             {thinkingSteps.length > 0 && (
-              <div style={{
-                background: thinkingCompleted
-                  ? 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)'
-                  : 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
-                border: thinkingCompleted ? '1px solid #bbf7d0' : '1px solid #ddd6fe',
-                borderRadius: 12,
-                padding: '12px 16px',
-                maxWidth: 480,
-                transition: 'all 0.5s ease',
-                opacity: thinkingCompleted ? 0.85 : 1,
-              }}>
-                <div style={{
-                  fontSize: 13, fontWeight: 600,
-                  color: thinkingCompleted ? '#059669' : '#7c3aed',
-                  marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6,
-                }}>
-                  <Brain style={{ width: 14, height: 14 }} />
-                  {thinkingCompleted ? '思考完成，正在生成回答...' : '深度思考中...'}
+              <div
+                className="thinking-shell"
+                style={{
+                  opacity: thinkingCompleted ? 0.72 : 1,
+                  background: thinkingCompleted
+                    ? 'linear-gradient(135deg, rgba(235,245,255,0.94), rgba(245,249,255,0.92))'
+                    : 'linear-gradient(135deg, rgba(246,241,255,0.96), rgba(250,245,255,0.92))',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <div
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: thinkingCompleted ? 'rgba(48,105,152,0.12)' : 'rgba(124,58,237,0.12)',
+                      color: thinkingCompleted ? '#2563eb' : '#7c3aed',
+                    }}
+                  >
+                    <Brain style={{ width: 14, height: 14 }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: thinkingCompleted ? '#2563eb' : '#7c3aed' }}>
+                      {thinkingCompleted ? '开始组织回答' : '正在处理你的问题'}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--mute)' }}>
+                      {thinkingCompleted ? '思考阶段已完成，正在生成内容。' : '系统正在梳理重点、路由工具和知识结构。'}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {thinkingSteps.map((step, i) => (
-                    <div key={i} style={{
-                      fontSize: 12,
-                      color: thinkingCompleted ? '#16a34a' : '#6d28d9',
-                      lineHeight: 1.6,
-                      animation: 'fadeIn 0.3s ease-in',
-                      opacity: thinkingCompleted ? 0.7 : 1,
-                      textDecoration: thinkingCompleted ? 'line-through' : 'none',
-                    }}>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {thinkingSteps.map((step, index) => (
+                    <div
+                      key={index}
+                      className="thinking-step"
+                      style={{
+                        fontSize: 12,
+                        color: thinkingCompleted ? 'var(--mute)' : 'var(--ink-soft)',
+                        lineHeight: 1.7,
+                        textDecoration: thinkingCompleted ? 'line-through' : 'none',
+                      }}
+                    >
                       {step}
                     </div>
                   ))}
@@ -229,102 +293,96 @@ const ChatView: React.FC = () => {
           </div>
         )}
 
-        {/* Loading overlay when switching conversations */}
-        {chatStore.isLoadingConversation && (
-          <div style={{
-            position: 'absolute', inset: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(255,255,255,0.8)', zIndex: 10,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#9ca3af', fontSize: 14 }}>
-              <div style={{
-                width: 16, height: 16,
-                border: '2px solid #e5e7eb', borderTopColor: '#10b981',
-                borderRadius: '50%', animation: 'spin 0.6s linear infinite',
-              }} />
-              加载中...
+        {isLoadingConversation && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'rgba(245, 247, 251, 0.74)',
+              backdropFilter: 'blur(4px)',
+              zIndex: 10,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '14px 18px',
+                borderRadius: 18,
+                border: '1px solid rgba(112, 137, 175, 0.16)',
+                background: 'rgba(255,255,255,0.88)',
+                color: 'var(--ink-soft)',
+                boxShadow: '0 24px 48px rgba(23, 37, 61, 0.08)',
+              }}
+            >
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  border: '2px solid rgba(48, 105, 152, 0.2)',
+                  borderTopColor: 'var(--py-blue)',
+                  borderRadius: '50%',
+                  animation: 'local-spin 0.6s linear infinite',
+                }}
+              />
+              正在载入会话...
             </div>
           </div>
         )}
       </div>
 
-      {/* Mode Toggle + Input */}
-      <div style={{ borderTop: '1px solid #f3f4f6', background: '#fff' }}>
-        {/* Mode Toggle */}
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 24px 0', gap: 8 }}>
-          <button
-            onClick={() => setChatMode('fast')}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '4px 12px', borderRadius: 16, fontSize: 12, fontWeight: 500,
-              border: chatMode === 'fast' ? '1px solid #10b981' : '1px solid #e5e7eb',
-              background: chatMode === 'fast' ? '#f0fdf4' : '#fff',
-              color: chatMode === 'fast' ? '#059669' : '#6b7280',
-              cursor: 'pointer', transition: 'all 0.15s',
-            }}
-          >
-            <Zap style={{ width: 12, height: 12 }} />
-            快速模式
-          </button>
-          <button
-            onClick={() => setChatMode('deep')}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '4px 12px', borderRadius: 16, fontSize: 12, fontWeight: 500,
-              border: chatMode === 'deep' ? '1px solid #8b5cf6' : '1px solid #e5e7eb',
-              background: chatMode === 'deep' ? '#f5f3ff' : '#fff',
-              color: chatMode === 'deep' ? '#7c3aed' : '#6b7280',
-              cursor: 'pointer', transition: 'all 0.15s',
-            }}
-          >
-            <Brain style={{ width: 12, height: 12 }} />
-            深度思考
-          </button>
-          <button
-            onClick={() => setChatMode('socratic')}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              padding: '4px 12px', borderRadius: 16, fontSize: 12, fontWeight: 500,
-              border: chatMode === 'socratic' ? '1px solid #2563eb' : '1px solid #e5e7eb',
-              background: chatMode === 'socratic' ? '#eff6ff' : '#fff',
-              color: chatMode === 'socratic' ? '#2563eb' : '#6b7280',
-              cursor: 'pointer', transition: 'all 0.15s',
-            }}
-          >
-            <GraduationCap style={{ width: 12, height: 12 }} />
-            交互式学习
-          </button>
+      <div style={{ padding: '0 10px 8px' }}>
+        <div className="chat-feed" style={{ display: 'flex', justifyContent: 'center', marginBottom: 6 }}>
+          <div className="chat-mode-pills">
+            {MODE_OPTIONS.map((mode) => {
+              const active = chatMode === mode.key
+              return (
+                <button
+                  key={mode.key}
+                  onClick={() => setChatMode(mode.key)}
+                  disabled={isStreaming}
+                  title={isStreaming ? '生成中，暂时无法切换模式' : mode.description}
+                  className={`chat-mode-pill btn-click-feedback ${active ? 'chat-mode-pill-active' : ''}`}
+                  style={{ opacity: isStreaming ? 0.56 : 1 }}
+                >
+                  {mode.icon}
+                  {mode.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {/* Socratic Controls */}
         {chatMode === 'socratic' && (
           <SocraticControls
-            threadId={chatStore.socraticThreadId}
-            isStreaming={chatStore.isStreaming}
+            threadId={socraticThreadId}
+            isStreaming={isStreaming}
             onHint={() => sendSocraticAction('hint')}
             onConfused={() => sendSocraticAction('confused')}
             onEnd={() => sendSocraticAction('end')}
           />
         )}
 
-        {/* Mastery Bar */}
-        {chatMode === 'socratic' && chatStore.socraticThreadId && (
-          <MasteryBar />
-        )}
+        {chatMode === 'socratic' && socraticThreadId && <MasteryBar />}
 
         <ChatInput
           ref={chatInputRef}
-          isStreaming={chatStore.isStreaming}
+          isStreaming={isStreaming}
           placeholder={
-            chatMode === 'deep' ? '深度思考模式：5个Agent将协作为你生成完整学习内容...' :
-            chatMode === 'socratic' ? '交互式学习：描述你想学习的知识点，AI将引导你思考...' :
-            inputPlaceholder
+            chatMode === 'deep'
+              ? '深度思考模式：系统会调度多个 Agent 协同分析，并尽量给出更完整的学习展开。'
+              : chatMode === 'socratic'
+                ? '交互式学习：描述你想学的知识点，AI 会通过提问一步步带你想清楚。'
+                : inputPlaceholder
           }
           onSend={handleSend}
           onAbort={handleAbort}
         />
       </div>
-
     </div>
   )
 }

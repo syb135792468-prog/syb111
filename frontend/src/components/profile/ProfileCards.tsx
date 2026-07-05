@@ -45,28 +45,28 @@ const ProfileCards: React.FC<ProfileCardsProps> = ({
         const desc = card.key === 'level' ? levelDesc : card.key === 'goal' ? goalDesc : motivationDesc
 
         return (
-          <div key={card.key} className="rounded-xl overflow-hidden shadow-sm">
+          <div key={card.key} className="page-panel overflow-hidden">
             <div className={`bg-gradient-to-r px-5 py-4 text-white ${card.gradient}`}>
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-1.5">
                 <Icon className="w-4 h-4" />
-                <span className="text-xs opacity-80">{card.label}</span>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] opacity-80">{card.label}</span>
               </div>
-              <p className="text-lg font-semibold">{value}</p>
+              <p className="text-xl font-semibold tracking-[0.01em]">{value}</p>
             </div>
-            <div className={`px-5 py-3 ${card.bg}`}>
-              <p className="text-xs text-gray-500">{desc}</p>
+            <div className={`px-5 py-4 ${card.bg}`}>
+              <p className="text-xs leading-6 text-gray-500">{desc}</p>
               {/* 学习动力进度条 */}
               {card.key === 'motivation' && (
-                <div className="mt-2">
+                <div className="mt-3">
                   {motivationValue > 0 ? (
                     <>
-                      <div className="w-full h-1.5 bg-green-200 rounded-full overflow-hidden">
+                      <div className="w-full h-1.5 bg-white/70 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-green-500 rounded-full transition-all duration-700 ease-out"
                           style={{ width: `${motivationValue}%` }}
                         />
                       </div>
-                      <p className="text-[10px] text-green-600 mt-1">{motivationValue}/100</p>
+                      <p className="text-[10px] text-green-600 mt-1.5">{motivationValue}/100</p>
                     </>
                   ) : (
                     <p className="text-[10px] text-gray-400">暂无学习记录</p>

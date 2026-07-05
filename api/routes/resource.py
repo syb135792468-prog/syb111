@@ -14,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, Dict, Any, AsyncGenerator
 import uuid
+import os
 import contextvars
 import asyncio
 import random
+import re
+from collections import Counter
 from datetime import datetime
+import requests as http_requests
 
 from api.schemas import (
     BaseResponse,
@@ -25,6 +29,7 @@ from api.schemas import (
     ResourceRequest,
     ResourceMetadata,
     ExpandNodeRequest,
+    SaveExternalVideoRequest,
 )
 from models.database import AsyncSessionLocal
 from models.resource import Resource
@@ -34,10 +39,9 @@ from models.quiz_attempt import QuizAttempt
 from agents.quiz_agent import QuizAgent
 from agents.code_agent import CodeAgent
 from agents.mindmap_agent import MindmapAgent
-from agents.doc_agent import DocAgent
+from agents.content_agent import ContentAgent, ContentType
 from agents.video_agent import VideoAgent
 from agents.base_agent import BaseAgent
-from utils.agent_helpers import match_knowledge_point
 from config.model_config import PYTHON_KNOWLEDGE_POINTS
 from utils.logger import get_logger
 from config.settings import settings
@@ -53,6 +57,7 @@ from config.constants import (
     DEFAULT_KNOWLEDGE_LEVEL, DEFAULT_LEARNING_GOAL, DEFAULT_LEARNING_STYLE,
     QUIZ_TYPE_CHOICE, QUIZ_TYPE_MULTI, RESOURCE_TYPE_QUIZ, RESOURCE_TYPE_MINDMAP,
     DEFAULT_TOPIC, RESOURCE_ID_TRUNCATE_LENGTH, MINDMAP_EXPAND_TIMEOUT_SEC,
+    VIDEO_OUTPUT_DIR,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_RESOURCE_NOT_FOUND,
@@ -70,11 +75,55 @@ _AGENT_REGISTRY: Dict[str, type[BaseAgent]] = {
     "quiz": QuizAgent,
     "code": CodeAgent,
     "mindmap": MindmapAgent,
-    "doc": DocAgent,
+    "doc": ContentAgent,
     "video": VideoAgent,
+    "reading": ContentAgent,
+    "slides": ContentAgent,
+}
+# ContentAgent 需要 content_type 参数的映射
+_CONTENT_TYPE_MAP: Dict[str, ContentType] = {
+    "doc": ContentType.DOCUMENT,
+    "reading": ContentType.READING,
+    "slides": ContentType.SLIDES,
 }
 _agents: Dict[str, BaseAgent] = {}
 _agent_lock = asyncio.Lock()
+
+
+def _is_retryable_quiz_generation_error(exc: Exception) -> bool:
+    """区分可重试和不可重试的练习题生成错误，避免把确定性失败放大成多轮重试。"""
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+
+    msg = str(exc).lower().strip()
+    if not msg:
+        return True
+
+    non_retryable_markers = (
+        "没有可用题目",
+        "没有 choice 题型",
+        "没有 fill 题型",
+        "没有 code 题型",
+        "题库无",
+        "不支持的资源类型",
+    )
+    return not any(marker in msg for marker in non_retryable_markers)
+
+
+def _build_quiz_failure_entry(index: int, code: str, detail: str) -> str:
+    safe_detail = detail.strip() or "未知原因"
+    return f"[{code}] 第 {index} 题: {safe_detail}"
+
+
+def _summarize_quiz_failures(failures: list[str]) -> str:
+    if not failures:
+        return ""
+
+    counter: Counter[str] = Counter()
+    for failure in failures:
+        match = re.match(r"\[([^\]]+)\]", failure)
+        counter[match.group(1) if match else "unknown"] += 1
+    return ", ".join(f"{code}={count}" for code, count in counter.items())
 
 async def get_agent(resource_type: str) -> BaseAgent:
     if resource_type not in _AGENT_REGISTRY:
@@ -84,6 +133,10 @@ async def get_agent(resource_type: str) -> BaseAgent:
             if resource_type not in _agents:
                 if resource_type == RESOURCE_TYPE_MINDMAP:
                     _agents[resource_type] = _AGENT_REGISTRY[resource_type](output_format="json")
+                elif resource_type in _CONTENT_TYPE_MAP:
+                    _agents[resource_type] = _AGENT_REGISTRY[resource_type](
+                        content_type=_CONTENT_TYPE_MAP[resource_type]
+                    )
                 else:
                     _agents[resource_type] = _AGENT_REGISTRY[resource_type]()
                 logger.info(f"✅ {resource_type} Agent 初始化成功")
@@ -114,6 +167,7 @@ def resource_to_response(r: Resource) -> ResourceResponse:
         knowledge_points=r.knowledge_points,
         status=r.status,
         progress_percent=r.progress_percent,
+        in_library=r.in_library,
         extra_metadata=meta,
         created_at=r.created_at.isoformat() if r.created_at else None,
         updated_at=r.updated_at.isoformat() if r.updated_at else None,
@@ -205,6 +259,139 @@ async def health(request_id: str = Depends(get_request_id)):
         request_id=request_id,
     )
 
+@router.get("/search-video", response_model=BaseResponse)
+async def search_video(
+    keyword: str = Query(..., min_length=1, max_length=200, description="搜索关键词"),
+    page: int = Query(1, ge=1, le=10, description="页码"),
+    request_id: str = Depends(get_request_id)
+):
+    """搜索B站视频，返回视频列表"""
+    try:
+        bilibili_results = []
+        douyin_search_url = f"https://www.douyin.com/search/{keyword}?type=video"
+
+        # 调用B站搜索API（Session + buvid cookie，避免 412 反爬）
+        def _fetch_bilibili():
+            sess = http_requests.Session()
+            sess.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://search.bilibili.com/",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            })
+            # 获取 buvid 指纹 cookie（B站要求携带，否则返回 412）
+            try:
+                spi = sess.get("https://api.bilibili.com/x/frontend/finger/spi", timeout=5).json()
+                spi_data = spi.get("data", {})
+                if spi_data.get("b_3"):
+                    sess.cookies.set("buvid3", spi_data["b_3"], domain=".bilibili.com")
+                if spi_data.get("b_4"):
+                    sess.cookies.set("buvid4", spi_data["b_4"], domain=".bilibili.com")
+            except Exception:
+                pass
+            resp = sess.get(
+                "https://api.bilibili.com/x/web-interface/search/type",
+                params={"search_type": "video", "keyword": keyword, "page": page, "pagesize": 12, "order": "totalrank"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        try:
+            data = await asyncio.to_thread(_fetch_bilibili)
+            if data.get("code") == 0 and data.get("data", {}).get("result"):
+                for item in data["data"]["result"]:
+                    # 清除HTML标签
+                    title = re.sub(r"<.*?>", "", item.get("title", ""))
+                    pic = item.get("pic", "")
+                    if pic and pic.startswith("//"):
+                        pic = "https:" + pic
+                    bvid = item.get("bvid", "")
+                    aid = item.get("aid", "")
+                    video_url = f"https://www.bilibili.com/video/{bvid}" if bvid else f"https://www.bilibili.com/video/av{aid}" if aid else ""
+                    if not video_url:
+                        continue
+                    bilibili_results.append({
+                        "title": title,
+                        "url": video_url,
+                        "thumbnail": pic,
+                        "author": item.get("author", ""),
+                        "duration": item.get("duration", ""),
+                        "play": item.get("play", 0),
+                        "description": item.get("description", "")[:100],
+                        "pubdate": item.get("pubdate", 0),
+                    })
+        except Exception as e:
+            logger.warning(f"B站搜索失败: {e}")
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={
+                "bilibili": bilibili_results,
+                "douyin_search_url": douyin_search_url,
+                "keyword": keyword,
+            },
+            request_id=request_id,
+        )
+    except Exception as e:
+        logger.error(f"视频搜索失败: {e}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(
+            code=HTTP_SERVER_ERROR,
+            message=f"搜索失败: {e}",
+            data=None,
+            request_id=request_id,
+        )
+
+@router.post("/save-external-video", response_model=BaseResponse)
+async def save_external_video(
+    req: SaveExternalVideoRequest,
+    session: AsyncSession = Depends(get_db),
+    request_id: str = Depends(get_request_id)
+):
+    """收藏外部视频（B站搜索结果）到学习资源库"""
+    try:
+        new_resource = Resource(
+            user_id=req.user_id,
+            resource_type="video",
+            title=req.title,
+            content=req.url,
+            status="completed",
+            in_library=True,
+            extra_metadata={
+                "source": "bilibili",
+                "thumbnail": req.thumbnail,
+                "author": req.author,
+                "external_url": req.url,
+            },
+        )
+        session.add(new_resource)
+        await session.commit()
+        await session.refresh(new_resource)
+        return BaseResponse(
+            code=HTTP_OK,
+            message="已收藏到学习资源库",
+            data={"id": new_resource.id, "title": new_resource.title},
+            request_id=request_id,
+        )
+    except IntegrityError:
+        await session.rollback()
+        return BaseResponse(
+            code=HTTP_OK,
+            message="该视频已在资源库中",
+            data=None,
+            request_id=request_id,
+        )
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"收藏外部视频失败: {e}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(
+            code=HTTP_SERVER_ERROR,
+            message=f"收藏失败: {e}",
+            data=None,
+            request_id=request_id,
+        )
+
 @router.get("/{resource_id}", response_model=BaseResponse)
 async def get_resource(
     resource_id: int,
@@ -242,6 +429,7 @@ async def list_resources(
     user_id: int = Query(...),
     resource_type: Optional[str] = Query(None),
     status: Optional[str] = Query("completed"),
+    in_library: Optional[bool] = Query(None),
     limit: int = Query(DEFAULT_RESOURCE_LIMIT, ge=1, le=MAX_RESOURCE_LIMIT),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_db),
@@ -252,8 +440,13 @@ async def list_resources(
         conditions = [Resource.user_id == user_id, Resource.is_active == True]
         if resource_type:
             conditions.append(Resource.resource_type == resource_type)
+        else:
+            from config.constants import RESOURCE_TYPE_DAILY_CHALLENGE, RESOURCE_TYPE_DAILY_EXTRA
+            conditions.append(Resource.resource_type.notin_([RESOURCE_TYPE_DAILY_CHALLENGE, RESOURCE_TYPE_DAILY_EXTRA, "multimodal"]))
         if status:
             conditions.append(Resource.status == status)
+        if in_library is not None:
+            conditions.append(Resource.in_library == in_library)
 
         # 计数
         count_stmt = select(func.count(Resource.id)).where(*conditions)
@@ -329,10 +522,11 @@ async def generate_resource(
             questions_meta = []
             content_parts = [f"# {req.topic} 练习题（共 {question_count} 题）"]
             knowledge_points = []
+            generation_failures: list[str] = []
 
-            # 标准化知识点：优先匹配标准知识点名，兜底用原始输入
+            # 直接用用户原始输入，由 Agent 的 LLM 自行理解
             raw_topic = req.topic.strip()
-            target_kp = match_knowledge_point(raw_topic) or raw_topic or DEFAULT_TOPIC
+            target_kp = raw_topic or DEFAULT_TOPIC
             logger.info(f"多题生成目标知识点: {target_kp} (输入: {req.topic})")
             logger.info(f"🔵 Agent LLM模式: {agent.use_llm}, 熔断状态: disabled_until={agent._llm_disabled_until}")
 
@@ -357,6 +551,8 @@ async def generate_resource(
                         "topic": target_kp,  # 使用预计算的知识点
                         "resource_list": [],
                     }
+                    failure_code = "unknown"
+                    last_error = ""
                     for attempt in range(QUIZ_GEN_RETRY_COUNT):
                         try:
                             result = await asyncio.wait_for(
@@ -375,13 +571,28 @@ async def generate_resource(
                                 item_meta = item.extra_metadata or {}
                                 item_kp = item_meta.get("knowledge_point", "")
                                 if item_kp and item_kp != target_kp:
-                                    logger.warning(f"第 {idx+1} 题知识点不匹配: 预期={target_kp}, 实际={item_kp}, 重试")
-                                    continue
+                                    failure_code = "kp_mismatch"
+                                    last_error = f"知识点不匹配: 预期={target_kp}, 实际={item_kp}"
+                                    logger.warning(f"[{failure_code}] 第 {idx+1} 题{last_error}，直接丢弃")
+                                    break
                                 return item
+                            failure_code = "no_item"
+                            last_error = "agent 未返回有效题目"
+                            logger.warning(f"[{failure_code}] 第 {idx+1} 题未返回资源 (attempt {attempt+1})")
                         except asyncio.TimeoutError:
-                            logger.warning(f"第 {idx+1} 题超时 (attempt {attempt+1})")
+                            failure_code = "timeout"
+                            last_error = "生成超时"
+                            logger.warning(f"[{failure_code}] 第 {idx+1} 题超时 (attempt {attempt+1})")
                         except Exception as e:
-                            logger.warning(f"第 {idx+1} 题异常: {e}")
+                            failure_code = "agent_exception"
+                            last_error = str(e) or "未知异常"
+                            logger.warning(f"[{failure_code}] 第 {idx+1} 题异常 (attempt {attempt+1}): {e}")
+                            if not _is_retryable_quiz_generation_error(e):
+                                failure_code = "non_retryable"
+                                logger.warning(f"第 {idx+1} 题命中不可重试错误，提前结束重试")
+                                break
+                    if last_error:
+                        generation_failures.append(_build_quiz_failure_entry(idx + 1, failure_code, last_error))
                     return None
 
             # 第一轮：并行生成所有题目
@@ -409,6 +620,7 @@ async def generate_resource(
                 fill_types = [random.choice(allowed_types) if allowed_types else None for _ in range(missing)]
                 fill_tasks = [gen_one(question_count + j, fill_types[j]) for j in range(missing)]
                 fill_results = await asyncio.gather(*fill_tasks)
+                before_count = len(valid_items)
                 for item in fill_results:
                     if item is None:
                         continue
@@ -417,6 +629,12 @@ async def generate_resource(
                     if dedup_key not in seen_hashes:
                         seen_hashes.add(dedup_key)
                         valid_items.append(item)
+                if len(valid_items) == before_count:
+                    logger.warning(f"补生成第 {round_i+1} 轮没有新增有效题目，提前停止后续补生成")
+                    break
+
+            if generation_failures:
+                logger.warning(f"练习题生成失败摘要: {_summarize_quiz_failures(generation_failures)}")
 
             # 组装最终内容
             for idx, item in enumerate(valid_items[:question_count]):
@@ -445,9 +663,10 @@ async def generate_resource(
                     knowledge_points.extend(item.knowledge_points)
 
             if not content_parts or len(questions_meta) == 0:
+                failure_msg = generation_failures[0] if generation_failures else MSG_GENERATE_NO_DATA
                 return BaseResponse(
                     code=HTTP_SERVER_ERROR,
-                    message=MSG_GENERATE_NO_DATA,
+                    message=failure_msg,
                     data=None,
                     request_id=request_id
                 )
@@ -471,20 +690,14 @@ async def generate_resource(
                 status="completed",
                 progress_percent=RESOURCE_PROGRESS_COMPLETE,
                 extra_metadata=combined_meta,
+                in_library=False,
             )
             session.add(db_resource)
 
         else:
-            # 单题模式 - 标准化知识点
+            # 单题模式 - 直接用用户原始输入，由各 Agent 的 LLM 自行理解
             raw_topic = req.topic.strip()
-            # SQL 建表语句跳过知识点匹配，保留原始输入
-            if req.resource_type == RESOURCE_TYPE_MINDMAP and "CREATE TABLE" in raw_topic.upper()[:200]:
-                single_kp = raw_topic
-            # 视频类型跳过知识点匹配，直接用用户原始输入（视频是展示性的，不需要严格匹配标准知识点）
-            elif req.resource_type == "video":
-                single_kp = raw_topic or DEFAULT_TOPIC
-            else:
-                single_kp = match_knowledge_point(raw_topic) or raw_topic or DEFAULT_TOPIC
+            single_kp = raw_topic or DEFAULT_TOPIC
             context = {
                 "user_id": req.user_id,
                 "profile_data": profile_ctx,
@@ -530,6 +743,7 @@ async def generate_resource(
                 status="completed",
                 progress_percent=RESOURCE_PROGRESS_COMPLETE,
                 extra_metadata=item.extra_metadata,
+                in_library=False,
             )
             session.add(db_resource)
 
@@ -593,6 +807,54 @@ async def generate_resource(
             request_id=request_id
         )
 
+@router.patch("/{resource_id}/add-to-library", response_model=BaseResponse)
+async def add_to_library(
+    resource_id: int,
+    user_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    request_id: str = Depends(get_request_id)
+):
+    """收藏/取消收藏资源（切换 in_library 状态）"""
+    try:
+        r: Optional[Resource] = await session.get(Resource, resource_id)
+        if not r:
+            return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_RESOURCE_NOT_FOUND, data=None, request_id=request_id)
+        if r.user_id != user_id:
+            return BaseResponse(code=HTTP_BAD_REQUEST, message="无权操作此资源", data=None, request_id=request_id)
+
+        r.in_library = not r.in_library
+        await session.commit()
+        msg = "已收藏到资源库" if r.in_library else "已取消收藏"
+        return BaseResponse(code=HTTP_OK, message=msg, data={"id": r.id, "in_library": r.in_library}, request_id=request_id)
+    except Exception as e:
+        logger.error(f"收藏操作失败: {e}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None, request_id=request_id)
+
+
+@router.patch("/{resource_id}/note", response_model=BaseResponse)
+async def save_note(
+    resource_id: int,
+    body: dict,
+    user_id: int = Query(...),
+    session: AsyncSession = Depends(get_db),
+    request_id: str = Depends(get_request_id)
+):
+    """保存/更新资源的学习笔记"""
+    try:
+        r: Optional[Resource] = await session.get(Resource, resource_id)
+        if not r:
+            return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_RESOURCE_NOT_FOUND, data=None, request_id=request_id)
+        if r.user_id != user_id:
+            return BaseResponse(code=HTTP_BAD_REQUEST, message="无权操作此资源", data=None, request_id=request_id)
+
+        r.note = body.get("note", "")
+        await session.commit()
+        return BaseResponse(code=HTTP_OK, message="笔记已保存", data={"id": r.id, "note": r.note}, request_id=request_id)
+    except Exception as e:
+        logger.error(f"保存笔记失败: {e}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None, request_id=request_id)
+
+
 @router.delete("/{resource_id}", response_model=BaseResponse)
 async def delete_resource(
     resource_id: int,
@@ -634,9 +896,45 @@ def _merge_children_into_tree(content: str, node_id: str, children: list) -> str
         data = json.loads(content)
         node_data = data.get("nodeData", data)
 
+        def merge_children(existing_children: list, new_children: list) -> list:
+            merged = list(existing_children or [])
+            index_by_key: dict[str, int] = {}
+
+            for idx, child in enumerate(merged):
+                if not isinstance(child, dict):
+                    continue
+                key = str(child.get("id") or child.get("topic") or idx)
+                index_by_key[key] = idx
+
+            for new_child in new_children or []:
+                if not isinstance(new_child, dict):
+                    merged.append(new_child)
+                    continue
+
+                key = str(new_child.get("id") or new_child.get("topic") or len(merged))
+                existing_idx = index_by_key.get(key)
+                if existing_idx is None:
+                    index_by_key[key] = len(merged)
+                    merged.append(new_child)
+                    continue
+
+                existing_child = merged[existing_idx]
+                if not isinstance(existing_child, dict):
+                    merged[existing_idx] = new_child
+                    continue
+
+                merged_child = {**existing_child, **new_child}
+                merged_child["children"] = merge_children(
+                    existing_child.get("children", []),
+                    new_child.get("children", []),
+                )
+                merged[existing_idx] = merged_child
+
+            return merged
+
         def find_and_merge(node: dict) -> bool:
             if node.get("id") == node_id:
-                node["children"] = children
+                node["children"] = merge_children(node.get("children", []), children)
                 return True
             for child in node.get("children", []):
                 if find_and_merge(child):
@@ -727,6 +1025,96 @@ async def expand_mindmap_node(
         return BaseResponse(
             code=HTTP_SERVER_ERROR,
             message=f"节点展开失败: {e}",
+            data=None,
+            request_id=request_id,
+        )
+
+
+@router.post("/{resource_id}/render-video", response_model=BaseResponse)
+async def render_video(
+    resource_id: int,
+    user_id: int = Query(..., description="用户ID"),
+    session: AsyncSession = Depends(get_db),
+    request_id: str = Depends(get_request_id),
+):
+    """将教学动画 HTML 渲染为 WebM/MP4 视频文件"""
+    try:
+        r: Optional[Resource] = await session.get(Resource, resource_id)
+        if not r or r.user_id != user_id or not r.is_active:
+            return BaseResponse(
+                code=HTTP_NOT_FOUND,
+                message=MSG_RESOURCE_NOT_FOUND,
+                data=None,
+                request_id=request_id,
+            )
+        if r.resource_type != "video":
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST,
+                message="该资源不是视频类型",
+                data=None,
+                request_id=request_id,
+            )
+        if not r.content or len(r.content.strip()) < 50:
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST,
+                message="资源内容为空，无法渲染视频",
+                data=None,
+                request_id=request_id,
+            )
+
+        from utils.video_renderer import render_html_to_video, check_ffmpeg_available, convert_webm_to_mp4
+
+        # 提取动画时长（从 extra_metadata）
+        meta = r.extra_metadata or {}
+        duration = meta.get("duration", 120)
+
+        # 渲染 WebM
+        output_name = f"animation_{resource_id}.webm"
+        output_path = os.path.join(VIDEO_OUTPUT_DIR, output_name)
+
+        webm_path = await render_html_to_video(
+            html_content=r.content,
+            output_path=output_path,
+            duration_sec=duration,
+        )
+
+        result_data = {
+            "video_url": f"/{webm_path}",
+            "format": "webm",
+            "file_size_kb": round(os.path.getsize(webm_path) / 1024, 1),
+        }
+
+        # 如果 FFmpeg 可用，同时生成 MP4
+        if await check_ffmpeg_available():
+            mp4_path = webm_path.replace(".webm", ".mp4")
+            await convert_webm_to_mp4(webm_path, mp4_path)
+            result_data["mp4_url"] = f"/{mp4_path}"
+            result_data["mp4_file_size_kb"] = round(os.path.getsize(mp4_path) / 1024, 1)
+
+        # 更新资源元数据
+        meta["video_file_path"] = webm_path
+        r.extra_metadata = meta
+        await session.commit()
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message="视频渲染成功",
+            data=result_data,
+            request_id=request_id,
+        )
+
+    except asyncio.TimeoutError:
+        return BaseResponse(
+            code=HTTP_GATEWAY_TIMEOUT,
+            message="视频渲染超时，请稍后重试",
+            data=None,
+            request_id=request_id,
+        )
+    except Exception as e:
+        logger.error(f"视频渲染失败: {e}", exc_info=True, extra={"request_id": request_id})
+        return BaseResponse(
+            code=HTTP_SERVER_ERROR,
+            message=f"视频渲染失败: {e}",
             data=None,
             request_id=request_id,
         )

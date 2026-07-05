@@ -140,9 +140,12 @@ async def get_conversation(
             ).model_dump(mode="json"),
             "messages": [
                 {
+                    "id": m.id,
                     "role": m.role,
                     "content": m.content,
+                    "is_bookmarked": m.is_bookmarked,
                     "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "image_urls": json.loads(m.image_urls_json) if getattr(m, 'image_urls_json', None) else None,
                     "content_blocks": json.loads(m.content_blocks_json) if getattr(m, 'content_blocks_json', None) else legacy_to_content_blocks(m.content, []),
                 }
                 for m in messages

@@ -5,10 +5,12 @@
 - ✅ 100%统筹全局：统一管理画像维度、知识点、模型配置、路径
 - ✅ 赛题显式化：明确标注大赛/编号/课程，方便评审
 - ✅ 工程化增强：Pydantic模型、类型注解、配置自检
-- ✅ 技术栈对齐：小米MiMo主模型、DeepSeek备用模型、讯飞Embedding（官方）
+- ✅ 技术栈对齐：DeepSeek主模型、智谱GLM备用模型、讯飞Embedding（官方）
 - ✅ 所有其他模块必须从此导入，杜绝硬编码
 
 更新日志：
+- v5.5 (2026-06-28): 主模型切回 DeepSeek，GLM 降为备用模型
+- v5.4 (2026-06-27): 主模型切换为火山引擎方舟 GLM-5.2，DeepSeek 保留为备用
 - v5.3 (2026-05-27): 主模型切换为小米MiMo-v2.5-pro，DeepSeek降为备用
 - v5.2 (2026-05-09): 修复3个致命错误，主模型改用DeepSeek，修正Embedding地址和维度
 - v5.2 (2026-04-18): 修复导入语法错误，新增缺失的PYTHON_KB_PATH配置
@@ -39,23 +41,26 @@ COMPETITION_INFO = {
 }
 
 # ============================================================
-# 2. 🔴 全局统一的7项画像维度（与 models/profile.py 100%一致！）
+# 2. 🔴 全局统一的画像维度（与 models/profile.py 100%一致！）
 # ============================================================
 # 维度名称列表
 PROFILE_DIMENSION_NAMES = [
-    "knowledge_level",    # 1. 整体基础水平
-    "learning_goal",      # 2. 核心学习目标
-    "learning_style",     # 3. 主导学习风格
-    "duration_preference",# 4. 单次学习时长偏好
-    "weak_points",        # 5. 薄弱知识点列表
-    "mastered_points",    # 6. 已掌握知识点列表
-    "motivation_level"    # 7. 当前学习动力
+    "gender",             # 性别
+    "age",                # 年龄
+    "knowledge_level",    # 整体基础水平
+    "learning_goal",      # 核心学习目标
+    "learning_style",     # 主导学习风格
+    "duration_preference",# 单次学习时长偏好
+    "weak_points",        # 薄弱知识点列表
+    "mastered_points",    # 已掌握知识点列表
+    "motivation_level"    # 当前学习动力
 ]
-# 维度数量（满足赛题≥6要求）
+# 维度数量
 PROFILE_DIMENSIONS = len(PROFILE_DIMENSION_NAMES)
 
 # 维度可选值（与 models/profile.py 的 CheckConstraint 100%一致！）
 PROFILE_DIMENSION_OPTIONS = {
+    "gender": ["male", "female", "other"],
     "knowledge_level": ["beginner", "intermediate", "advanced"],
     "learning_goal": ["exam", "interest", "employment", "competition"],
     "learning_style": ["visual", "auditory", "kinesthetic", "mixed"],
@@ -86,19 +91,50 @@ PYTHON_KNOWLEDGE_POINTS = [
     "模块与包",
 ]
 
+# 编程关键字 → 标准知识点映射（match_knowledge_point 使用）
+CODE_KEYWORD_ALIASES: Dict[str, str] = {
+    "def": "函数定义与调用",
+    "return": "函数定义与调用",
+    "for": "循环（for/while）",
+    "while": "循环（for/while）",
+    "if": "条件判断（if/elif/else）",
+    "elif": "条件判断（if/elif/else）",
+    "else": "条件判断（if/elif/else）",
+    "class": "类与对象",
+    "try": "异常处理",
+    "except": "异常处理",
+    "import": "模块与包",
+    "list": "列表与元组",
+    "tuple": "列表与元组",
+    "dict": "字典与集合",
+    "set": "字典与集合",
+    "str": "字符串操作",
+    "int": "变量与数据类型",
+    "float": "变量与数据类型",
+    "bool": "变量与数据类型",
+    "open": "文件操作",
+    "read": "文件操作",
+    "write": "文件操作",
+}
+
 # ============================================================
 # 4. 🔴 全局统一的赛题枚举（禁止在其他文件硬编码！）
 # ============================================================
 # 严格对应赛题的5种核心资源类型
 RESOURCE_TYPES: List[str] = [
-    "doc",       # 讲解文档
-    "quiz",      # 练习题
-    "mindmap",   # 思维导图
-    "code",      # 代码案例
-    "video"      # 讲解视频（SeeDance未启用时可暂用占位符）
+    "doc",              # 讲解文档
+    "quiz",             # 练习题
+    "mindmap",          # 思维导图
+    "code",             # 代码案例
+    "video",            # 讲解视频
+    "reading",          # 拓展阅读
+    "daily_challenge",  # 每日一题
+    "daily_extra",      # 每日一题额外挑战
+    "multimodal",       # 多模态代码分析
+    "slides",           # 教学幻灯片
 ]
 # 🔴 修复警告4：用TypeAlias明确标注类型别名，解决类型专用化警告
-ResourceTypeLiteral: TypeAlias = Literal["doc", "quiz", "mindmap", "code", "video"]
+ResourceTypeLiteral: TypeAlias = Literal["doc", "quiz", "mindmap", "code", "video", "reading", "daily_challenge", "daily_extra", "multimodal"]
 
 # 资源生成状态枚举
 RESOURCE_STATUS: List[str] = [
@@ -126,7 +162,8 @@ class ModelConfig(BaseModel):
     default_top_p: float = Field(0.9, ge=0.0, le=1.0, description="默认top_p")
     timeout: int = Field(60, gt=0, description="请求超时时间（秒）")
 
-# 主模型：DeepSeek
+# 主模型：DeepSeek（OpenAI 兼容端点）
+# timeout=120：思维导图/video_html 等大任务 max_tokens 较高，需要充足时间
 PRIMARY_MODEL_CONFIG = ModelConfig(
     provider="deepseek",
     model_name="deepseek-chat",
@@ -134,18 +171,31 @@ PRIMARY_MODEL_CONFIG = ModelConfig(
     default_temperature=0.7,
     default_max_tokens=4096,
     default_top_p=0.9,
-    timeout=60,
+    timeout=120,
 )
 
-# 备用模型：小米 MiMo（保留，但当前不启用）
-DEEPSEEK_MODEL_CONFIG = ModelConfig(
-    provider="mimo",
-    model_name="mimo-v2.5-pro",
-    base_url=settings.MIMO_BASE_URL,
+# 备用模型：火山引擎方舟 GLM（保留降级路径，主模型失败时使用）
+# timeout=180：GLM-5.2 是推理模型，思维导图生成（max_tokens=8192 + JSON mode）60s 跑不完必超时
+GLM_FALLBACK_MODEL_CONFIG = ModelConfig(
+    provider="ark",
+    model_name=settings.GLM_ENDPOINT_ID or settings.GLM_MODEL,
+    base_url=settings.GLM_BASE_URL,
     default_temperature=0.7,
     default_max_tokens=4096,
     default_top_p=0.9,
-    timeout=10,
+    timeout=180,
+)
+
+# 多模态视觉理解模型：火山方舟 doubao-vision（图片+文本 → 文本，用于多模态代码识别）
+# 注意：必须走标准端点 /api/v3，不能用 coding 端点 /api/coding/v3（coding 端点只认 glm-5.2 这类）
+ARK_VISION_CONFIG = ModelConfig(
+    provider="ark_vision",
+    model_name=settings.ARK_VISION_ENDPOINT_ID or settings.ARK_VISION_MODEL,
+    base_url=settings.ARK_VISION_BASE_URL,
+    default_temperature=0.1,  # 代码识别要稳，低温
+    default_max_tokens=4096,  # 提到 4096，避免长代码截断（原 MiMo 是 2048 会截断）
+    default_top_p=0.9,
+    timeout=60,
 )
 
 # 多模态生成：讯飞 SeeDance（当前未启用，保留框架供后续加分项）
@@ -159,6 +209,23 @@ class SeeDanceConfig(BaseModel):
     enabled: bool = False
 
 SEEDANCE_CONFIG = SeeDanceConfig()
+
+# 火山引擎语音合成 TTS（视频配音用，与方舟 LLM 鉴权不同，需 app_id + access_token）
+class TTSConfig(BaseModel):
+    """火山引擎语音合成配置"""
+    provider: str = "volcengine_tts"
+    api_endpoint: str = "https://openspeech.bytedance.com/api/v1/tts"
+    app_id: str = settings.TTS_APP_ID
+    access_token: str = settings.TTS_ACCESS_TOKEN
+    default_voice_id: str = settings.TTS_DEFAULT_VOICE_ID
+    timeout_sec: int = 30
+    max_retries: int = 2
+    max_concurrency: int = 4
+    audio_encoding: str = "mp3"
+    sample_rate: int = 24000
+    enabled: bool = settings.TTS_ENABLED
+
+TTS_CONFIG = TTSConfig()
 
 # 🔴 修复致命错误2：修正讯飞Embedding的官方地址和维度
 class EmbeddingConfig(BaseModel):
@@ -218,7 +285,7 @@ SCENE_CONFIG: Dict[str, SceneConfig] = {
     "intent_recognition": SceneConfig(temperature=0.1, max_tokens=256, description="用户学习意图精准识别"),
     "document_generation": SceneConfig(temperature=0.6, max_tokens=4096, description="课程讲解文档生成"),
     "quiz_generation": SceneConfig(temperature=0.4, max_tokens=4096, description="练习题生成"),
-    "mindmap_generation": SceneConfig(temperature=0.3, max_tokens=2048, description="思维导图结构生成"),
+    "mindmap_generation": SceneConfig(temperature=0.3, max_tokens=8192, description="思维导图结构生成"),
     "mindmap_node_expand": SceneConfig(temperature=0.4, max_tokens=1024, description="思维导图节点按需展开"),
     "code_generation": SceneConfig(temperature=0.2, max_tokens=2048, description="Python代码案例生成"),
     "tutoring": SceneConfig(temperature=0.6, max_tokens=2048, description="智能答疑辅导"),
@@ -226,14 +293,17 @@ SCENE_CONFIG: Dict[str, SceneConfig] = {
     "evaluation": SceneConfig(temperature=0.3, max_tokens=2048, description="学习效果评估"),
     "unified_routing": SceneConfig(temperature=0.1, max_tokens=128, description="统一路由：意图+资源类型识别"),
     "video_html_generation": SceneConfig(temperature=0.7, max_tokens=16000, description="HTML教学动画生成"),
+    "reading_generation": SceneConfig(temperature=0.6, max_tokens=4096, description="拓展阅读材料生成"),
+    "slides_generation": SceneConfig(temperature=0.6, max_tokens=8192, description="教学幻灯片生成"),
+    "aggregation": SceneConfig(temperature=0.4, max_tokens=8192, description="多Agent内容聚合整合"),
 }
 
 # ============================================================
 # 8. 模型降级与重试策略
 # ============================================================
 PRIMARY_MODEL = "deepseek"
-FALLBACK_MODEL_ORDER = ["deepseek"]
-ENABLE_FALLBACK = False
+FALLBACK_MODEL_ORDER = ["ark"]
+ENABLE_FALLBACK = True
 MAX_RETRIES_PER_MODEL = 1
 
 # ============================================================
@@ -295,7 +365,7 @@ def get_scene_params(
     Returns:
         包含 temperature, max_tokens 的字典，可直接解包传入 call_llm()
     """
-    base_config = PRIMARY_MODEL_CONFIG if model == "primary" else DEEPSEEK_MODEL_CONFIG
+    base_config = PRIMARY_MODEL_CONFIG if model == "primary" else GLM_FALLBACK_MODEL_CONFIG
 
     if scene in SCENE_CONFIG:
         params = {
@@ -370,7 +440,7 @@ if __name__ == "__main__":
         print(f"✅ 赛题合规：{len(profile_cnt)}维画像、{len(resource_cnt)}种资源")
 
     # 6. 关键环境变量提醒
-    required_env_vars = ["MIMO_API_KEY", "DEEPSEEK_API_KEY", "SPARK_APP_ID", "SPARK_API_KEY_RAW", "SPARK_API_SECRET"]
+    required_env_vars = ["GLM_API_KEY", "DEEPSEEK_API_KEY", "SPARK_APP_ID", "SPARK_API_KEY_RAW", "SPARK_API_SECRET"]
     missing_env = [v for v in required_env_vars if not getattr(settings, v, None)]
     if missing_env:
         warnings.append(f"缺少环境变量: {missing_env}，请检查 .env 文件")

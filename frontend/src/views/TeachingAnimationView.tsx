@@ -6,7 +6,7 @@ import AppHeader from '../components/layout/AppHeader'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import {
   PlayCircle, Plus, Trash2, Eye, Download, Loader2,
-  Film, Clock
+  Film, Clock, Search, ExternalLink
 } from 'lucide-react'
 
 // --- 类型定义 ---
@@ -76,6 +76,9 @@ const TeachingAnimationView: React.FC = () => {
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
 
+  // --- 搜索网络视频 ---
+  const [searchKeyword, setSearchKeyword] = useState('')
+
   // --- 删除确认状态 ---
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
@@ -144,45 +147,12 @@ const TeachingAnimationView: React.FC = () => {
     if (isLoggedIn) fetchAnimations(true)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // --- 生成动画 ---
-  const handleGenerate = useCallback(async () => {
-    if (!formTopic.trim() || generating) return
-    setGenerating(true)
-
-    try {
-      const config: Record<string, unknown> = {
-        duration: formDuration,
-        style: formStyle,
-      }
-      if (formContent.trim()) {
-        config.customPrompt = formContent.trim()
-      }
-
-      const resp = await generateResource(
-        authStore.userId,
-        formTopic.trim(),
-        'video',
-        config
-      )
-
-      if (!mountedRef.current) return
-      if (resp.code === 200 && resp.data) {
-        appStore.showToast('教学动画生成成功', 'success')
-        setFormTopic('')
-        setFormContent('')
-        setAnimations(prev => [resp.data as AnimationItem, ...prev])
-        setTotal(prev => prev + 1)
-      } else {
-        appStore.showToast(resp.message || '生成失败', 'error')
-      }
-    } catch (e: unknown) {
-      if (!mountedRef.current) return
-      const msg = e instanceof Error ? e.message : '网络错误，请稍后重试'
-      appStore.showToast('生成失败：' + msg, 'error')
-    } finally {
-      if (mountedRef.current) setGenerating(false)
-    }
-  }, [formTopic, formContent, formDuration, formStyle, generating, authStore.userId, appStore])
+  // --- 搜索网络视频（跳转B站） ---
+  const handleSearch = useCallback(() => {
+    if (!searchKeyword.trim()) return
+    const url = `https://search.bilibili.com/all?keyword=${encodeURIComponent(searchKeyword.trim())}`
+    window.open(url, '_blank')
+  }, [searchKeyword])
 
   // --- 加载更多 ---
   const loadMore = useCallback(() => {
@@ -228,6 +198,58 @@ const TeachingAnimationView: React.FC = () => {
     setShowDeleteConfirm(true)
   }, [])
 
+  // --- 打开右侧详情面板 ---
+  const openAnimationDetail = useCallback((item: AnimationItem) => {
+    appStore.openRightPanel('animation-detail', {
+      item,
+      onPreview: () => openPreview(item),
+      onDownload: () => handleDownload(item),
+      onDelete: () => askDelete(item),
+    })
+  }, [appStore, openPreview, handleDownload, askDelete])
+
+  // --- 生成动画 ---
+  const handleGenerate = useCallback(async () => {
+    if (!formTopic.trim() || generating) return
+    setGenerating(true)
+
+    try {
+      const config: Record<string, unknown> = {
+        duration: formDuration,
+        style: formStyle,
+      }
+      if (formContent.trim()) {
+        config.customPrompt = formContent.trim()
+      }
+
+      const resp = await generateResource(
+        authStore.userId,
+        formTopic.trim(),
+        'video',
+        config
+      )
+
+      if (!mountedRef.current) return
+      if (resp.code === 200 && resp.data) {
+        appStore.showToast('教学动画生成成功', 'success')
+        setFormTopic('')
+        setFormContent('')
+        const newItem = resp.data as AnimationItem
+        setAnimations(prev => [newItem, ...prev])
+        setTotal(prev => prev + 1)
+        openAnimationDetail(newItem)
+      } else {
+        appStore.showToast(resp.message || '生成失败', 'error')
+      }
+    } catch (e: unknown) {
+      if (!mountedRef.current) return
+      const msg = e instanceof Error ? e.message : '网络错误，请稍后重试'
+      appStore.showToast('生成失败：' + msg, 'error')
+    } finally {
+      if (mountedRef.current) setGenerating(false)
+    }
+  }, [formTopic, formContent, formDuration, formStyle, generating, authStore.userId, appStore, openAnimationDetail])
+
   const confirmDelete = useCallback(async () => {
     if (deleting || deletingId === null) return
     setDeleting(true)
@@ -239,6 +261,11 @@ const TeachingAnimationView: React.FC = () => {
         appStore.showToast('已删除', 'success')
         setAnimations(prev => prev.filter(a => a.id !== deletingId))
         setTotal(prev => Math.max(0, prev - 1))
+        const currentPanel = useAppStore.getState().rightPanel
+        const panelItem = currentPanel.data?.item as AnimationItem | undefined
+        if (currentPanel.type === 'animation-detail' && panelItem?.id === deletingId) {
+          appStore.openRightPanel('animation-detail')
+        }
       } else {
         appStore.showToast(resp.message || '删除失败', 'error')
       }
@@ -359,8 +386,35 @@ const TeachingAnimationView: React.FC = () => {
                 </div>
               </div>
 
-              {/* 右侧：动画列表 */}
-              <div className="flex-1 min-w-0">
+              {/* 右侧：搜索 + 动画列表 */}
+              <div className="flex-1 min-w-0 flex flex-col gap-6">
+
+                {/* 搜索网络视频 */}
+                <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Search className="w-5 h-5 text-blue-600" />
+                    <h3 className="text-base font-semibold text-gray-800">搜索网络视频</h3>
+                  </div>
+                  <div className="flex gap-3">
+                    <input
+                      type="text"
+                      value={searchKeyword}
+                      onChange={e => setSearchKeyword(e.target.value)}
+                      onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') handleSearch() }}
+                      placeholder="输入知识点关键词，如：Python列表推导式、装饰器..."
+                      className="flex-1 px-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={handleSearch}
+                      disabled={!searchKeyword.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      在B站搜索
+                    </button>
+                  </div>
+                </div>
+
                 {/* 加载中 */}
                 {listLoading ? (
                   <div className="flex items-center justify-center h-64">
@@ -381,6 +435,7 @@ const TeachingAnimationView: React.FC = () => {
                         <div
                           key={item.id}
                           className="bg-white rounded-xl border border-gray-100 overflow-hidden shadow-sm hover:shadow-md transition-shadow"
+                          onClick={() => openAnimationDetail(item)}
                         >
                           {/* 卡片头部 */}
                           <div className="h-14 bg-gradient-to-r from-red-500 to-red-600 flex items-center justify-center">
@@ -408,13 +463,6 @@ const TeachingAnimationView: React.FC = () => {
                               >
                                 <Eye className="w-3 h-3" />
                                 预览
-                              </button>
-                              <button
-                                onClick={e => { e.stopPropagation(); handleDownload(item) }}
-                                className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-gray-600 bg-gray-50 rounded-md hover:bg-gray-100 transition-colors"
-                              >
-                                <Download className="w-3 h-3" />
-                                下载
                               </button>
                               <button
                                 onClick={e => { e.stopPropagation(); askDelete(item) }}

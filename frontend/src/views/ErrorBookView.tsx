@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
+import { useLearningCenterStore } from '../stores/learningCenter'
 import { listErrorBook, listDueReviews, recordReview, markMastered, deleteErrorBook } from '../api/errorBook'
 import AppHeader from '../components/layout/AppHeader'
 import {
-  BookOpen, CheckCircle2, XCircle, Trash2, ChevronDown, ChevronUp,
+  BookOpen, CheckCircle2, XCircle, Trash2,
   Trophy, Clock, Brain, RotateCcw, Sparkles, Calendar
 } from 'lucide-react'
 
@@ -79,6 +80,7 @@ function getReviewStatus(item: ErrorBookItem): 'overdue' | 'due' | 'upcoming' | 
 const ErrorBookView: React.FC = () => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
+  const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
 
   // --- 状态 ---
   const [items, setItems] = useState<ErrorBookItem[]>([])
@@ -105,9 +107,6 @@ const ErrorBookView: React.FC = () => {
   const [filterKP, setFilterKP] = useState('')
   const [filterDifficulty, setFilterDifficulty] = useState('')
   const [filterMastered, setFilterMastered] = useState('')
-
-  // 展开状态
-  const [expanded, setExpanded] = useState<Record<string | number, boolean>>({})
 
   // --- 派生状态 ---
   const unmasteredCount = useMemo(() => items.filter(i => !i.mastered).length, [items])
@@ -169,16 +168,30 @@ const ErrorBookView: React.FC = () => {
     }
   }, [mode, fetchDueItems])
 
-  // --- 展开/折叠 ---
-  const toggleExpand = useCallback((id: string | number) => {
-    setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
-  }, [])
+  // --- 展开/折叠（改为右侧面板） ---
+  const toggleExpand = useCallback((item: ErrorBookItem) => {
+    useAppStore.getState().openRightPanel('error-detail', {
+      item,
+      onMastered: () => fetchItems(),
+    })
+  }, [fetchItems])
 
   // --- 标记已掌握 ---
   const handleMastered = useCallback(async (id: string | number) => {
+    const targetItem = items.find(item => item.id === id)
     try {
       const resp = await markMastered(id)
       if (resp.code === 200) {
+        if (targetItem?.knowledge_point) {
+          recordLearningEvent({
+            userId: authStore.userId,
+            sourcePage: 'error-book',
+            actionType: 'error_reviewed',
+            topic: targetItem.knowledge_point,
+            knowledgePoint: targetItem.knowledge_point,
+            score: 100,
+          })
+        }
         appStore.showToast('已标记为掌握', 'success')
         fetchItems()
         if (mode === 'review') fetchDueItems()
@@ -186,7 +199,7 @@ const ErrorBookView: React.FC = () => {
     } catch {
       appStore.showToast('操作失败', 'error')
     }
-  }, [appStore, fetchItems, fetchDueItems, mode])
+  }, [appStore, fetchItems, fetchDueItems, mode, items, recordLearningEvent, authStore.userId])
 
   // --- 删除 ---
   const handleDelete = useCallback(async (id: string | number) => {
@@ -209,6 +222,14 @@ const ErrorBookView: React.FC = () => {
       const resp = await recordReview(currentReviewItem.id, quality)
       if (resp.code === 200) {
         const updated = resp.data as ErrorBookItem
+        recordLearningEvent({
+          userId: authStore.userId,
+          sourcePage: 'error-book',
+          actionType: 'error_reviewed',
+          topic: currentReviewItem.knowledge_point,
+          knowledgePoint: currentReviewItem.knowledge_point,
+          score: quality * 20,
+        })
         const label = quality >= 4 ? '掌握良好' : quality >= 3 ? '继续加油' : '需要加强'
         appStore.showToast(`${label}，下次复习：${formatReviewDate(updated.next_review_at)}`, 'success')
 
@@ -225,7 +246,7 @@ const ErrorBookView: React.FC = () => {
     } catch {
       appStore.showToast('记录失败', 'error')
     }
-  }, [currentReviewItem, reviewIndex, dueItems.length, appStore, fetchDueItems])
+  }, [currentReviewItem, reviewIndex, dueItems.length, appStore, fetchDueItems, recordLearningEvent, authStore.userId])
 
   // --- 复习进度 ---
   const reviewProgress = dueItems.length > 0 ? ((reviewIndex) / dueItems.length * 100) : 0
@@ -473,7 +494,7 @@ const ErrorBookView: React.FC = () => {
                       {/* 头部 */}
                       <div
                         className="flex items-start gap-3 px-4 py-3 cursor-pointer"
-                        onClick={() => toggleExpand(item.id)}
+                        onClick={() => toggleExpand(item)}
                       >
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -531,58 +552,8 @@ const ErrorBookView: React.FC = () => {
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
-                          {expanded[item.id] ? (
-                            <ChevronUp className="w-4 h-4 text-gray-400" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-gray-400" />
-                          )}
                         </div>
                       </div>
-
-                      {/* 展开详情 */}
-                      {expanded[item.id] && (
-                        <div className="px-4 pb-4 space-y-3 border-t border-gray-100 pt-3">
-                          {/* 用户答案 */}
-                          <div>
-                            <p className="text-xs text-gray-400 mb-1">你的答案</p>
-                            <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 flex items-start gap-2">
-                              <XCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                              <pre className="whitespace-pre-wrap font-mono text-xs">{item.user_answer || '(未作答)'}</pre>
-                            </div>
-                          </div>
-                          {/* 正确答案 */}
-                          <div>
-                            <p className="text-xs text-gray-400 mb-1">正确答案</p>
-                            <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-700 flex items-start gap-2">
-                              <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                              <pre className="whitespace-pre-wrap font-mono text-xs">{item.correct_answer}</pre>
-                            </div>
-                          </div>
-                          {/* 解析 */}
-                          {item.explanation && (
-                            <div>
-                              <p className="text-xs text-gray-400 mb-1">解析</p>
-                              <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700">
-                                <p className="whitespace-pre-wrap text-xs">{item.explanation}</p>
-                              </div>
-                            </div>
-                          )}
-                          {/* 间隔重复信息 */}
-                          {!item.mastered && (
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                              <p className="text-xs text-blue-600 font-medium mb-1">复习计划</p>
-                              <div className="flex items-center gap-4 text-xs text-blue-500">
-                                <span>下次复习：{formatReviewDate(item.next_review_at)}</span>
-                                <span>间隔：{item.review_interval_days < 1
-                                  ? `${Math.round(item.review_interval_days * 24)}小时`
-                                  : `${Math.round(item.review_interval_days)}天`
-                                }</span>
-                                <span>已复习：{item.repetition_count} 次</span>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
                   )
                 })}

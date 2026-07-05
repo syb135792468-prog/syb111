@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.schemas import BaseResponse
-from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path
+from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path, images, task, multimodal, daily
 from config.constants import (
     DEFAULT_PORT, SLOW_REQUEST_THRESHOLD_SEC, CORS_MAX_AGE,
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE,
@@ -70,8 +70,8 @@ async def _daily_batch_update_loop():
         logger.info(f"⏰ 下次批量更新: {target.strftime('%Y-%m-%d %H:%M')} (等待 {wait_seconds:.0f}s)")
         await asyncio.sleep(wait_seconds)
         try:
-            from agents.evaluation_agent import EvaluationAgent
-            result = await EvaluationAgent.batch_update_all_users()
+            from agents.profile_agent import ProfileAgent
+            result = await ProfileAgent.batch_update_all_users()
             logger.info(f"✅ 每日批量画像更新完成: {result}")
         except Exception as e:
             logger.error(f"❌ 每日批量画像更新失败: {e}", exc_info=True)
@@ -123,6 +123,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Agent预初始化失败: {str(e)}", exc_info=True)
 
+    # 后台预加载 OCR 模型（不阻塞启动）
+    async def _preload_ocr():
+        try:
+            from utils.ocr import get_ocr_engine
+            await asyncio.to_thread(get_ocr_engine)
+            logger.info("✅ EasyOCR 模型预加载完成")
+        except Exception as e:
+            logger.warning(f"⚠️ OCR 模型预加载失败（非致命）: {e}")
+    _ocr_task = asyncio.create_task(_preload_ocr())
+
     # 启动每日批量更新定时任务
     _batch_task = asyncio.create_task(_daily_batch_update_loop())
 
@@ -130,6 +140,7 @@ async def lifespan(app: FastAPI):
 
     # 取消定时任务
     _batch_task.cancel()
+    _ocr_task.cancel()
 
     # 关闭时清理资源
     logger.info("🔌 正在关闭服务...")
@@ -266,6 +277,10 @@ app.include_router(error_book.router, prefix="/api")
 app.include_router(code_execute.router, prefix="/api")
 app.include_router(experiment.router, prefix="/api")
 app.include_router(learning_path.router, prefix="/api")
+app.include_router(images.router, prefix="/api")
+app.include_router(task.router, prefix="/api")
+app.include_router(multimodal.router, prefix="/api")
+app.include_router(daily.router, prefix="/api")
 
 
 # ============================================================
@@ -311,12 +326,26 @@ if _static_dir.is_dir():
     # 挂载静态资源目录（JS/CSS/图片等实际文件）
     app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="static-assets")
 
+    # 挂载用户上传的图片目录
+    _uploads_dir = Path(__file__).parent.parent / "static" / "uploads"
+    _uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploaded-images")
+
+    # 挂载渲染视频目录
+    _videos_dir = Path(__file__).parent.parent / "static" / "videos"
+    _videos_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static/videos", StaticFiles(directory=str(_videos_dir)), name="rendered-videos")
+
     # SPA catch-all：所有非 API、非静态文件的请求都返回 index.html
     from fastapi.responses import FileResponse
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
         """SPA 路由回退：客户端路由全部返回 index.html"""
+        # API 路径不拦截，交给 API 路由处理
+        if full_path.startswith("api/") or full_path.startswith("api"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=404, content={"detail": "API not found"})
         # 尝试返回实际存在的静态文件（favicon.svg 等）
         file_path = _static_dir / full_path
         if full_path and file_path.is_file():

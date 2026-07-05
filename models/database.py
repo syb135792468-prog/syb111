@@ -116,6 +116,34 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 _db_initialized: bool = False
 
 
+async def _rebuild_sqlite_table(conn, table_name: str) -> None:
+    """SQLite 重建表：用于修复外键/约束残留问题。"""
+    temp_table = f"_{table_name}_old"
+
+    idx_rows = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:table_name AND sql IS NOT NULL"
+    ), {"table_name": table_name})
+    for idx_row in idx_rows.fetchall():
+        await conn.execute(text(f'DROP INDEX IF EXISTS "{idx_row[0]}"'))
+
+    await conn.execute(text(f'ALTER TABLE "{table_name}" RENAME TO "{temp_table}"'))
+    await conn.run_sync(Base.metadata.create_all, tables=[Base.metadata.tables[table_name]])
+
+    old_cols = [c["name"] for c in await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_columns(temp_table)
+    )]
+    new_cols = [c["name"] for c in await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_columns(table_name)
+    )]
+    common = [c for c in old_cols if c in new_cols]
+    cols_str = ", ".join(f'"{col}"' for col in common)
+    await conn.execute(text(
+        f'INSERT INTO "{table_name}" ({cols_str}) SELECT {cols_str} FROM "{temp_table}"'
+    ))
+    await conn.execute(text(f'DROP TABLE "{temp_table}"'))
+    logger.info(f"✅ 已重建 {table_name} 表")
+
+
 async def _auto_migrate() -> None:
     """自动迁移：为已有表添加缺失的列"""
     try:
@@ -136,6 +164,11 @@ async def _auto_migrate() -> None:
                     "ALTER TABLE chat_messages ADD COLUMN content_blocks_json TEXT"
                 ))
                 logger.info("✅ 已添加 chat_messages.content_blocks_json 列")
+            if "image_urls_json" not in chat_columns:
+                await conn.execute(text(
+                    "ALTER TABLE chat_messages ADD COLUMN image_urls_json TEXT"
+                ))
+                logger.info("✅ 已添加 chat_messages.image_urls_json 列")
 
             # users 表迁移：AI 自适应字段
             user_columns = await conn.run_sync(
@@ -176,6 +209,188 @@ async def _auto_migrate() -> None:
                     "ALTER TABLE error_book ADD COLUMN repetition_count INTEGER NOT NULL DEFAULT 0"
                 ))
                 logger.info("✅ 已添加 error_book.repetition_count 列")
+
+            # user_profiles 表迁移：人口统计字段
+            profile_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("user_profiles")]
+            )
+            if "gender" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN gender VARCHAR(10)"
+                ))
+                logger.info("✅ 已添加 user_profiles.gender 列")
+            if "age" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN age INTEGER"
+                ))
+                logger.info("✅ 已添加 user_profiles.age 列")
+
+            # user_profiles 表迁移：每日一题连续打卡字段
+            if "current_streak" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN current_streak INTEGER NOT NULL DEFAULT 0"
+                ))
+                logger.info("✅ 已添加 user_profiles.current_streak 列")
+            if "longest_streak" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN longest_streak INTEGER NOT NULL DEFAULT 0"
+                ))
+                logger.info("✅ 已添加 user_profiles.longest_streak 列")
+            if "streak_status" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN streak_status VARCHAR(20) NOT NULL DEFAULT 'active'"
+                ))
+                logger.info("✅ 已添加 user_profiles.streak_status 列")
+            if "recovery_progress" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN recovery_progress INTEGER NOT NULL DEFAULT 0"
+                ))
+                logger.info("✅ 已添加 user_profiles.recovery_progress 列")
+            if "last_challenge_date" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN last_challenge_date VARCHAR(10)"
+                ))
+                logger.info("✅ 已添加 user_profiles.last_challenge_date 列")
+
+            # resources 表迁移：in_library 字段
+            resource_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("resources")]
+            )
+            if "in_library" not in resource_columns:
+                await conn.execute(text(
+                    "ALTER TABLE resources ADD COLUMN in_library BOOLEAN NOT NULL DEFAULT 1"
+                ))
+                logger.info("✅ 已添加 resources.in_library 列")
+
+            # resources 表迁移：更新 CHECK 约束（添加 daily_challenge / daily_extra / multimodal）
+            def _get_create_sql(sync_conn):
+                result = sync_conn.execute(text(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='resources'"
+                ))
+                row = result.fetchone()
+                return row[0] if row else ""
+
+            create_sql = await conn.run_sync(_get_create_sql)
+            if "daily_challenge" not in create_sql or "multimodal" not in create_sql or "slides" not in create_sql:
+                logger.info("🔧 检测到 resources 表缺少新资源类型，开始重建...")
+                # 先删旧索引，避免重建时名称冲突
+                idx_rows = await conn.execute(text(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='resources' AND sql IS NOT NULL"
+                ))
+                for idx_row in idx_rows.fetchall():
+                    await conn.execute(text(f'DROP INDEX IF EXISTS "{idx_row[0]}"'))
+                # SQLite 无法 ALTER CHECK，需重建表
+                await conn.execute(text("ALTER TABLE resources RENAME TO resources_old"))
+                # 用 ORM metadata 创建新表（含更新后的 CHECK 约束 + 索引）
+                await conn.run_sync(Base.metadata.create_all, tables=[Base.metadata.tables["resources"]])
+                # 复制数据
+                old_cols = [c["name"] for c in await conn.run_sync(
+                    lambda sync_conn: inspect(sync_conn).get_columns("resources_old")
+                )]
+                new_cols = [c["name"] for c in await conn.run_sync(
+                    lambda sync_conn: inspect(sync_conn).get_columns("resources")
+                )]
+                common = [c for c in old_cols if c in new_cols]
+                cols_str = ", ".join(common)
+                await conn.execute(text(
+                    f"INSERT INTO resources ({cols_str}) SELECT {cols_str} FROM resources_old"
+                ))
+                await conn.execute(text("DROP TABLE resources_old"))
+                logger.info("✅ resources 表 CHECK 约束已更新（支持 daily_challenge / daily_extra / multimodal / slides）")
+
+            # 修复残留外键：此前重建 resources 表后，部分子表仍引用 resources_old
+            fk_broken_tables = []
+            schema_rows = await conn.execute(text(
+                "SELECT name, sql FROM sqlite_master WHERE type='table'"
+            ))
+            for row in schema_rows.fetchall():
+                table_name = row[0]
+                table_sql = row[1] or ""
+                if "resources_old" in table_sql:
+                    fk_broken_tables.append(table_name)
+
+            # 同时收集所有引用 resources 表的子表（FK 可能指向旧表对象）
+            fk_resource_dependents = []
+            for table_name in Base.metadata.tables:
+                if table_name == "resources":
+                    continue
+                table_def = Base.metadata.tables[table_name]
+                for fk in table_def.foreign_keys:
+                    if fk.column.table.name == "resources":
+                        fk_resource_dependents.append(table_name)
+                        break
+
+            repairable_tables = list(set(
+                [t for t in fk_broken_tables if t in Base.metadata.tables]
+                + fk_resource_dependents
+            ))
+            if repairable_tables:
+                logger.info(f"🔧 检测到外键仍引用 resources_old，开始修复: {repairable_tables}")
+                await conn.execute(text("PRAGMA foreign_keys=OFF"))
+                try:
+                    for table_name in repairable_tables:
+                        await _rebuild_sqlite_table(conn, table_name)
+                finally:
+                    await conn.execute(text("PRAGMA foreign_keys=ON"))
+                logger.info("✅ 已修复所有引用 resources_old 的表")
+
+            # chat_messages 表迁移：is_bookmarked 字段
+            chat_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("chat_messages")]
+            )
+            if "is_bookmarked" not in chat_columns:
+                await conn.execute(text(
+                    "ALTER TABLE chat_messages ADD COLUMN is_bookmarked BOOLEAN NOT NULL DEFAULT 0"
+                ))
+                logger.info("✅ 已添加 chat_messages.is_bookmarked 列")
+
+            # resources 表迁移：note 字段
+            resource_columns = await conn.run_sync(
+                lambda sync_conn: [col["name"] for col in inspector.get_columns("resources")]
+            )
+            if "note" not in resource_columns:
+                await conn.execute(text(
+                    "ALTER TABLE resources ADD COLUMN note TEXT"
+                ))
+                logger.info("✅ 已添加 resources.note 列")
+
+            # explanations 表迁移：conversation_id/message_id 改为可空
+            explanation_tables = await conn.run_sync(
+                lambda sync_conn: [t for t in inspector.get_table_names() if t == "explanations"]
+            )
+            if explanation_tables:
+                exp_cols = await conn.run_sync(
+                    lambda sync_conn: inspector.get_columns("explanations")
+                )
+                # 检查 conversation_id 是否为 NOT NULL（旧表需要重建）
+                conv_col = next((c for c in exp_cols if c["name"] == "conversation_id"), None)
+                if conv_col and not conv_col.get("nullable", True):
+                    logger.info("🔄 重建 explanations 表（conversation_id/message_id 改为可空）")
+                    await conn.execute(text("ALTER TABLE explanations RENAME TO _explanations_old"))
+                    await conn.execute(text("""
+                        CREATE TABLE explanations (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                            conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
+                            message_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
+                            selected_text TEXT NOT NULL,
+                            explanation TEXT NOT NULL,
+                            follow_ups JSON DEFAULT '[]',
+                            created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                            updated_at DATETIME
+                        )
+                    """))
+                    await conn.execute(text("""
+                        INSERT INTO explanations (id, user_id, conversation_id, message_id, selected_text, explanation, follow_ups, created_at, updated_at)
+                        SELECT id, user_id, conversation_id, message_id, selected_text, explanation, follow_ups, created_at, updated_at
+                        FROM _explanations_old
+                    """))
+                    await conn.execute(text("DROP TABLE _explanations_old"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_explanation_conversation ON explanations (conversation_id, created_at)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_explanation_message ON explanations (message_id)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_explanations_user_id ON explanations (user_id)"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_explanations_conversation_id ON explanations (conversation_id)"))
+                    logger.info("✅ explanations 表已重建（conversation_id/message_id 可空）")
 
     except Exception as e:
         logger.warning(f"⚠️ 自动迁移跳过（可能表尚未创建）: {e}")

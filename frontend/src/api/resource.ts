@@ -1,18 +1,20 @@
-import { apiGet, apiPost, apiDelete } from './index'
+import { apiGet, apiPost, apiPatch, apiDelete } from './index'
 import { API_BASE } from '../utils/constants'
 
 interface ResourceListParams {
   resourceType?: string
   status?: string
+  inLibrary?: boolean
   limit?: number
   offset?: number
 }
 
 export function listResources(userId: string | number, params: ResourceListParams = {}) {
-  const { resourceType, status = 'completed', limit = 50, offset = 0 } = params
+  const { resourceType, status = 'completed', inLibrary, limit = 50, offset = 0 } = params
   let url = `${API_BASE}/resource/?user_id=${userId}&limit=${limit}&offset=${offset}`
   if (resourceType) url += `&resource_type=${resourceType}`
   if (status) url += `&status=${status}`
+  if (inLibrary !== undefined) url += `&in_library=${inLibrary}`
   return apiGet(url)
 }
 
@@ -34,11 +36,19 @@ export function generateResource(
   if (config && Object.keys(config).length > 0) {
     body.config = config
   }
-  return apiPost(`${API_BASE}/resource/generate`, body, 120000)
+  return apiPost(`${API_BASE}/resource/generate`, body, 180000)
 }
 
 export function deleteResource(resourceId: string | number, userId: string | number) {
   return apiDelete(`${API_BASE}/resource/${resourceId}?user_id=${userId}`)
+}
+
+export function addToLibrary(resourceId: string | number, userId: string | number) {
+  return apiPatch(`${API_BASE}/resource/${resourceId}/add-to-library?user_id=${userId}`)
+}
+
+export function saveResourceNote(resourceId: string | number, userId: string | number, note: string) {
+  return apiPatch(`${API_BASE}/resource/${resourceId}/note?user_id=${userId}`, { note })
 }
 
 export function expandMindmapNode(params: {
@@ -63,4 +73,8 @@ export function expandMindmapNode(params: {
     node_pitfalls: params.nodePitfalls || [],
     node_advice: params.nodeAdvice || '',
   }, 60000)
+}
+
+export function renderVideo(resourceId: number, userId: string | number) {
+  return apiPost(`${API_BASE}/resource/${resourceId}/render-video?user_id=${userId}`, {}, 300000)
 }

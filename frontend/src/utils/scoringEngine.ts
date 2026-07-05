@@ -69,6 +69,43 @@ export function calcTopicMastery(records: ProgressRecord[]): number {
   return Math.round(Math.min(100, Math.max(0, mastery)))
 }
 
+// --- 评分平滑（P2：消除单次答题的剧烈波动） ---
+// 调整参数使掌握度变化更平缓
+const SMOOTH_DECAY = 0.92          // 衰减系数，越大收敛越慢，变化越平滑
+const SMOOTH_BASELINE_WEAK = 35    // 薄弱知识点基准分
+const SMOOTH_BASELINE_MASTERED = 70 // 掌握知识点基准分
+const SMOOTH_BASELINE_DEFAULT = 50  // 默认基准分（更接近中间值）
+const MIN_ATTEMPTS_FOR_ADJUSTMENT = 2 // 最少答题次数才开始调整
+
+/**
+ * 基于答题次数的指数衰减平滑。
+ * 答题次数越少，分数越靠近基准分；次数越多，越贴近原始得分。
+ * 优化目标：减少单次答题导致的剧烈波动，使掌握度变化更加平缓。
+ */
+export function smoothKnowledgeScore(
+  rawScore: number,
+  attemptCount: number,
+  isMastered: boolean,
+  isWeak: boolean,
+): number {
+  // 答题次数少于阈值时，直接返回原始得分或基准分的平均值
+  if (attemptCount < MIN_ATTEMPTS_FOR_ADJUSTMENT) {
+    const baseLine = isMastered ? SMOOTH_BASELINE_MASTERED
+      : isWeak ? SMOOTH_BASELINE_WEAK
+      : SMOOTH_BASELINE_DEFAULT
+    // 前两次答题只做轻微调整
+    const weight = attemptCount === 0 ? 1 : 0.3 // 第一次答题权重30%
+    return Math.round(baseLine * (1 - weight) + rawScore * weight)
+  }
+  
+  const baseLine = isMastered ? SMOOTH_BASELINE_MASTERED
+    : isWeak ? SMOOTH_BASELINE_WEAK
+    : SMOOTH_BASELINE_DEFAULT
+  // 使用更高的衰减系数，让熟练度增长更慢
+  const proficiency = 1 - Math.pow(SMOOTH_DECAY, attemptCount)
+  return Math.round(baseLine + (rawScore - baseLine) * proficiency)
+}
+
 // --- 知识水平等级 ---
 export function calcKnowledgeLevel(avgMastery: number): string {
   if (avgMastery >= 75) return '精通者'

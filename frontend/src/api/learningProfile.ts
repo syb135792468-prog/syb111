@@ -47,3 +47,13 @@ export async function recordLearningEvent(
 
   return fetchLearningProfile(userId)
 }
+
+export async function fetchAISuggestions(userId: string | number): Promise<{ suggestions: string; profile_summary: string }> {
+  const resp = await apiPost<{ suggestions: string; profile_summary: string }>(
+    `${API_BASE}/profile/${userId}/suggestions`,
+    {},
+    60000,
+  )
+  if (resp.code === 200 && resp.data) return resp.data
+  throw new Error(resp.message || '生成建议失败')
+}

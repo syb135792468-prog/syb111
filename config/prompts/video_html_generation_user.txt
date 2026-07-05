@@ -6,10 +6,20 @@ GSAP是专业的JavaScript动画库，通过CDN加载后全局可用。核心API
 - gsap.from(元素, {{属性}}) — 从指定状态动画到当前状态
 - gsap.timeline() — 创建时间线，按顺序编排多个动画
 - 属性用camelCase：backgroundColor, borderRadius, autoAlpha（代替opacity+visibility）
-- 缓动字符串：power1.out（默认）, power2.inOut, back.out(1.7), elastic.out(1,0.3)
 - transform别名：x/y（位移）, scale（缩放）, rotation（旋转）, scaleX/scaleY
 - stagger：多个元素的错开延迟，如stagger: 0.1
 - repeat: -1（无限重复）, yoyo: true（来回播放）
+
+【缓动函数 — 动画自然感的关键】
+缓动决定了动画的"气质"，不要只用默认的power1.out，根据场景选择：
+- power2.inOut — 平滑的进出，适合过渡和位移
+- back.out(1.7) — 回弹效果，元素到达目标后微微弹一下，适合强调入场
+- elastic.out(1, 0.3) — 弹性效果，像弹簧一样，适合重点概念出现
+- power3.out — 快进慢出，适合代码行快速滑入
+- bounce.out — 弹跳落地，适合物体从上方落下
+- steps(10) — 逐帧效果，适合打字机/逐字显示
+- circum.inOut — 慢启慢停，适合缓慢的强调动画
+- sine.inOut — 最柔和的正弦曲线，适合呼吸/脉冲效果
 
 【你必须实现的控制接口（引擎会调用这些全局函数）】
 在script标签中定义以下全局函数，引擎通过按钮和键盘调用它们：
@@ -23,12 +33,20 @@ function seekTo(percent) — 用户点击进度条时调用，percent是0-100的
 同时设置 window.isPlaying = true/false 来标记播放状态。
 
 【页面结构 - ID必须严格一致】
-div id="startScreen"：开始界面，包含h1 id="mainTitle"和button id="startButton"
+div id="startScreen"：开始界面，包含：
+  h1 id="mainTitle"：大标题（主题名）
+  p id="subtitle"：副标题（简短描述）
+  div id="learningGoals"：学习目标列表（3-4个li，每条前加✓）
+  div id="durationHint"：预估时长提示（如"约2分钟 · 6个步骤"）
+  button id="startButton"：开始学习按钮
+
 div id="playerScreen" style="display:none"：播放器界面，包含：
+  div id="topBar"：顶部栏，包含div id="stepCounter"（步骤计数）和div id="stepDots"（步骤圆点）
   h1 id="mainTitle"：主标题
   p id="subtitle"：副标题
   div id="speechBubble"：语音文字气泡
-  div id="codeDisplay"：代码区，内含div id="codeLine1", div id="codeLine2"等
+  div id="codeDisplay"：代码区，内含div id="codeLine1", div id="codeLine2"等（每行带行号和语法高亮span）
+  div id="memoryPanel"：变量状态面板
   div id="controls"：控制栏，内含button id="playPauseButton"（显示⏸）, button id="restartButton"（显示🔄）, div id="progressBar"包含div id="progressFill"
 
 【控制逻辑参考实现】
@@ -49,32 +67,157 @@ window.speechSynthesis.speak(utterance);
 
 【视觉设计规范】
 1. 全屏布局：100vw x 100vh，无滚动条
-2. 渐变背景：linear-gradient(135deg, #667eea 0%, #764ba2 100%)
-3. 毛玻璃卡片：backdrop-filter: blur(10px)
-4. 代码区深色背景：rgba(0, 0, 0, 0.8)
-5. 现代简洁风格
+2. 渐变背景：linear-gradient(135deg, #667eea 0%, #764ba2 100%)，背景中加2-3个浮动的半透明圆形装饰（用GSAP做缓慢漂移动画，repeat: -1, yoyo: true, duration: 8-12秒）
+3. 毛玻璃卡片：backdrop-filter: blur(10px), background: rgba(255,255,255,0.1)
+4. 代码区深色背景：rgba(0, 0, 0, 0.85), border-radius: 12px, padding: 20px
+5. 现代简洁风格，注意留白和视觉层次
 6. 移动端适配：@media (max-width: 768px)，字体不小于16px，按钮不小于48x48px
 
-【教学内容规范】
+【开始界面 — 第一印象决定用户期待】
+开始界面必须有视觉冲击力，不要只放标题+按钮：
+- 大标题（主题名）+ 副标题（简短描述，如"从零掌握核心概念"）
+- 学习目标列表（3-4条，前面加 ✓ 图标，逐条淡入动画）
+- 底部显示预估时长（如"约2分钟 · 6个步骤"）
+- 开始按钮要有呼吸效果（box-shadow脉冲，repeat: -1, yoyo: true）
+- 背景加浮动装饰元素（半透明圆形/三角形，缓慢漂移）
+- 整体入场：标题从上方滑入 → 目标逐条出现 → 按钮弹出
+
+【代码区 — 看起来要像专业代码编辑器】
+代码必须有语法高亮和行号，用CSS class实现（不需要外部库）：
+
+行号：每个codeLine左侧加span class="line-num"，颜色#666，右对齐
+语法高亮用span包裹：
+  span class="kw"  — 关键字（def, for, if, while, return, import, class, try, except）→ 颜色 #c792ea（紫色）
+  span class="str" — 字符串（引号包裹的内容）→ 颜色 #c3e88d（绿色）
+  span class="cmt" — 注释（#开头）→ 颜色 #546e7a（灰色斜体）
+  span class="num" — 数字 → 颜色 #f78c6c（橙色）
+  span class="fn"  — 函数名（def后面的名称）→ 颜色 #82aaff（蓝色）
+  span class="op"  — 运算符（=, +, -, *, ==, !=）→ 颜色 #89ddff（青色）
+
+代码区CSS示例：
+#codeDisplay {{ background: rgba(0,0,0,0.85); border-radius: 12px; padding: 16px 20px; font-family: 'Consolas','Monaco',monospace; font-size: 15px; line-height: 1.8; }}
+.line-num {{ color: #546e7a; display: inline-block; width: 2em; text-align: right; margin-right: 16px; user-select: none; }}
+.kw {{ color: #c792ea; font-weight: 600; }}
+.str {{ color: #c3e88d; }}
+.cmt {{ color: #546e7a; font-style: italic; }}
+.num {{ color: #f78c6c; }}
+.fn {{ color: #82aaff; }}
+.op {{ color: #89ddff; }}
+
+当前讲解的代码行要高亮：左边框加3px亮色条（border-left: 3px solid #ffd700）+ 背景微亮（background: rgba(255,215,0,0.1)）
+
+【步骤进度指示器 — 让用户知道"我在哪"】
+在播放界面顶部、步骤计数器旁边，显示步骤圆点：
+div id="stepDots"：包含N个span，每个span class="step-dot"
+- 已完成步骤：实心圆，白色，opacity 0.5
+- 当前步骤：实心圆，白色，opacity 1，带发光效果（box-shadow: 0 0 8px rgba(255,255,255,0.8)）
+- 未到步骤：空心圆，白色，opacity 0.3
+步骤切换时用GSAP更新圆点状态
+
+【教学内容规范 — 内容丰富度是第一优先级】
 - 主题：{topic}
-- 包含3-5个代码示例，由浅入深排列
-- 每个代码示例配一段中文讲解，用语音朗读并同步显示在speechBubble中
-- 代码注释用中文
+- 包含 6-8 个教学步骤，由浅入深，覆盖从基础用法到进阶技巧
+- 每个步骤必须包含：① 完整可运行的代码示例（4-8行）② 详细的中文讲解文字（30-60字）③ GSAP动画效果
+- 代码注释用中文，注释要解释关键逻辑
 - 动画风格：{style}，目标时长：{duration}秒
+- 每个步骤的讲解要深入浅出，不仅说"是什么"，还要说"为什么"和"怎么用"
+- 步骤之间要有逻辑递进关系，像一篇完整的教程
 
 【风格指引（当前：{style}）】
-- tutorial：标准教程，循序渐进
-- code_demo：以代码演示为主
-- visualization：多用流程图、色块辅助
-- story：故事化场景引入
+- tutorial：标准教程，循序渐进，每步建立在上一步基础上
+- code_demo：以代码演示为主，每个示例要展示不同场景
+- visualization：多用流程图、色块、箭头等辅助元素解释概念
+- story：故事化场景引入，用生活化的比喻解释抽象概念
 
-【动画设计建议】
-- 用gsap.timeline()编排整个教学流程，每个阶段包含代码行出现、高亮、讲解文字切换、语音朗读
-- 代码行用gsap.from(el, {{autoAlpha: 0, y: 20}})做入场动画
-- 当前讲解的代码行用背景色高亮（如gsap.to(el, {{backgroundColor: 'rgba(255,255,0,0.3)'}})）
-- 讲解文字切换时用淡入淡出过渡
-- 用timeline的add()方法在特定时间点触发语音朗读
-- 整体节奏：每段讲解5-8秒，动画过渡0.3-0.5秒
+【功能一：步骤计数器】
+在播放界面顶部显示 div id="stepCounter"，内容为"第 N 步 / 共 M 步"。
+- 总步数 M = 教学步骤总数（6-8步）
+- 每进入一个新步骤时，用GSAP更新计数器文字并做微动画
+- 计数器样式：半透明背景圆角pill，白色文字，居中或右上角
+- 更新方式：gsap.to计数器淡出 → 修改textContent → gsap.from淡入
+
+【功能二：代码执行可视化（变量状态面板）】
+在代码区右侧或下方显示 div id="memoryPanel"，模拟代码执行时的变量内存状态。
+- 每讲解一行代码时，同步更新memoryPanel中对应变量的值
+- 变量以卡片形式展示：变量名 = 值，新变量出现时做入场动画，值变化时做高亮闪烁
+- 实现方式：
+  1. 在memoryPanel内用div class="var-card"展示每个变量，id如"var-x", "var-name"
+  2. 当讲解到某行代码时，用GSAP更新对应变量的显示：
+     - 新变量：gsap.from(card, {{autoAlpha: 0, x: -20, duration: 0.4}})
+     - 值变化：gsap.fromTo(card, {{backgroundColor: 'rgba(255,215,0,0.5)'}}, {{backgroundColor: 'transparent', duration: 0.8}})
+  3. 步骤切换时清空memoryPanel，展示新步骤的变量
+- 变量卡片样式：深色半透明背景，等宽字体显示 name = value，如 x = 42
+
+【动画设计原则 — 自然感来自变化，机械感来自重复】
+
+核心原则：每个步骤的入场方式、缓动、时长、方向都要不同。如果步骤1代码从下方滑入，步骤2就从左侧滑入，步骤3就用缩放+旋转。绝对不要每个步骤都用同一种动画。
+
+你需要掌握的动画技法（自由组合，不要固定套路）：
+
+1. 代码行入场 — 每步换一种方式：
+   - 从下方滑入（y: 30→0）+ back.out 回弹
+   - 从左侧飞入（x: -40→0）+ power3.out 快速减速
+   - 从中心缩放弹出（scale: 0.5→1）+ elastic.out 弹性
+   - 逐字淡入（stagger每行0.2秒）+ power2.inOut
+   - 从透明旋转出现（rotation: -5→0, autoAlpha: 0→1）
+
+2. 当前讲解行高亮 — 用颜色和光效：
+   - 背景色渐变高亮（金色/黄色半透明）
+   - 左边框亮色条滑入（像编辑器的active line）
+   - 文字颜色变化 + 轻微脉冲缩放
+
+3. 讲解文字切换 — 不要每次都淡入：
+   - 向上推出旧文字，新文字从下方滑入
+   - 旧文字缩小消失，新文字放大出现
+   - 打字机效果逐字显示（用steps缓动）
+   - 文字从模糊到清晰（filter: blur）
+
+4. 步骤间过渡 — 旧内容退场要有"离去感"：
+   - 旧代码向左滑出 + 新代码从右侧滑入
+   - 旧内容缩小到中心消失 + 新内容从中心放大展开
+   - 旧内容向上飘走 + 新内容从下方浮起
+   - 不要简单的淡入淡出，要有方向和力度
+
+5. 强调动画 — 突出重点概念：
+   - 弹跳缩放（scale 1→1.15→1，用back.out）
+   - 左右摇晃（rotation来回摆动，像摇头）
+   - 发光脉冲（box-shadow从无到有再消失）
+   - 颜色闪烁（背景色快速变化2-3次）
+
+6. 微动效 — 让静态元素"活"起来：
+   - 代码区呼吸效果（box-shadow轻微脉冲，repeat: -1, yoyo: true）
+   - 标题文字轻微浮动（y微小变化，sine.inOut）
+   - 进度条填充时有弹性（elastic.out）
+
+【节奏控制 — 语音驱动，不要用固定时间！】
+
+核心原则：每一步的时长由语音合成的实际时长决定，不要用固定时间间隔。
+
+正确做法：
+```javascript
+// 在 buildTimeline() 中，每个步骤：
+tl.add(function() {{
+  // 1. 更新UI（步骤指示器、代码、变量面板等）
+  // 2. 暂停 timeline
+  tl.pause();
+  // 3. 触发语音，语音结束后恢复 timeline
+  speak(narrationText, function() {{
+    setTimeout(function() {{ tl.play(); }}, 300);
+  }});
+}});
+```
+
+绝对禁止：
+- 禁止 `tl.add({{}}, '+=' + 固定时间)` 等待语音
+- 禁止用 `narration.length * 120` 估算语音时长
+- 禁止每步固定6-10秒，语音时长不可预测
+- 禁止第一步用 `gsap.from('#codeDisplay', {{autoAlpha: 0}})` 做入场动画（会把已渲染的代码隐藏）
+
+代码区必须始终有内容：
+- 第一步代码立即可见，不要用 autoAlpha: 0 入场
+- 后续步骤：先 `gsap.to('#codeDisplay', {{autoAlpha: 0}})` 退场 → `renderCode()` 渲染 → `gsap.fromTo('#codeDisplay', {{autoAlpha: 0}}, {{autoAlpha: 1}})` 入场
+
+用gsap.timeline()编排整个教学流程，通过speak()的onend回调驱动步骤切换。
 
 【完整示例结构】
 <!DOCTYPE html>
@@ -93,12 +236,16 @@ window.speechSynthesis.speak(utterance);
     <button id="startButton">开始学习</button>
   </div>
   <div id="playerScreen" style="display:none">
+    <div id="stepCounter">第 1 步 / 共 6 步</div>
     <h1 id="mainTitle">标题</h1>
     <p id="subtitle">副标题</p>
     <div id="speechBubble">讲解文字</div>
     <div id="codeDisplay">
       <div id="codeLine1">代码行1</div>
       <div id="codeLine2">代码行2</div>
+    </div>
+    <div id="memoryPanel">
+      <!-- 变量卡片，动态生成 -->
     </div>
     <div id="controls">
       <button id="playPauseButton">⏸</button>
@@ -109,16 +256,43 @@ window.speechSynthesis.speak(utterance);
   <script>
     // 你的GSAP动画代码
     let mainTimeline;
+    let totalSteps = N;  // 你的教学步骤总数
     window.isPlaying = false;
 
-    function buildTimeline() {{
-      mainTimeline = gsap.timeline({{ paused: true }});
-      // 在这里编排所有动画...
-      mainTimeline.add(() => speak('讲解文字'), 0);
-      mainTimeline.to('#codeLine1', {{ autoAlpha: 1, y: 0, duration: 0.5 }}, 0);
-      // ...更多动画步骤
+    // === 必须实现的辅助函数 ===
+
+    // 更新步骤计数器（step从1开始）
+    function updateStepCounter(step) {{
+      // 更新 #stepCounter 的文字，加一个切换动画
     }}
 
+    // 显示/更新变量（name是变量名，value是值）
+    function showVar(name, value) {{
+      // 在 #memoryPanel 中创建或更新变量卡片
+      // 新变量做入场动画，已有变量做值变化高亮
+    }}
+
+    // 清空变量面板（步骤切换时调用）
+    function clearVars() {{
+      document.getElementById('memoryPanel').innerHTML = '';
+    }}
+
+    // === 核心：在这里编排所有动画 ===
+    function buildTimeline() {{
+      mainTimeline = gsap.timeline({{ paused: true }});
+
+      // 每个步骤的入场方式、缓动、方向都要不同！
+      // 步骤1：代码从下方滑入 + back.out 回弹
+      // 步骤2：代码从左侧飞入 + power3.out
+      // 步骤3：代码缩放弹出 + elastic.out
+      // ... 自由发挥，每个步骤都不一样
+
+      // 在关键时间点用 mainTimeline.add(() => speak('...'), 时间) 触发语音
+      // 用 mainTimeline.add(() => updateStepCounter(N), 时间) 更新步骤计数
+      // 用 mainTimeline.add(() => showVar('name', 'value'), 时间) 更新变量面板
+    }}
+
+    // === 控制接口（必须实现） ===
     function startAnimation() {{
       document.getElementById('startScreen').style.display = 'none';
       document.getElementById('playerScreen').style.display = 'block';
@@ -143,9 +317,11 @@ window.speechSynthesis.speak(utterance);
       window.speechSynthesis.cancel();
       if (mainTimeline) mainTimeline.kill();
       window.isPlaying = false;
+      clearVars();
       document.getElementById('playerScreen').style.display = 'none';
       document.getElementById('startScreen').style.display = 'flex';
       document.getElementById('progressFill').style.width = '0%';
+      document.getElementById('stepCounter').textContent = '第 1 步 / 共 ' + totalSteps + ' 步';
     }}
 
     function seekTo(percent) {{
@@ -169,4 +345,4 @@ window.speechSynthesis.speak(utterance);
 </html>
 
 【输出格式】
-直接输出完整的HTML代码，从<!DOCTYPE html>开始到</html>结束。
+直接输出完整的HTML代码，从<!DOCTYPE html>开始到</html>结束。不要省略任何步骤，输出完整内容。

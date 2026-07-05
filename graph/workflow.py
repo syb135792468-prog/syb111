@@ -17,12 +17,13 @@ from langgraph.constants import Send
 from agents.unified_router_agent import UnifiedRouterAgent
 from agents.quiz_agent import QuizAgent
 from agents.code_agent import CodeAgent
-from agents.doc_agent import DocAgent
+from agents.content_agent import ContentAgent, ContentType
 from agents.mindmap_agent import MindmapAgent
 from agents.video_agent import VideoAgent
 from agents.path_agent import PathAgent
 from agents.tutor_agent import TutorAgent
-from agents.evaluation_agent import EvaluationAgent
+from agents.profile_agent import ProfileAgent
+from agents.aggregator_agent import AggregatorAgent
 from models.database import AsyncSessionLocal
 from utils.behavior_tracker import behavior_tracker, BehaviorType
 from utils.agent_helpers import match_knowledge_point
@@ -63,11 +64,12 @@ def get_or_create_agents() -> Dict[str, Any]:
             "tutor": TutorAgent(use_llm=True),
             "quiz": QuizAgent(),
             "code": CodeAgent(),
-            "doc": DocAgent(),
+            "doc": ContentAgent(content_type=ContentType.DOCUMENT),
             "mindmap": MindmapAgent(),
             "video": VideoAgent(),
             "path": PathAgent(),
-            "evaluation": EvaluationAgent(use_llm=True),
+            "evaluation": ProfileAgent(),
+            "aggregator": AggregatorAgent(),
         }
         logger.info("✅ 所有智能体初始化完成")
     return _agents_cache
@@ -183,8 +185,7 @@ async def run_quiz_agent(state: GraphState, agents: Dict) -> GraphState:
                 stats = await behavior_tracker.get_user_stats(int(uid), days=1)
                 today_completed = stats.get("quizzes_completed", 0) + stats.get("resources_viewed", 0)
                 if today_completed >= MILESTONE_COMPLETED_RESOURCES:
-                    from agents.evaluation_agent import EvaluationAgent
-                    eval_agent = agents.get("evaluation") or EvaluationAgent()
+                    eval_agent = agents.get("evaluation") or ProfileAgent()
                     await eval_agent.update_motivation_on_milestone(int(uid))
             except Exception as milestone_err:
                 logger.debug(f"里程碑检测跳过: {milestone_err}")
@@ -197,7 +198,7 @@ async def run_quiz_agent(state: GraphState, agents: Dict) -> GraphState:
 
 async def run_evaluation_agent(state: GraphState, agents: Dict) -> GraphState:
     try:
-        result = await agents["evaluation"].process("", state)
+        result = await agents["evaluation"].generate_evaluation_report("", state)
         logger.info("📊 学习效果评估完成")
 
         # 持久化评估后的画像到数据库
@@ -454,6 +455,7 @@ class DeepThinkingState(TypedDict, total=False):
     """深度思考模式状态"""
     user_id: str
     message: str
+    chat_history: List[Dict[str, str]]
     profile_data: Dict[str, Any]
     topic: str
     # 各 Agent 的结果
@@ -498,22 +500,23 @@ async def _emit_thinking(state: DeepThinkingState, text: str):
 
 
 async def deep_doc_node(state: DeepThinkingState) -> Dict[str, Any]:
-    """DocAgent 包装节点（带实时思维过程）"""
+    """ContentAgent 包装节点（带实时思维过程）"""
     agents = get_or_create_agents()
     topic = state.get("topic", "")
     ctx = {
         "profile_data": state.get("profile_data", {}),
+        "chat_history": state.get("chat_history", []),
         "topic": topic,
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"📄 DocAgent 正在为「{topic}」检索知识库...")
+        await _emit_thinking(state, f"📄 ContentAgent 正在为「{topic}」检索知识库...")
         result = await agents["doc"].process(state["message"], ctx)
-        await _emit_thinking(state, f"📄 DocAgent 已生成概念讲解文档")
+        await _emit_thinking(state, f"📄 ContentAgent 已生成概念讲解文档")
         return {"doc_result": result}
     except Exception as e:
-        logger.error(f"❌ 深度模式 DocAgent 失败: {e}")
-        await _emit_thinking(state, f"📄 DocAgent 遇到问题: {str(e)[:50]}")
+        logger.error(f"❌ 深度模式 ContentAgent 失败: {e}")
+        await _emit_thinking(state, f"📄 ContentAgent 遇到问题: {str(e)[:50]}")
         return {"doc_result": {"resource_list": [], "error": str(e)}}
 
 
@@ -523,6 +526,7 @@ async def deep_code_node(state: DeepThinkingState) -> Dict[str, Any]:
     topic = state.get("topic", "")
     ctx = {
         "profile_data": state.get("profile_data", {}),
+        "chat_history": state.get("chat_history", []),
         "topic": topic,
         "resource_list": [],
     }
@@ -543,6 +547,7 @@ async def deep_quiz_node(state: DeepThinkingState) -> Dict[str, Any]:
     topic = state.get("topic", "")
     ctx = {
         "profile_data": state.get("profile_data", {}),
+        "chat_history": state.get("chat_history", []),
         "topic": topic,
         "resource_list": [],
     }
@@ -558,21 +563,21 @@ async def deep_quiz_node(state: DeepThinkingState) -> Dict[str, Any]:
 
 
 async def deep_eval_node(state: DeepThinkingState) -> Dict[str, Any]:
-    """EvaluationAgent 包装节点（带实时思维过程）"""
+    """ProfileAgent 评估包装节点（带实时思维过程）"""
     agents = get_or_create_agents()
     ctx = {
         "profile_data": state.get("profile_data", {}),
-        "chat_history": [{"role": "user", "content": state["message"]}],
+        "chat_history": state.get("chat_history") or [{"role": "user", "content": state["message"]}],
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"🧐 EvaluationAgent 正在分析常见误区...")
-        result = await agents["evaluation"].process("", ctx)
-        await _emit_thinking(state, f"🧐 EvaluationAgent 已完成误区分析")
+        await _emit_thinking(state, f"🧐 ProfileAgent 正在分析常见误区...")
+        result = await agents["evaluation"].generate_evaluation_report("", ctx)
+        await _emit_thinking(state, f"🧐 ProfileAgent 已完成误区分析")
         return {"eval_result": result}
     except Exception as e:
-        logger.error(f"❌ 深度模式 EvaluationAgent 失败: {e}")
-        await _emit_thinking(state, f"🧐 EvaluationAgent 遇到问题: {str(e)[:50]}")
+        logger.error(f"❌ 深度模式 ProfileAgent 评估失败: {e}")
+        await _emit_thinking(state, f"🧐 ProfileAgent 遇到问题: {str(e)[:50]}")
         return {"eval_result": {"error": str(e)}}
 
 
@@ -581,6 +586,7 @@ async def deep_path_node(state: DeepThinkingState) -> Dict[str, Any]:
     agents = get_or_create_agents()
     ctx = {
         "profile_data": state.get("profile_data", {}),
+        "chat_history": state.get("chat_history", []),
     }
     try:
         await _emit_thinking(state, f"🛤️ PathAgent 正在规划学习路径...")
@@ -625,31 +631,9 @@ def _extract_agent_content(result: Dict[str, Any], agent_type: str) -> str:
 
 
 async def deep_aggregator_node(state: DeepThinkingState) -> Dict[str, Any]:
-    """结果整合节点：拼接所有Agent的输出"""
+    """结果整合节点：调用AggregatorAgent将多Agent输出整合为连贯学习包"""
+    agents = get_or_create_agents()
     topic = state.get("topic", "Python")
-    final_response = f"# 🎓 深度解析：{topic}\n\n"
-
-    doc_content = _extract_agent_content(state.get("doc_result", {}), "doc")
-    if doc_content:
-        final_response += f"## 📚 概念讲解\n\n{{{{card:doc}}}}\n\n{doc_content}\n\n"
-
-    code_content = _extract_agent_content(state.get("code_result", {}), "code")
-    if code_content:
-        final_response += f"## 💻 代码示例\n\n{{{{card:code}}}}\n\n```python\n{code_content}\n```\n\n"
-
-    eval_content = _extract_agent_content(state.get("eval_result", {}), "eval")
-    if eval_content:
-        final_response += f"## ⚠️ 常见误区与学习建议\n\n{eval_content}\n\n"
-
-    quiz_content = _extract_agent_content(state.get("quiz_result", {}), "quiz")
-    if quiz_content:
-        final_response += f"## ✏️ 小试牛刀\n\n{{{{card:quiz}}}}\n\n{quiz_content}\n\n"
-
-    path_content = _extract_agent_content(state.get("path_result", {}), "path")
-    if path_content:
-        final_response += f"## 🛤️ 下一步学习\n\n{path_content}\n\n"
-
-    final_response += "---\n\n*本回答由 5 个智能 Agent 协作生成，基于权威教材内容，确保知识准确无误。*"
 
     # 收集所有 Agent 产生的资源，用于前端内联卡片渲染
     resource_list: List[Dict[str, Any]] = []
@@ -663,7 +647,75 @@ async def deep_aggregator_node(state: DeepThinkingState) -> Dict[str, Any]:
                 elif isinstance(r, dict):
                     resource_list.append(r)
 
-    return {"final_response": final_response, "resource_list": resource_list}
+    # 提取结构化学习路径（供保存到数据库）
+    path_result = state.get("path_result", {})
+    learning_path = path_result.get("learning_path", []) if isinstance(path_result, dict) else []
+
+    # 提取各Agent文本内容，组装为聚合输入
+    agent_contents = []
+    content_map = [
+        ("doc_result", "📚 概念讲解", "doc"),
+        ("code_result", "💻 代码示例", "code"),
+        ("eval_result", "⚠️ 常见误区与学习建议", "eval"),
+        ("quiz_result", "✏️ 小试牛刀", "quiz"),
+        ("path_result", "🛤️ 下一步学习", "path"),
+    ]
+    for result_key, label, _ in content_map:
+        text = _extract_agent_content(state.get(result_key, {}), _)
+        if text:
+            agent_contents.append({"label": label, "content": text})
+
+    # 调用聚合Agent（1次LLM调用）
+    import time as _time
+    total_chars = sum(len(item["content"]) for item in agent_contents)
+    _CHAR_LIMIT = 12000  # 约3000 token，保守阈值
+    _agg_start = _time.monotonic()
+    final_response = ""
+    _use_fallback = False
+
+    try:
+        # 上下文长度兜底：总内容超过阈值时直接降级
+        if total_chars > _CHAR_LIMIT:
+            logger.warning(f"⚠️ 聚合输入过长({total_chars}字符 > {_CHAR_LIMIT})，直接降级为拼接模式")
+            _use_fallback = True
+            raise RuntimeError("content_too_long")
+
+        aggregator = agents["aggregator"]
+        agg_result = await aggregator.process("", {
+            "topic": topic,
+            "agent_contents": agent_contents,
+            "profile_data": state.get("profile_data", {}),
+        })
+        _agg_elapsed = (_time.monotonic() - _agg_start) * 1000
+        logger.info(f"✅ 聚合Agent完成: {_agg_elapsed:.0f}ms, 输入{total_chars}字符")
+        final_response = agg_result.get("final_response", "")
+        if not final_response or len(final_response.strip()) < 50:
+            raise ValueError("聚合Agent返回内容为空或过短")
+        # 注入卡片标记（LLM不会生成这些，需要手动补回）
+        for result_key, label, card_type in content_map:
+            if _extract_agent_content(state.get(result_key, {}), card_type):
+                marker = f"{{{{card:{card_type}}}}}"
+                if marker not in final_response:
+                    import re
+                    pattern = f"(## {re.escape(label)})"
+                    final_response = re.sub(pattern, f"\\1\n\n{marker}", final_response, count=1)
+    except (ConnectionError, TimeoutError, OSError, ValueError, RuntimeError) as e:
+        # 网络/超时/内容异常：模型服务不可用或返回异常，降级为拼接
+        _agg_elapsed = (_time.monotonic() - _agg_start) * 1000
+        logger.warning(f"⚠️ 聚合Agent降级({_agg_elapsed:.0f}ms): {type(e).__name__}: {e}")
+        _use_fallback = True
+
+    if _use_fallback:
+        # 降级：原有拼接逻辑
+        final_response = f"# 🎓 深度解析：{topic}\n\n"
+        for result_key, label, card_type in content_map:
+            text = _extract_agent_content(state.get(result_key, {}), card_type)
+            if text:
+                marker = f"{{{{card:{card_type}}}}}" if card_type in ("doc", "code", "quiz") else ""
+                final_response += f"## {label}\n\n{marker}\n\n{text}\n\n"
+        final_response += "---\n\n*本回答由 5 个智能 Agent 协作生成，基于权威教材内容，确保知识准确无误。*"
+
+    return {"final_response": final_response, "resource_list": resource_list, "learning_path": learning_path}
 
 
 def build_deep_thinking_workflow() -> CompiledStateGraph:

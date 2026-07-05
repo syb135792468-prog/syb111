@@ -1,5 +1,6 @@
 import React from 'react'
 import AppSidebar from './AppSidebar'
+import RightPanel from './RightPanel'
 import RobotPet from '../common/RobotPet'
 import { useStudyTimer } from '../../composables/useStudyTimer'
 
@@ -7,16 +8,17 @@ interface AppLayoutProps {
   children?: React.ReactNode
 }
 
-// --- 组件 ---
 const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   useStudyTimer()
+
   return (
     <>
-      <div className="flex h-screen" style={{ background: '#ffffff' }}>
+      <div role="main" className="app-shell">
         <AppSidebar />
-        <main className="flex-1 flex flex-col overflow-hidden" style={{ borderLeft: '1px solid #e5e7eb' }}>
+        <main aria-label="主内容区域" className="main-shell">
           {children}
         </main>
+        <RightPanel />
       </div>
       <RobotPet />
     </>

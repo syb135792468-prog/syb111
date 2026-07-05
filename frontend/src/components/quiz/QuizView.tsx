@@ -10,6 +10,7 @@ import { executeCode } from '../../api/code'
 import { useAuthStore } from '../../stores/auth'
 import { useCodeTextarea } from '../../composables/useCodeTextarea'
 import { useAppStore } from '../../stores/app'
+import { useLearningCenterStore } from '../../stores/learningCenter'
 
 // --- 类型定义 ---
 interface Question {
@@ -74,11 +75,13 @@ function formatTime(seconds: number): string {
 const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
+  const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
 
   // 状态
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [quizTitle, setQuizTitle] = useState('')
+  const [quizKnowledgePoints, setQuizKnowledgePoints] = useState<string[]>([])
   const [questions, setQuestions] = useState<Question[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [userAnswers, setUserAnswers] = useState<string[]>([])
@@ -167,16 +170,25 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
     try {
       type QuizData = { id: number | string; title: string; is_multi: boolean; question_count: number; questions: Question[] }
       let data: QuizData | null = null
+      let resourceMeta: { title?: string; knowledge_points?: string[] } | null = null
       try {
         const resp = await getQuiz(resourceId)
         if (resp.code === 200 && resp.data) data = resp.data as QuizData
       } catch { /* ignore */ }
 
+      try {
+        const resourceResp = await getResource(resourceId, authStore.userId)
+        if (resourceResp.code === 200 && resourceResp.data) {
+          resourceMeta = resourceResp.data as { title?: string; knowledge_points?: string[] }
+        }
+      } catch { /* ignore */ }
+
       if (!data) {
         const resp = await getResource(resourceId, authStore.userId)
         if (resp.code === 200 && resp.data) {
-          const res = resp.data as { id: number | string; title: string; extra_metadata?: Record<string, unknown> }
+          const res = resp.data as { id: number | string; title: string; extra_metadata?: Record<string, unknown>; knowledge_points?: string[] }
           const meta = (res.extra_metadata || {}) as { quiz_type?: string; answer?: string; explanation?: string; question_count?: number; questions?: Array<{ quiz_type: string; answer: string; explanation: string }> }
+          resourceMeta = { title: res.title, knowledge_points: res.knowledge_points || [] }
           if (meta.quiz_type === 'multi') {
             data = {
               id: res.id, title: res.title, is_multi: true,
@@ -195,7 +207,8 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
         } else { throw new Error(resp.message || '加载题目失败') }
       }
 
-      setQuizTitle(data.title || '练习题')
+      setQuizTitle(resourceMeta?.title || data.title || '练习题')
+      setQuizKnowledgePoints(resourceMeta?.knowledge_points || [])
       const qs = data.questions || []
       setQuestions(qs)
       setUserAnswers(new Array(qs.length).fill(''))
@@ -236,6 +249,16 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
       setResults(prev => { const next = [...prev]; next[idx] = submitResult; return next })
       setSubmittedFlags(prev => { const next = [...prev]; next[idx] = true; return next })
       try { updateQuizStats(resourceId, submitResult.is_correct, spentTime) } catch { /* ignore */ }
+      recordLearningEvent({
+        userId: authStore.userId,
+        sourcePage: 'quiz',
+        actionType: submitResult.is_correct ? 'quiz_passed' : 'quiz_submitted',
+        topic: quizTitle,
+        knowledgePoint: quizKnowledgePoints[0] || quizTitle,
+        resourceId: Number(resourceId),
+        score: submitResult.score,
+        duration: spentTime,
+      })
       // 通知 ProfileView 刷新学习画像
       window.dispatchEvent(new CustomEvent('learning-profile-dirty'))
     } catch {
@@ -243,7 +266,7 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
     } finally {
       setSubmitting(false)
     }
-  }, [currentAnswer, submitting, currentIndex, questions, startTime, resourceId, appStore])
+  }, [currentAnswer, submitting, currentIndex, questions, startTime, resourceId, appStore, recordLearningEvent, authStore.userId, quizKnowledgePoints, quizTitle])
 
   // 生成答案
   const handleGenerateAnswer = useCallback(async () => {
@@ -286,6 +309,18 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
       clearCodeTimer()
       setCodeElapsed(result.total_time)
       setCodeOutput(prev => { const next = [...prev]; next[idx] = result; return next })
+      if (result.success) {
+        recordLearningEvent({
+          userId: authStore.userId,
+          sourcePage: 'quiz',
+          actionType: 'code_run_success',
+          topic: quizTitle,
+          knowledgePoint: quizKnowledgePoints[0] || quizTitle,
+          resourceId: Number(resourceId),
+          duration: Math.round((result.total_time || result.execution_time || 0) / 1000),
+          score: 80,
+        })
+      }
     } catch (e: unknown) {
       clearCodeTimer()
       const msg = e instanceof Error ? e.message : '执行异常'
@@ -293,7 +328,7 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
     } finally {
       setCodeRunning(false)
     }
-  }, [currentAnswer, codeRunning, currentIndex, clearCodeTimer])
+  }, [currentAnswer, codeRunning, currentIndex, clearCodeTimer, recordLearningEvent, authStore.userId, quizKnowledgePoints, quizTitle, resourceId])
 
   // 导航
   const goNext = useCallback(() => {

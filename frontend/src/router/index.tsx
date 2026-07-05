@@ -3,7 +3,6 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import LoadingSpinner from '../components/common/LoadingSpinner'
 
 // 懒加载页面组件
-const ChatView = lazy(() => import('../views/ChatView'))
 const ProfileView = lazy(() => import('../views/ProfileView'))
 const ResourcesView = lazy(() => import('../views/ResourcesView'))
 const MindmapView = lazy(() => import('../views/MindmapView'))
@@ -11,6 +10,8 @@ const PathView = lazy(() => import('../views/PathView'))
 const ErrorBookView = lazy(() => import('../views/ErrorBookView'))
 const CodePlaygroundView = lazy(() => import('../views/CodePlaygroundView'))
 const TeachingAnimationView = lazy(() => import('../views/TeachingAnimationView'))
+const MultimodalView = lazy(() => import('../views/MultimodalView'))
+const SlidesView = lazy(() => import('../views/SlidesView'))
 
 // 加载占位
 const PageLoading: React.FC = () => (
@@ -19,13 +20,12 @@ const PageLoading: React.FC = () => (
   </div>
 )
 
-// 路由配置
+// 路由配置（ChatView 由 App.tsx 直接渲染，不走路由）
 const AppRoutes: React.FC = () => {
   return (
     <Suspense fallback={<PageLoading />}>
       <Routes>
         <Route path="/" element={<Navigate to="/chat" replace />} />
-        <Route path="/chat" element={<ChatView />} />
         <Route path="/profile" element={<ProfileView />} />
         <Route path="/resources" element={<ResourcesView />} />
         <Route path="/mindmap" element={<MindmapView />} />
@@ -33,6 +33,8 @@ const AppRoutes: React.FC = () => {
         <Route path="/error-book" element={<ErrorBookView />} />
         <Route path="/playground" element={<CodePlaygroundView />} />
         <Route path="/animation" element={<TeachingAnimationView />} />
+        <Route path="/multimodal" element={<MultimodalView />} />
+        <Route path="/slides" element={<SlidesView />} />
       </Routes>
     </Suspense>
   )

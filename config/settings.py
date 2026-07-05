@@ -19,15 +19,28 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # --- 大模型凭证（主模型：小米 MiMo，备用：DeepSeek，SPARK_* 仅用于 Embedding 和内容安全）---
+    # --- 大模型凭证（主模型：DeepSeek，备用：智谱 GLM，SPARK_* 仅用于 Embedding 和内容安全）---
     SPARK_APP_ID: str = Field(default="", description="讯飞应用 ID（Embedding/内容安全用）")
     SPARK_API_KEY_RAW: str = Field(default="", description="讯飞 API Key（Embedding/内容安全用）")
     SPARK_API_SECRET: str = Field(default="", description="讯飞 API Secret（Embedding/内容安全用）")
     SPARK_BASE_URL: str = "https://spark-api-open.xf-yun.com/v1"
     SPARK_MODEL: str = "lite"
-    MIMO_API_KEY: str = Field(default="", description="小米 MiMo API Key（主模型）")
-    MIMO_BASE_URL: str = Field(default="https://api.xiaomimimo.com/v1", env="MIMO_BASE_URL")
-    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key（备用模型）")
+    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek API Key（主模型）")
+    DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
+    GLM_API_KEY: str = Field(default="", description="火山引擎方舟 API Key（ark- 前缀，备用模型）")
+    GLM_BASE_URL: str = Field(default="https://ark.cn-beijing.volces.com/api/coding/v3", env="GLM_BASE_URL")
+    GLM_MODEL: str = Field(default="glm-5.2", env="GLM_MODEL", description="火山方舟模型名，适用于已开通的托管模型")
+    GLM_ENDPOINT_ID: str = Field(default="", env="GLM_ENDPOINT_ID", description="火山方舟推理接入点 ID，配置后优先于 GLM_MODEL")
+    # --- 火山引擎语音合成 TTS（视频配音用，与方舟 LLM 鉴权不同，需 app_id + access_token）---
+    TTS_ENABLED: bool = Field(default=False, env="TTS_ENABLED", description="是否启用云端 TTS 配音，关闭则走 Web Speech 降级")
+    TTS_APP_ID: str = Field(default="", env="TTS_APP_ID", description="火山引擎语音合成应用 ID")
+    TTS_ACCESS_TOKEN: str = Field(default="", env="TTS_ACCESS_TOKEN", description="火山引擎语音合成 Access Token")
+    TTS_DEFAULT_VOICE_ID: str = Field(default="zh_female_wanwanxiaohe_moon_bigtts", env="TTS_DEFAULT_VOICE_ID", description="默认音色 ID")
+    # --- 火山方舟视觉理解模型（多模态代码识别用，必须走标准端点 /api/v3，不是 /api/coding/v3）---
+    ARK_VISION_API_KEY: str = Field(default="", description="火山方舟 API Key（ark- 前缀，视觉模型用）")
+    ARK_VISION_BASE_URL: str = Field(default="https://ark.cn-beijing.volces.com/api/v3", env="ARK_VISION_BASE_URL")
+    ARK_VISION_MODEL: str = Field(default="doubao-1.5-vision-pro-32k", env="ARK_VISION_MODEL", description="方舟视觉理解模型名")
+    ARK_VISION_ENDPOINT_ID: str = Field(default="", env="ARK_VISION_ENDPOINT_ID", description="方舟推理接入点 ID（ep-xxx），配置后优先于 ARK_VISION_MODEL")
     DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
     SEEDANCE_BASE_URL: str = Field(default="https://seedance.xf-yun.com/v1/generate", env="SEEDANCE_BASE_URL")
     MODERATION_BASE_URL: str = Field(default="https://spark-api-open.xf-yun.com/v1/moderations", env="MODERATION_BASE_URL")

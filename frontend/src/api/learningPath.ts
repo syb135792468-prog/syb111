@@ -96,7 +96,7 @@ export interface QuizSubmitResult {
 /** 获取用户的学习路径列表 */
 export async function listLearningPaths(status?: string) {
   const params = status ? `?status=${status}` : ''
-  return apiGet<PathListResponse>(`/api/learning-path${params}`, 10000)
+  return apiGet<PathListResponse>(`/api/learning-path/${params}`, 10000)
 }
 
 /** 获取单条路径详情（含节点和资源） */

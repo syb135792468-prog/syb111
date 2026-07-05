@@ -11,7 +11,7 @@ from agents.base_agent import BaseAgent
 from ai.confidence_calibrator import confidence_calibrator
 from config.model_config import PYTHON_KNOWLEDGE_POINTS
 from config.constants import PROFILE_LLM_CONFIDENCE_THRESHOLD, CONFIDENCE_FALLBACK_THRESHOLD
-from utils.agent_helpers import match_knowledge_point
+from utils.agent_helpers import match_knowledge_point, MASTERY_EVIDENCE_THRESHOLD, WEAK_EVIDENCE_THRESHOLD
 
 VALID_INTENTS = {
     "start_learning", "ask_question", "do_quiz",
@@ -54,6 +54,7 @@ class UnifiedRouterAgent(BaseAgent):
 
         old_profile = (context or {}).get("profile_data", {})
         chat_history = (context or {}).get("chat_history", [])
+        progress_scores = (context or {}).get("progress_scores", {})
 
         # 构建带对话历史的用户消息
         user_message = self._build_user_message(user_input, chat_history)
@@ -100,7 +101,7 @@ class UnifiedRouterAgent(BaseAgent):
             profile_update = parsed.get("profile_update", {})
             confidence = parsed.get("confidence", 0.0)
             validated_profile = self._validate_profile_update(
-                profile_update, confidence, old_profile
+                profile_update, confidence, old_profile, progress_scores
             )
 
             self.logger.info(
@@ -136,6 +137,7 @@ class UnifiedRouterAgent(BaseAgent):
         raw: Dict[str, Any],
         confidence: float,
         old_profile: Dict[str, Any],
+        progress_scores: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         if not raw or not isinstance(raw, dict):
             return {}
@@ -157,7 +159,11 @@ class UnifiedRouterAgent(BaseAgent):
         if "current_topic" in raw and isinstance(raw["current_topic"], str):
             validated["current_topic"] = raw["current_topic"]
 
-        # 知识点列表校验 + 归一化
+        # 知识点列表校验 + 归一化 + 证据过滤 + 合并
+        old_weak = set(old_profile.get("weak_points", []))
+        old_mastered = set(old_profile.get("mastered_points", []))
+        all_known = old_weak | old_mastered
+
         for field in ("weak_points", "mastered_points"):
             if field not in raw or not isinstance(raw[field], list):
                 continue
@@ -171,13 +177,59 @@ class UnifiedRouterAgent(BaseAgent):
                     normalized.append(std)
                     seen.add(std)
             if normalized:
-                old_list = old_profile.get(field, [])
-                validated[field] = list(dict.fromkeys(old_list + normalized))
+                # 证据过滤：先过滤 LLM 新增项，阻止无依据的重分类
+                if progress_scores:
+                    opposite = old_mastered if field == "weak_points" else old_weak
+                    threshold = WEAK_EVIDENCE_THRESHOLD if field == "weak_points" else MASTERY_EVIDENCE_THRESHOLD
+                    filtered = []
+                    for p in normalized:
+                        if p in opposite:
+                            score = progress_scores.get(p, None)
+                            if score is not None:
+                                if field == "weak_points" and score < threshold:
+                                    filtered.append(p)
+                                elif field == "mastered_points" and score >= threshold:
+                                    filtered.append(p)
+                                else:
+                                    self.logger.info(
+                                        f"🚫 拦截重分类 | kp={p} "
+                                        f"{opposite}→{field} score={score} threshold={threshold}"
+                                    )
+                            else:
+                                self.logger.info(
+                                    f"🚫 拦截无数据重分类 | kp={p} {opposite}→{field}"
+                                )
+                        elif p not in all_known:
+                            if field == "mastered_points":
+                                score = progress_scores.get(p, None)
+                                if score is not None and score >= MASTERY_EVIDENCE_THRESHOLD:
+                                    filtered.append(p)
+                                else:
+                                    self.logger.info(
+                                        f"🚫 拦截无证据新知识点入掌握 | kp={p} score={score}"
+                                    )
+                            else:
+                                filtered.append(p)
+                        else:
+                            filtered.append(p)
+                    normalized = filtered
+                else:
+                    if old_mastered or old_weak:
+                        filtered = []
+                        for p in normalized:
+                            if p in all_known or field == "weak_points":
+                                filtered.append(p)
+                            else:
+                                self.logger.info(
+                                    f"🚫 拦截无证据新知识点入掌握(无progress) | kp={p}"
+                                )
+                        normalized = filtered
 
-        # 知识点冲突处理
-        old_weak = set(old_profile.get("weak_points", []))
-        old_mastered = set(old_profile.get("mastered_points", []))
+                if normalized:
+                    old_list = old_profile.get(field, [])
+                    validated[field] = list(dict.fromkeys(old_list + normalized))
 
+        # 知识点冲突处理：掌握的自动从薄弱中移除，反之亦然
         if "mastered_points" in validated:
             new_mastered = set(validated["mastered_points"])
             remaining_weak = (old_weak | set(validated.get("weak_points", []))) - new_mastered

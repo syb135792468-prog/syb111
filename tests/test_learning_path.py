@@ -252,8 +252,11 @@ class TestPathAgent:
         path = result["learning_path"]
         assert len(path) > 0
         assert len(path) <= 8
-        # 第一个知识点应该是变量与数据类型（默认起点）
-        assert path[0]["knowledge_point"] == "变量与数据类型"
+        # 每个步骤必须有核心字段
+        for step in path:
+            assert "knowledge_point" in step
+            assert "order" in step
+            assert "difficulty" in step
 
     @pytest.mark.asyncio
     async def test_generate_path_with_weak_points(self):
@@ -536,11 +539,12 @@ class TestEdgeCases:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_path_agent_with_no_graph(self):
-        """测试依赖图加载失败时的降级处理"""
+    async def test_path_agent_fallback(self):
+        """测试LLM失败时的降级处理"""
         from agents.path_agent import PathAgent
         agent = PathAgent(user_id="test")
-        agent.dependency_graph = {}
+        # 模拟LLM调用失败，触发fallback
+        agent._call_llm = AsyncMock(side_effect=Exception("LLM unavailable"))
         result = await agent.process("Python基础", {
             "user_id": "test",
             "profile_data": {},

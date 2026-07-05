@@ -13,8 +13,10 @@ from typing import AsyncGenerator, Optional, Any, Tuple
 import asyncio
 import uuid
 import contextvars
+from datetime import datetime, UTC
 
 from langgraph.types import Command
+from pydantic import BaseModel, Field
 
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +31,9 @@ from api.schemas import (
     ContentBlockDeltaData,
     ContentBlockStopData,
 )
+from pathlib import Path
+from utils.ocr import get_cached_ocr, extract_text_sync
+import json as _json
 from utils.content_blocks import (
     parse_response_to_blocks,
     build_resource_map,
@@ -41,13 +46,15 @@ from models.chat_message import ChatMessage
 from models.conversation import Conversation
 from models.database import get_db
 from models.resource import Resource
+from models.explanation import Explanation
 from graph.workflow import build_workflow, build_deep_thinking_workflow
 from utils.logger import get_logger
 from config.settings import settings
 from config.constants import (
     DEFAULT_RECURSION_LIMIT, TYPING_CHUNK_SIZE, TYPING_DELAY_MS,
-    SYNC_CHAT_TIMEOUT_SEC, HTTP_OK, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT,
+    SYNC_CHAT_TIMEOUT_SEC, HTTP_OK, HTTP_NOT_FOUND, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT,
     CHAT_HISTORY_LOAD_LIMIT, CONVERSATION_TITLE_MAX_LENGTH, DEFAULT_CONVERSATION_TITLE, DEFAULT_CURRENT_STEP,
+    TUTOR_HISTORY_WINDOW,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_REQUEST_TIMEOUT,
@@ -58,6 +65,35 @@ request_id_var = contextvars.ContextVar("request_id", default="unknown")
 
 router = APIRouter(prefix="/chat", tags=["智能辅导"])
 logger = get_logger(__name__, task_id="chat_api")
+
+
+def _resolve_image_path(url: str) -> Optional[Path]:
+    """将图片URL转为本地文件路径"""
+    if not url.startswith("/static/uploads/images/"):
+        return None
+    path = Path(__file__).parent.parent.parent / url.lstrip("/")
+    return path if path.exists() else None
+
+
+def _build_augmented_message(message: str, images: Optional[list] = None) -> str:
+    """将图片OCR文本注入用户消息"""
+    if not images:
+        return message
+    ocr_texts = []
+    for url in images:
+        cached = get_cached_ocr(url)
+        if cached:
+            ocr_texts.append(cached)
+            continue
+        local_path = _resolve_image_path(url)
+        if local_path:
+            text = extract_text_sync(str(local_path))
+            if text.strip():
+                ocr_texts.append(text)
+    if not ocr_texts:
+        return message
+    ocr_section = "\n".join(ocr_texts)
+    return f"{message}\n\n[用户上传了图片，OCR识别内容如下：\n{ocr_section}]"
 
 # ---------- 工作流单例 ----------
 _workflow: Optional[Any] = None
@@ -103,6 +139,7 @@ def build_initial_state(
     req: ChatRequest,
     profile_data: Optional[dict] = None,
     recent_history: Optional[list] = None,
+    progress_scores: Optional[dict] = None,
 ) -> dict:
     """构建工作流初始状态，与 graph/state.py 完全对齐"""
     # 构建对话历史：历史消息 + 当前用户消息
@@ -112,6 +149,7 @@ def build_initial_state(
         "user_id": req.user_id,
         "chat_history": chat_history,
         "profile_data": profile_data or {},
+        "progress_scores": progress_scores or {},
         "learning_path": [],
         "resource_list": [],
         "current_step": DEFAULT_CURRENT_STEP,
@@ -137,19 +175,24 @@ async def load_user_context(user_id: int, conversation_id: Optional[int], db: As
 
     profile_data = {}
     if profile:
+        # 基础画像信息：始终传递，帮助AI了解用户水平和偏好
         profile_data = {
+            "gender": profile.gender,
+            "age": profile.age,
             "knowledge_level": profile.knowledge_level,
             "learning_style": profile.learning_style,
             "learning_goal": profile.learning_goal,
             "duration_preference": profile.duration_preference,
-            "weak_points": profile.weak_points or [],
-            "mastered_points": profile.mastered_points or [],
             "motivation_level": profile.motivation_level,
-            "current_topic": profile.current_topic,
-            "last_study_at": profile.last_study_at.isoformat() if profile.last_study_at else None,
         }
+        # 动态学习数据：仅在同一对话内传递，避免新对话被旧主题污染
+        if conversation_id:
+            profile_data["weak_points"] = profile.weak_points or []
+            profile_data["mastered_points"] = profile.mastered_points or []
+            profile_data["current_topic"] = profile.current_topic
+            profile_data["last_study_at"] = profile.last_study_at.isoformat() if profile.last_study_at else None
 
-    # 2. 加载最近对话历史（最多20条，用于上下文连贯）
+    # 2. 加载当前对话的历史（不跨对话，只共享用户画像）
     recent_history = []
     logger.info(f"🔍 Loading context: user_id={user_id}, conversation_id={conversation_id}")
     if conversation_id:
@@ -159,24 +202,32 @@ async def load_user_context(user_id: int, conversation_id: Optional[int], db: As
             .order_by(ChatMessage.created_at.desc())
             .limit(CHAT_HISTORY_LOAD_LIMIT)
         )
-    else:
-        history_query = (
-            select(ChatMessage)
-            .where(ChatMessage.user_id == user_id)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(CHAT_HISTORY_LOAD_LIMIT)
-        )
+        history_result = await db.execute(history_query)
+        history_msgs = history_result.scalars().all()
 
-    history_result = await db.execute(history_query)
-    history_msgs = history_result.scalars().all()
-
-    # 反转为时间正序，转为工作流格式
-    for msg in reversed(history_msgs):
-        recent_history.append({"role": msg.role, "content": msg.content})
+        # 反转为时间正序，转为工作流格式
+        for msg in reversed(history_msgs):
+            recent_history.append({"role": msg.role, "content": msg.content})
 
     logger.info(f"📚 加载了 {len(recent_history)} 条历史消息")
 
     return profile_data, recent_history
+
+
+async def _fetch_progress_scores(db: AsyncSession, user_id: int) -> dict:
+    """获取用户各知识点的最新 score，用于画像分类的证据判断"""
+    try:
+        from models.progress import LearningProgress
+        result = await db.execute(
+            select(LearningProgress.topic, LearningProgress.score).where(
+                LearningProgress.user_id == user_id,
+                LearningProgress.is_active == True,
+                LearningProgress.score.isnot(None),
+            )
+        )
+        return {row[0]: row[1] for row in result.all()}
+    except Exception:
+        return {}
 
 
 async def _persist_profile(db: AsyncSession, user_id: int, profile_data: dict, request_id: str = "unknown"):
@@ -194,7 +245,7 @@ async def _persist_profile(db: AsyncSession, user_id: int, profile_data: dict, r
         )
         profile = result.scalar_one_or_none()
         if profile:
-            for key in ("knowledge_level", "learning_goal", "learning_style",
+            for key in ("gender", "age", "knowledge_level", "learning_goal", "learning_style",
                         "duration_preference", "weak_points", "mastered_points",
                         "motivation_level", "current_topic"):
                 if key in profile_data and profile_data[key] is not None:
@@ -355,11 +406,13 @@ async def _fast_chat_handler(
 
     agents = get_or_create_agents()
     message = request.message
+    augmented_msg = _build_augmented_message(message, request.images)
     topic = message.strip()
     t0 = _time.monotonic()
-    print(f"⚡ [FAST-PERF] 快速模式开始: {message[:30]}...", flush=True)
+    logger.info(f"[FAST-PERF] 快速模式开始: {message[:30]}...", extra={"request_id": request_id})
 
     # ========== 阶段1：仅 RAG 检索（跳过 Router，节省 7-8s） ==========
+    yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='📚 正在检索相关知识...', current_step='tutor').model_dump_json()}\n\n"
     rag_context = ""
     try:
         tutor_agent = agents["tutor"]
@@ -371,7 +424,7 @@ async def _fast_chat_handler(
         logger.warning(f"⚠️ 快速模式RAG检索失败: {e}", extra={"request_id": request_id})
 
     t1 = _time.monotonic()
-    print(f"⚡ [FAST-PERF] RAG完成: {(t1-t0)*1000:.0f}ms, {'有结果' if rag_context else '无结果'}", flush=True)
+    logger.info(f"[FAST-PERF] RAG完成: {(t1-t0)*1000:.0f}ms, {'有结果' if rag_context else '无结果'}", extra={"request_id": request_id})
 
     # 共享引用：后台分析结果（intent/resource_type/topic），供资源生成使用
     bg_result_ref: Dict[str, Any] = {"intent": None, "resource_type": None, "topic": None, "done": False}
@@ -383,9 +436,17 @@ async def _fast_chat_handler(
         """后台异步调用 UnifiedRouterAgent 分析用户输入，更新画像"""
         from models.database import AsyncSessionLocal
         try:
+            # 查询知识点进度分数，用于画像分类的证据判断
+            progress_scores = {}
+            try:
+                async with AsyncSessionLocal() as score_db:
+                    progress_scores = await _fetch_progress_scores(score_db, int(user_id))
+            except Exception:
+                pass
+
             router_result = await agents["unified_router"].process(
                 message,
-                {"profile_data": profile_data, "chat_history": recent_history},
+                {"profile_data": profile_data, "chat_history": recent_history, "progress_scores": progress_scores},
             )
             profile_update = router_result.get("_profile_update", {}) or {}
             raw_output = router_result.get("_profile_raw_output", {}) or {}
@@ -426,8 +487,11 @@ async def _fast_chat_handler(
             level_map = {"beginner": "零基础初学者", "intermediate": "有一定基础", "advanced": "进阶学习者"}
             goal_map = {"exam": "考试备考", "interest": "兴趣学习", "employment": "就业求职", "competition": "竞赛提升"}
             style_map = {"visual": "视觉型（喜欢看图/视频）", "auditory": "听觉型（喜欢听讲解）", "kinesthetic": "动手型（喜欢练习）", "mixed": "混合型"}
+            gender_map = {"male": "男", "female": "女", "other": "其他"}
             profile_text = f"""
 【用户画像】
+- 性别：{gender_map.get(profile.get('gender', ''), '未知')}
+- 年龄：{profile.get('age', '未知')}
 - 水平：{level_map.get(profile.get('knowledge_level', ''), '未知')}
 - 目标：{goal_map.get(profile.get('learning_goal', ''), '未知')}
 - 风格：{style_map.get(profile.get('learning_style', ''), '未知')}
@@ -436,14 +500,11 @@ async def _fast_chat_handler(
 """
 
         # 构建对话历史文本
-        chat_history = recent_history + [{"role": "user", "content": message}]
+        chat_history = recent_history + [{"role": "user", "content": augmented_msg}]
         recent = chat_history[-TUTOR_HISTORY_WINDOW:]
         history_text = "\n".join(
             f"{'学生' if m['role'] == 'user' else '老师'}: {m['content']}" for m in recent
         )
-
-        # 精简 Prompt（快速模式专用，减少首token延迟）
-        rag_section = f"\n参考知识：{rag_context}" if rag_context else ""
 
         # A/B 实验：教学模式变体影响 prompt
         _teaching_variant = None
@@ -465,14 +526,29 @@ async def _fast_chat_handler(
                 f"你是Python一对一辅导老师，采用苏格拉底式教学法。"
                 f"不要直接给出答案，而是通过提问引导学生思考，帮助他们自己发现答案。"
                 f"如果学生答错了，给出提示而非正确答案，让学生继续尝试。"
-                f"用通俗易懂的中文交流。{rag_section}"
+                f"用通俗易懂的中文交流。"
+                f"\n【对话历史】你必须从对话历史中了解用户的个人信息，记住用户之前告诉过你的任何信息。"
+                f"不要编造或猜测用户信息，只基于对话历史中实际存在的内容。"
+                f"\n{profile_text}"
+                f"\n【对话历史】\n{history_text}"
+                f"\n{f'参考知识：{rag_context}' if rag_context else ''}"
             )
         else:
-            system_prompt = f"你是Python一对一辅导老师。用通俗易懂的中文回答，可附带简单示例。{rag_section}"
-        user_prompt = message
+            # 使用 tutoring_system 模板（与标准模式一致，保证历史指令完整）
+            from pathlib import Path as _Path
+            _prompts_dir = _Path(__file__).resolve().parent.parent.parent / "config" / "prompts"
+            _template = (_prompts_dir / "tutoring_system.txt").read_text(encoding="utf-8").strip()
+            system_prompt = _template.format(
+                profile_text=profile_text,
+                history_text=history_text,
+                rag_context=rag_context or "",
+            )
+        user_prompt = augmented_msg
 
         t2 = _time.monotonic()
-        print(f"⚡ [FAST-PERF] Prompt构建完成: {(t2-t1)*1000:.0f}ms", flush=True)
+        logger.info(f"[FAST-PERF] Prompt构建完成: {(t2-t1)*1000:.0f}ms", extra={"request_id": request_id})
+
+        yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='🤖 正在生成回答...', current_step='tutor').model_dump_json()}\n\n"
 
         # 流式调用 LLM
         tutor = agents["tutor"]
@@ -486,28 +562,44 @@ async def _fast_chat_handler(
         chunk_count = 0
         first_token_emitted = False
 
-        # 快速模式直接用 DeepSeek（首token 1.4s vs MiMo 5.2s）
-        from config.model_config import DEEPSEEK_MODEL_CONFIG
+        # 快速模式直接调用 LLM（首token 1.4s）
+        from config.model_config import PRIMARY_MODEL_CONFIG
         from openai import AsyncOpenAI
-        ds_client = AsyncOpenAI(
+        deepseek_client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_MODEL_CONFIG.base_url,
+            base_url=PRIMARY_MODEL_CONFIG.base_url,
             timeout=30,
         )
 
-        stream = await ds_client.chat.completions.create(
-            model=DEEPSEEK_MODEL_CONFIG.model_name,
+        stream = await deepseek_client.chat.completions.create(
+            model=PRIMARY_MODEL_CONFIG.model_name,
             messages=messages,
             temperature=0.7,
             max_tokens=2048,
             stream=True,
         )
-        async for chunk in stream:
+
+        # SSE keepalive：用超时包装 chunk 读取，长时间无数据时发送注释保活
+        _stream_iter = stream.__aiter__()
+        _last_activity = _time.monotonic()
+        _KEEPALIVE_SEC = 15  # 15秒无数据则发送 keepalive
+
+        while True:
+            try:
+                chunk = await asyncio.wait_for(_stream_iter.__anext__(), timeout=_KEEPALIVE_SEC)
+                _last_activity = _time.monotonic()
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                # 发送 SSE 注释作为 keepalive（浏览器会忽略以 : 开头的行）
+                yield f": keepalive {_time.monotonic() - _last_activity:.0f}s\n\n"
+                continue
+
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
                 if first_token_time is None:
                     first_token_time = _time.monotonic()
-                    print(f"⚡ [FAST-PERF] 首token延迟: {(first_token_time-t0)*1000:.0f}ms (LLM: {(first_token_time-t2)*1000:.0f}ms)", flush=True)
+                    logger.info(f"[FAST-PERF] 首token延迟: {(first_token_time-t0)*1000:.0f}ms (LLM: {(first_token_time-t2)*1000:.0f}ms)", extra={"request_id": request_id})
                 # 首个 token：发射 content_block_start
                 if not first_token_emitted:
                     first_token_emitted = True
@@ -531,9 +623,9 @@ async def _fast_chat_handler(
             yield f"event: content_block_stop\ndata: {stop_event.model_dump_json()}\n\n"
 
         t3 = _time.monotonic()
-        print(f"⚡ [FAST-PERF] 完成: 总{(t3-t0)*1000:.0f}ms, {chunk_count}个chunk, 长度{len(collected_reply_ref[0])}", flush=True)
+        logger.info(f"[FAST-PERF] 完成: 总{(t3-t0)*1000:.0f}ms, {chunk_count}个chunk, 长度{len(collected_reply_ref[0])}", extra={"request_id": request_id})
 
-        # ========== 阶段3：资源生成（若后台分析检测到 generate_resource 意图） ==========
+        # ========== 阶段3：资源生成（后台任务，不阻塞聊天） ==========
         try:
             await asyncio.wait_for(bg_task, timeout=10)
         except asyncio.TimeoutError:
@@ -542,49 +634,28 @@ async def _fast_chat_handler(
         if bg_result_ref.get("intent") == "generate_resource" and bg_result_ref.get("resource_type"):
             res_type = bg_result_ref["resource_type"]
             res_topic = bg_result_ref.get("topic", topic)
-            logger.info(f"🎯 [FAST-RESOURCE] 检测到资源生成意图: {res_type} - {res_topic}", extra={"request_id": request_id})
-            try:
-                agent = agents.get(res_type)
-                if agent:
-                    result = await agent.process(
-                        res_topic,
-                        {"user_id": user_id, "profile_data": profile_data, "chat_history": recent_history},
-                    )
-                    res_list = result.get("resource_list", [])
-                    if res_list:
-                        from models.database import AsyncSessionLocal
-                        async with AsyncSessionLocal() as res_db:
-                            for resource in res_list:
-                                res_dict = resource.model_dump() if hasattr(resource, "model_dump") else resource
-                                persist_result = await _persist_and_build_resource_event(res_dict, int(user_id), res_db)
-                                if persist_result:
-                                    sse_str, card_type, db_id = persist_result
-                                    # 发射旧格式事件（向后兼容）
-                                    yield sse_str
-                                    # 发射 content_block 事件
-                                    card_block_id = str(uuid.uuid4())
-                                    card_block = {
-                                        "type": "card",
-                                        "card_type": card_type,
-                                        "card_id": db_id,
-                                        "title": res_dict.get("title", "学习资源"),
-                                        "data": res_dict.get("content"),
-                                    }
-                                    content_blocks_ref.append(card_block)
-                                    cb_start = ContentBlockStartData(
-                                        block_type="card", block_id=card_block_id,
-                                        card_type=card_type, card_id=db_id,
-                                        title=res_dict.get("title", "学习资源"),
-                                    )
-                                    yield f"event: content_block_start\ndata: {StreamEvent(event='content_block_start', data=cb_start.model_dump(), current_step='tutor').model_dump_json()}\n\n"
-                                    import json as _json
-                                    cb_delta = ContentBlockDeltaData(block_id=card_block_id, delta=_json.dumps(card_block, ensure_ascii=False))
-                                    yield f"event: content_block_data\ndata: {StreamEvent(event='content_block_data', data=cb_delta.model_dump(), current_step='tutor').model_dump_json()}\n\n"
-                                    cb_stop = ContentBlockStopData(block_id=card_block_id)
-                                    yield f"event: content_block_stop\ndata: {StreamEvent(event='content_block_stop', data=cb_stop.model_dump(), current_step='tutor').model_dump_json()}\n\n"
-                            await res_db.commit()
-            except Exception as res_err:
-                logger.warning(f"⚠️ [FAST-RESOURCE] 资源生成失败（不阻塞主流程）: {res_err}", extra={"request_id": request_id})
+            logger.info(f"🎯 [FAST-RESOURCE] 检测到资源生成意图: {res_type} - {res_topic}，启动后台任务", extra={"request_id": request_id})
+
+            _ensure_cleanup_task()
+            task_id = str(uuid.uuid4())
+            # 立即注册 task_id 为 pending，防止轮询端点返回误导性状态
+            _task_results[task_id] = {"status": "pending", "created_at": _time.monotonic()}
+            asyncio.create_task(_run_background_resource_task(
+                task_id=task_id,
+                res_type=res_type,
+                res_topic=res_topic,
+                user_id=user_id,
+                profile_data=profile_data,
+                recent_history=recent_history,
+            ))
+
+            # 立即返回 task_started 事件，调用方会在 _fast_chat_handler 返回后发送 end 事件
+            task_event = StreamEvent(
+                event="task_started",
+                data={"task_id": task_id, "resource_type": res_type, "topic": res_topic},
+                current_step="task",
+            )
+            yield f"event: task_started\ndata: {task_event.model_dump_json()}\n\n"
 
     except Exception as e:
         logger.error(f"❌ 快速模式Tutor LLM失败: {e}", exc_info=True, extra={"request_id": request_id})
@@ -592,7 +663,7 @@ async def _fast_chat_handler(
         try:
             tutor = agents["tutor"]
             answer = await tutor._llm_answer(message, rag_context, {
-                "chat_history": recent_history + [{"role": "user", "content": message}],
+                "chat_history": recent_history + [{"role": "user", "content": augmented_msg}],
                 "profile_data": profile_data,
             })
             if answer:
@@ -641,6 +712,102 @@ def filter_node_output(node: str, output: dict) -> dict:
     return {k: v for k, v in output.items() if k in ("current_step", "error_message")}
 
 
+# ============================================================
+# 后台任务队列（资源生成不阻塞聊天）
+# ============================================================
+_task_results: dict = {}  # task_id -> {"status": "pending"|"completed"|"failed", "data": ..., "error": ..., "created_at": float}
+_TASK_RESULT_TTL_SEC = 600  # 10 分钟后自动清理
+
+
+async def _cleanup_stale_tasks():
+    """定时清理过期的已完成/失败任务，防止内存泄漏。"""
+    import time as _time
+    while True:
+        await asyncio.sleep(60)
+        now = _time.monotonic()
+        stale_ids = [
+            tid for tid, info in _task_results.items()
+            if info.get("status") != "pending" and now - info.get("created_at", now) > _TASK_RESULT_TTL_SEC
+        ]
+        for tid in stale_ids:
+            _task_results.pop(tid, None)
+        if stale_ids:
+            logger.info(f"🧹 [BG-TASK] 清理 {len(stale_ids)} 个过期任务")
+
+# 启动清理任务（在 chat 模块加载时启动，生命周期跟随进程）
+_cleanup_task_ref: asyncio.Task | None = None
+
+
+def _ensure_cleanup_task():
+    global _cleanup_task_ref
+    if _cleanup_task_ref is None or _cleanup_task_ref.done():
+        try:
+            _cleanup_task_ref = asyncio.create_task(_cleanup_stale_tasks())
+        except RuntimeError:
+            pass  # 没有运行中的事件循环（如测试环境）
+
+
+async def _run_background_resource_task(
+    task_id: str,
+    res_type: str,
+    res_topic: str,
+    user_id: str,
+    profile_data: dict,
+    recent_history: list,
+) -> None:
+    """后台执行资源生成，完成后将结果存入 _task_results。"""
+    from graph.workflow import get_or_create_agents
+    from models.database import AsyncSessionLocal
+    import time as _time
+
+    agents = get_or_create_agents()
+    agent = agents.get(res_type)
+    if not agent:
+        _task_results[task_id] = {"status": "failed", "error": f"未知资源类型: {res_type}", "created_at": _time.monotonic()}
+        return
+
+    t0 = _time.monotonic()
+    try:
+        from config.constants import RESOURCE_GENERATE_TIMEOUT_SEC
+        result = await asyncio.wait_for(
+            agent.process(
+                res_topic,
+                {"user_id": user_id, "profile_data": profile_data, "chat_history": recent_history},
+            ),
+            timeout=RESOURCE_GENERATE_TIMEOUT_SEC,
+        )
+        res_list = result.get("resource_list", [])
+        if not res_list:
+            _task_results[task_id] = {"status": "failed", "error": "资源生成结果为空", "created_at": _time.monotonic()}
+            return
+
+        persisted_items = []
+        async with AsyncSessionLocal() as res_db:
+            for resource in res_list:
+                res_dict = resource.model_dump() if hasattr(resource, "model_dump") else resource
+                persist_result = await _persist_and_build_resource_event(res_dict, int(user_id), res_db)
+                if persist_result:
+                    _sse_str, card_type, db_id = persist_result
+                    persisted_items.append({
+                        "card_type": card_type,
+                        "db_id": db_id,
+                        "title": res_dict.get("title", ""),
+                        "content": res_dict.get("content", ""),
+                    })
+            await res_db.commit()
+
+        elapsed = (_time.monotonic() - t0) * 1000
+        logger.info(f"✅ [BG-TASK] {res_type} 生成完成: {elapsed:.0f}ms, task_id={task_id[:8]}")
+        _task_results[task_id] = {"status": "completed", "data": persisted_items, "created_at": _time.monotonic()}
+
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ [BG-TASK] {res_type} 生成超时, task_id={task_id[:8]}")
+        _task_results[task_id] = {"status": "failed", "error": "资源生成超时，请重试", "created_at": _time.monotonic()}
+    except Exception as e:
+        logger.error(f"❌ [BG-TASK] {res_type} 生成失败: {e}, task_id={task_id[:8]}", exc_info=True)
+        _task_results[task_id] = {"status": "failed", "error": str(e), "created_at": _time.monotonic()}
+
+
 async def _persist_and_build_resource_event(
     resource: dict,
     user_id: int,
@@ -651,7 +818,7 @@ async def _persist_and_build_resource_event(
     from config.constants import RESOURCE_PROGRESS_COMPLETE
 
     res_type = resource.get("resource_type", "resource")
-    if res_type not in ("doc", "code", "quiz", "mindmap", "video"):
+    if res_type not in ("doc", "code", "quiz", "mindmap", "video", "reading"):
         return None
 
     content = resource.get("content", "")
@@ -670,6 +837,7 @@ async def _persist_and_build_resource_event(
         status="completed",
         progress_percent=RESOURCE_PROGRESS_COMPLETE,
         extra_metadata=meta,
+        in_library=False,
     )
     db.add(db_resource)
     await db.flush()
@@ -719,10 +887,9 @@ async def chat_stream(
         conversation_id = conv.id
         logger.info(f"自动创建对话: conv_id={conversation_id}, title={title!r}")
 
-    # 加载用户画像和对话历史（跨会话记忆）
-    # 始终加载所有对话的历史，实现真正的跨会话记忆
+    # 加载用户画像和当前对话历史（不跨对话，只共享用户画像）
     profile_data, recent_history = await load_user_context(
-        current_user.id, None, db  # None = 加载所有对话的历史
+        current_user.id, conversation_id, db
     )
 
     # 保存用户消息到数据库
@@ -731,6 +898,7 @@ async def chat_stream(
         conversation_id=conversation_id,
         role="user",
         content=request.message,
+        image_urls_json=_json.dumps(request.images, ensure_ascii=False) if request.images else None,
     )
     db.add(user_msg)
     await db.commit()
@@ -744,6 +912,10 @@ async def chat_stream(
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             logger.info(f"🚀 开始快速模式流式对话 | {user_id}", extra={"request_id": request_id})
+
+            # 提前发送 conversation_id，防止 abort/断网导致前端丢失
+            start_event = StreamEvent(event="thinking", data={"text": "⚡ 快速模式启动...", "conversation_id": _conversation_id}, current_step="tutor")
+            yield f"event: thinking\ndata: {start_event.model_dump_json()}\n\n"
 
             async for event_str in _fast_chat_handler(
                 request, user_id, profile_data, recent_history, collected_reply, content_blocks_ref, request_id
@@ -820,18 +992,21 @@ async def deep_chat_stream(
         await db.flush()
         conversation_id = conv.id
 
-    # 加载用户画像
-    profile_data, recent_history = await load_user_context(current_user.id, None, db)
+    # 加载用户画像和当前对话历史
+    profile_data, recent_history = await load_user_context(current_user.id, conversation_id, db)
 
     # 使用 UnifiedRouterAgent 提取 topic 和画像更新
     topic = ""
     profile_update = {}
+    progress_scores = {}
+    augmented_msg = _build_augmented_message(request.message, request.images)
     try:
         from graph.workflow import get_or_create_agents
         agents = get_or_create_agents()
+        progress_scores = await _fetch_progress_scores(db, current_user.id)
         router_result = await agents["unified_router"].process(
             request.message,
-            {"profile_data": profile_data, "chat_history": recent_history + [{"role": "user", "content": request.message}]},
+            {"profile_data": profile_data, "chat_history": recent_history + [{"role": "user", "content": augmented_msg}], "progress_scores": progress_scores},
         )
         topic = router_result.get("topic", "") or ""
         profile_update = router_result.get("_profile_update", {}) or {}
@@ -850,6 +1025,7 @@ async def deep_chat_stream(
         conversation_id=conversation_id,
         role="user",
         content=request.message,
+        image_urls_json=_json.dumps(request.images, ensure_ascii=False) if request.images else None,
     )
     db.add(user_msg)
     await db.commit()
@@ -863,24 +1039,29 @@ async def deep_chat_stream(
         try:
             deep_workflow = await get_deep_workflow()
 
-            # 初始思考事件
-            thinking_event = StreamEvent(event="thinking", data="🧠 正在分析你的学习需求...", current_step="thinking")
+            # 初始思考事件（附带 conversation_id，防止 abort/断网丢失）
+            thinking_event = StreamEvent(event="thinking", data={"text": "🧠 正在分析你的学习需求...", "conversation_id": _conversation_id}, current_step="thinking")
             yield f"event: thinking\ndata: {thinking_event.model_dump_json()}\n\n"
 
             # 共享思维队列（Agent 节点 → 此处 SSE 输出）
             import asyncio as _aio
             thinking_queue: _aio.Queue = _aio.Queue()
 
+            # 构建完整对话历史（历史 + 当前消息）
+            deep_chat_history = recent_history + [{"role": "user", "content": augmented_msg}]
+
             initial_state = {
                 "user_id": user_id,
-                "message": request.message,
+                "message": augmented_msg,
+                "chat_history": deep_chat_history[-TUTOR_HISTORY_WINDOW:],
                 "profile_data": profile_data,
+                "progress_scores": progress_scores,
                 "topic": topic,
                 "thinking_queue": thinking_queue,
             }
 
             # 用于在 workflow 和 queue 消费者之间共享最终结果
-            final_result = {"response": None, "resource_list": [], "done": False}
+            final_result = {"response": None, "resource_list": [], "learning_path": [], "done": False}
 
             async def run_workflow():
                 """后台运行 LangGraph 工作流"""
@@ -894,6 +1075,7 @@ async def deep_chat_stream(
                         if node_name == "deep_aggregator":
                             final_result["response"] = node_output.get("final_response", "")
                             final_result["resource_list"] = node_output.get("resource_list", [])
+                            final_result["learning_path"] = node_output.get("learning_path", [])
                 final_result["done"] = True
 
             async def consume_thinking_queue():
@@ -1003,6 +1185,32 @@ async def deep_chat_stream(
                     stop_event = StreamEvent(event="content_block_stop", data=stop_data.model_dump(), current_step="aggregator")
                     yield f"event: content_block_stop\ndata: {stop_event.model_dump_json()}\n\n"
 
+            # 保存学习路径到数据库并发射 SSE 事件
+            learning_path_steps = final_result.get("learning_path", [])
+            if learning_path_steps:
+                try:
+                    from api.routes.learning_path import _save_path_to_db
+                    from models.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as path_db:
+                        saved_path = await _save_path_to_db(
+                            session=path_db,
+                            user_id=_user_id,
+                            title=f"{topic}学习路径" if topic else "Python学习路径",
+                            topic=topic or "Python基础",
+                            goal=f"掌握{topic}核心知识" if topic else "掌握Python核心知识",
+                            path_steps=learning_path_steps,
+                        )
+                        await path_db.commit()
+                        # 刷新关联的 nodes
+                        await path_db.refresh(saved_path, attribute_names=["nodes"])
+                        path_dict = saved_path.to_dict()
+                        logger.info(f"✅ 学习路径已保存到数据库 | path_id={saved_path.id}", extra={"request_id": request_id})
+                        # 发射 path SSE 事件
+                        path_event = StreamEvent(event="path", data=path_dict, current_step="path")
+                        yield f"event: path\ndata: {path_event.model_dump_json()}\n\n"
+                except Exception as path_err:
+                    logger.warning(f"⚠️ 学习路径保存失败: {path_err}", extra={"request_id": request_id})
+
             end_event = StreamEvent(event="end", data={"request_id": request_id, "conversation_id": _conversation_id, "content_blocks": content_blocks if final_response else []}, current_step="completed")
             yield f"event: end\ndata: {end_event.model_dump_json()}\n\n"
             logger.info(f"✅ 深度思考模式完成", extra={"request_id": request_id})
@@ -1091,12 +1299,13 @@ async def socratic_chat_stream(
         conversation_id=conversation_id,
         role="user",
         content=request.message,
+        image_urls_json=_json.dumps(request.images, ensure_ascii=False) if request.images else None,
     )
     db.add(user_msg)
     await db.commit()
 
-    # 加载用户画像
-    profile_data, _ = await load_user_context(current_user.id, None, db)
+    # 加载用户画像和对话历史
+    profile_data, recent_history = await load_user_context(current_user.id, conversation_id, db)
 
     # 构建 thread_id（用于 LangGraph checkpoint）
     thread_id = request.thread_id or f"socratic-{user_id}-{uuid.uuid4().hex[:8]}"
@@ -1137,16 +1346,22 @@ async def socratic_chat_stream(
             has_interrupt = False
 
             if request.action == "start":
+                augmented_msg = _build_augmented_message(request.message, request.images)
+                socratic_history = (recent_history + [{"role": "user", "content": augmented_msg}])[-TUTOR_HISTORY_WINDOW:]
                 initial_state = {
                     "user_id": user_id,
                     "conversation_id": _conversation_id,
-                    "original_query": request.message,
-                    "chat_history": [{"role": "user", "content": request.message}],
+                    "original_query": augmented_msg,
+                    "chat_history": socratic_history,
                     "profile_data": profile_data,
                     "current_topic": request.message,
                     "session_id": thread_id,
                 }
                 logger.info(f"🎓 苏格拉底新会话 | thread={thread_id}", extra={"request_id": request_id})
+
+                # 提前发送 conversation_id，防止 abort/断网丢失
+                start_event = StreamEvent(event="thinking", data={"text": "🎓 苏格拉底模式启动...", "conversation_id": _conversation_id}, current_step="socratic")
+                yield f"event: thinking\ndata: {start_event.model_dump_json()}\n\n"
 
                 async for event in socratic_app.astream(initial_state, config, stream_mode="updates"):
                     for node_name, node_output in event.items():
@@ -1477,14 +1692,16 @@ async def chat_sync(
             conversation_id=conversation_id,
             role="user",
             content=request.message,
+            image_urls_json=_json.dumps(request.images, ensure_ascii=False) if request.images else None,
         )
         db.add(user_msg)
         await db.commit()
 
         profile_data, recent_history = await load_user_context(
-            current_user.id, None, db  # None = 加载所有对话的历史
+            current_user.id, conversation_id, db
         )
-        state = build_initial_state(request, profile_data, recent_history)
+        progress_scores = await _fetch_progress_scores(db, current_user.id)
+        state = build_initial_state(request, profile_data, recent_history, progress_scores)
         final = await asyncio.wait_for(
             workflow.ainvoke(
                 state,
@@ -1577,9 +1794,12 @@ async def get_history(
         message=MSG_SUCCESS,
         data=[
             {
+                "id": m.id,
                 "role": m.role,
                 "content": m.content,
+                "is_bookmarked": m.is_bookmarked,
                 "conversation_id": m.conversation_id,
+                "image_urls": _json.loads(m.image_urls_json) if m.image_urls_json else None,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
             }
             for m in messages
@@ -1597,6 +1817,262 @@ async def clear_history(
     await db.execute(sql_delete(ChatMessage).where(ChatMessage.user_id == current_user.id))
     await db.commit()
     return BaseResponse(code=HTTP_OK, message=MSG_CHAT_HISTORY_CLEARED)
+
+
+@router.patch("/messages/{message_id}/bookmark", response_model=BaseResponse)
+async def toggle_bookmark(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """收藏/取消收藏一条消息"""
+    msg = await db.get(ChatMessage, message_id)
+    if not msg or msg.user_id != current_user.id:
+        return BaseResponse(code=HTTP_NOT_FOUND, message="消息不存在")
+    msg.is_bookmarked = not msg.is_bookmarked
+    await db.commit()
+    return BaseResponse(
+        code=HTTP_OK,
+        message="已收藏" if msg.is_bookmarked else "已取消收藏",
+        data={"id": msg.id, "is_bookmarked": msg.is_bookmarked},
+    )
+
+
+@router.get("/bookmarks", response_model=BaseResponse)
+async def list_bookmarks(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """获取当前用户收藏的消息"""
+    from sqlalchemy import func as sql_func
+    count_stmt = select(sql_func.count(ChatMessage.id)).where(
+        ChatMessage.user_id == current_user.id,
+        ChatMessage.is_bookmarked == True,
+    )
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    stmt = (
+        select(ChatMessage)
+        .where(
+            ChatMessage.user_id == current_user.id,
+            ChatMessage.is_bookmarked == True,
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    messages = result.scalars().all()
+    return BaseResponse(
+        code=HTTP_OK,
+        message=MSG_SUCCESS,
+        data={
+            "messages": [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content,
+                    "conversation_id": m.conversation_id,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in messages
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
+
+
+# ---------- 引用解释 ----------
+class ExplainRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=5000, description="需要解释的内容")
+    context: Optional[str] = Field(None, max_length=5000, description="消息上下文")
+    message_id: Optional[int] = Field(None, description="绑定的消息ID（可选，路径面板等无对话上下文场景不传）")
+    conversation_id: Optional[int] = Field(None, description="会话ID（用于加载对话上下文）")
+
+
+class FollowUpRequest(BaseModel):
+    explanation_id: int = Field(..., description="解释记录ID")
+    question: str = Field(..., min_length=1, max_length=2000, description="追问问题")
+
+
+async def _load_conversation_context(db: AsyncSession, conversation_id: int, limit: int = 10) -> str:
+    """加载最近N条消息作为对话上下文"""
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    messages = list(reversed(result.scalars().all()))
+    if not messages:
+        return ""
+    lines = []
+    for m in messages:
+        role = "用户" if m.role == "user" else "AI"
+        lines.append(f"{role}: {m.content[:300]}")
+    return "\n".join(lines)
+
+
+@router.post("/explain", response_model=BaseResponse)
+async def explain_text(
+    req: ExplainRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """对选中文本进行解释（调用LLM，带对话上下文，结果持久化）"""
+    try:
+        from utils.llm_client import get_async_llm_client
+
+        # 加载对话上下文
+        conv_context = ""
+        if req.conversation_id:
+            conv_context = await _load_conversation_context(db, req.conversation_id)
+
+        client = get_async_llm_client()
+
+        context_part = f"\n\n消息上下文：{req.context[:1000]}" if req.context else ""
+        conv_part = f"\n\n最近对话记录：\n{conv_context}" if conv_context else ""
+        prompt = (
+            f"请简洁地解释以下内容，用通俗易懂的语言，"
+            f"如果有代码请说明含义，如果有专业术语请给出通俗解释。"
+            f"控制在300字以内。"
+            f"{context_part}{conv_part}\n\n"
+            f"需要解释的内容：「{req.text}」"
+        )
+
+        messages = [
+            {"role": "system", "content": "你是一位耐心的Python编程教师，擅长用简单易懂的语言解释技术概念。回答要简洁、准确、有条理。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        result = await client.call(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=2048,
+        )
+
+        # 保存到数据库
+        explanation = Explanation(
+            user_id=current_user.id,
+            conversation_id=req.conversation_id or None,
+            message_id=req.message_id or None,
+            selected_text=req.text,
+            explanation=result,
+            follow_ups=[],
+        )
+        db.add(explanation)
+        await db.flush()
+        await db.refresh(explanation)
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data=explanation.to_dict(),
+        )
+    except Exception as e:
+        logger.error(f"解释失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/explain/follow-up", response_model=BaseResponse)
+async def explain_follow_up(
+    req: FollowUpRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """针对已有的解释进行追问（隐式带入对话上下文）"""
+    try:
+        from utils.llm_client import get_async_llm_client
+
+        # 加载原解释记录
+        exp = await db.get(Explanation, req.explanation_id)
+        if not exp or exp.user_id != current_user.id:
+            return BaseResponse(code=HTTP_NOT_FOUND, message="解释记录不存在", data=None)
+
+        # 加载对话上下文
+        conv_context = ""
+        if exp.conversation_id:
+            conv_context = await _load_conversation_context(db, exp.conversation_id)
+
+        client = get_async_llm_client()
+
+        conv_part = f"\n\n最近对话记录：\n{conv_context}" if conv_context else ""
+        prompt = (
+            f"用户之前让你解释了以下内容：\n「{exp.selected_text}」\n\n"
+            f"你的解释是：\n{exp.explanation}\n\n"
+            f"现在用户追问：{req.question}\n\n"
+            f"请基于以上上下文回答用户的追问。如果问题超出单句解释范畴，"
+            f"建议用户到主对话框提问。回答控制在200字以内。"
+            f"{conv_part}"
+        )
+
+        messages = [
+            {"role": "system", "content": "你是一位耐心的Python编程教师。基于用户之前引用的内容和你的解释，回答用户的追问。如果问题超出解释范畴，建议用户到主对话框提问。"},
+            {"role": "user", "content": prompt},
+        ]
+
+        answer = await client.call(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=500,
+        )
+
+        # 追问结果追加到 follow_ups
+        if not exp.follow_ups:
+            exp.follow_ups = []
+        exp.follow_ups.append({
+            "question": req.question,
+            "answer": answer,
+            "created_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+        })
+        exp.updated_at = datetime.now(UTC).replace(tzinfo=None)
+        await db.flush()
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={"answer": answer},
+        )
+    except Exception as e:
+        logger.error(f"追问失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.get("/explanations/{conversation_id}", response_model=BaseResponse)
+async def list_explanations(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取指定会话下的所有解释记录"""
+    try:
+        stmt = (
+            select(Explanation)
+            .where(
+                Explanation.conversation_id == conversation_id,
+                Explanation.user_id == current_user.id,
+            )
+            .order_by(Explanation.created_at.asc())
+        )
+        result = await db.execute(stmt)
+        explanations = result.scalars().all()
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={
+                "explanations": [e.to_dict() for e in explanations],
+                "total": len(explanations),
+            },
+        )
+    except Exception as e:
+        logger.error(f"获取解释列表失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
 
 
 # ---------- 健康检查 ----------
