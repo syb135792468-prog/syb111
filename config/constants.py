@@ -9,6 +9,7 @@ config/constants.py - 全局常量定义（魔法数字消除）
 HTTP_OK = 200
 HTTP_BAD_REQUEST = 400
 HTTP_UNAUTHORIZED = 401
+HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
 HTTP_INTERNAL_SERVER_ERROR = 500
 HTTP_SERVER_ERROR = HTTP_INTERNAL_SERVER_ERROR  # 向后兼容别名
@@ -175,6 +176,11 @@ VIDEO_TTS_AUDIO_SUBDIR = "audio"
 VIDEO_TTS_SAMPLE_RATE = 24000
 VIDEO_TTS_AUDIO_ENCODING = "mp3"
 VIDEO_TTS_MAX_TEXT_LENGTH = 500
+
+# ============================================================
+# 12d. 视频 TTS 配音（科大讯飞超拟人合成，WebSocket，主用）
+# ============================================================
+VIDEO_TTS_XFYUN_TIMEOUT_SEC = 30
 
 # ============================================================
 # 13. Base Agent 回退默认值
@@ -444,3 +450,75 @@ MULTIMODAL_CODE_RECOGNITION_MAX_TOKENS = 2048
 DAILY_CHALLENGE_QUESTION_TYPE = "code"
 DAILY_CHALLENGE_STREAK_RECOVERY_COUNT = 3
 DAILY_CHALLENGE_DATE_FORMAT = "%Y-%m-%d"
+
+# ============================================================
+# 41. 错因类型与易错点偏好（赛题"易错点偏好"画像维度）
+# ============================================================
+ERROR_TYPE_SYNTAX = "syntax_error"
+ERROR_TYPE_TYPE_CONFUSION = "type_confusion"
+ERROR_TYPE_SCOPE_CONFUSION = "scope_confusion"
+ERROR_TYPE_BOUNDARY = "boundary_error"
+ERROR_TYPE_CONCEPT = "concept_misunderstanding"
+ERROR_TYPE_API_MISUSE = "api_misuse"
+ERROR_TYPE_LOGIC = "logic_error"
+ERROR_TYPE_OTHER = "other"
+ALL_ERROR_TYPES = [
+    ERROR_TYPE_SYNTAX,
+    ERROR_TYPE_TYPE_CONFUSION,
+    ERROR_TYPE_SCOPE_CONFUSION,
+    ERROR_TYPE_BOUNDARY,
+    ERROR_TYPE_CONCEPT,
+    ERROR_TYPE_API_MISUSE,
+    ERROR_TYPE_LOGIC,
+    ERROR_TYPE_OTHER,
+]
+ERROR_PREFERENCES_TOP_N = 3
+ERROR_PREFERENCES_MIN_SAMPLES = 3
+
+
+# ============================================================
+# 42. 学习画像证据权重（精准画像重构）
+# ============================================================
+# 难度权重（从 api/routes/quiz.py 收口到常量）
+DIFFICULTY_WEIGHT_EASY = 0.85
+DIFFICULTY_WEIGHT_MEDIUM = 1.0
+DIFFICULTY_WEIGHT_HARD = 1.15
+DIFFICULTY_EVIDENCE_WEIGHT = {
+    "easy": DIFFICULTY_WEIGHT_EASY,
+    "medium": DIFFICULTY_WEIGHT_MEDIUM,
+    "hard": DIFFICULTY_WEIGHT_HARD,
+}
+
+# 证据质量惩罚
+HINT_PENALTY = 0.6        # 看提示后答对
+COPY_PENALTY = 0.4        # 复制运行成功
+WEAK_SIGNAL_THRESHOLD = 2  # 同类弱信号累计次数，达到才降 posterior
+
+# posterior 先验与初始值
+POSTERIOR_PRIOR = 0.4          # 先验掌握概率（对应旧 prior_score=40/100）
+POSTERIOR_PRIOR_WEIGHT = 2.0
+UNCERTAINTY_DEFAULT = 0.9      # 新节点不确定度
+UNCERTAINTY_MIN_EVIDENCE = 2   # 证据数 >= 此值才降不确定度
+
+# 证据来源类型枚举（与 knowledge_mastery_evidence CHECK 对齐）
+EVIDENCE_SOURCE_QUIZ = "quiz_attempt"
+EVIDENCE_SOURCE_PATH = "path_node"
+EVIDENCE_SOURCE_CODE = "code_run"
+EVIDENCE_SOURCE_REVIEW = "review"
+EVIDENCE_SOURCE_MANUAL = "manual"
+EVIDENCE_SOURCE_CHAT_JUDGE = "chat_judge"
+ALL_EVIDENCE_SOURCES = [
+    EVIDENCE_SOURCE_QUIZ, EVIDENCE_SOURCE_PATH, EVIDENCE_SOURCE_CODE,
+    EVIDENCE_SOURCE_REVIEW, EVIDENCE_SOURCE_MANUAL, EVIDENCE_SOURCE_CHAT_JUDGE,
+]
+
+# 证据信号类型
+SIGNAL_TYPE_DIRECT = "direct"
+SIGNAL_TYPE_INFERRED = "inferred"  # 阶段4图谱传播用
+
+# 误解置信度
+MISCONCEPTION_SUSPECTED_CONFIDENCE = 0.5  # 单次即标"疑似"
+
+# 对话判题权重（弱于 quiz 直答）
+CHAT_JUDGE_WEIGHT_FACTOR = 0.7
+CHAT_JUDGE_LOW_CONFIDENCE_THRESHOLD = 0.5  # 低于此值走 weak_signal

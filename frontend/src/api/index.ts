@@ -1,4 +1,4 @@
-// Lazy auth getter — set by the auth store to break circular dependency
+// Lazy auth getter - set by the auth store to break circular dependency
 let _getToken: () => string = () => ''
 let _onUnauthorized: () => void = () => {}
 
@@ -7,10 +7,27 @@ export function setAuthGetter(getToken: () => string, onUnauthorized: () => void
   _onUnauthorized = onUnauthorized
 }
 
-interface ApiResponse<T = unknown> {
+export interface ApiResponse<T = unknown> {
   code: number
   message?: string
   data?: T
+  request_id?: string
+}
+
+export class ApiError extends Error {
+  httpStatus: number
+  code: number
+  detail?: unknown
+  url: string
+
+  constructor(message: string, httpStatus: number, code: number, url: string, detail?: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.httpStatus = httpStatus
+    this.code = code
+    this.url = url
+    this.detail = detail
+  }
 }
 
 interface FetchOptions extends RequestInit {
@@ -62,9 +79,39 @@ export async function apiFetch(url: string, options: FetchOptions = {}): Promise
   }
 }
 
+async function parseResponse<T>(resp: Response, url: string): Promise<ApiResponse<T>> {
+  let body: ApiResponse<T>
+  try {
+    body = await resp.json() as ApiResponse<T>
+  } catch {
+    const rawText = await resp.text().catch(() => '<unreadable>')
+    console.error(`[API ${resp.status}] ${url} 响应非 JSON:`, rawText)
+    throw new ApiError(`HTTP ${resp.status} 响应非 JSON`, resp.status, resp.status, url)
+  }
+
+  if (!resp.ok || body.code !== 200) {
+    const detail = (body.data as { detail?: unknown } | undefined)?.detail
+    console.error(`[API ${resp.status}] ${url}`, {
+      code: body.code,
+      message: body.message,
+      detail,
+      request_id: body.request_id,
+    })
+    throw new ApiError(
+      body.message || `HTTP ${resp.status}`,
+      resp.status,
+      body.code ?? resp.status,
+      url,
+      detail ?? body.data,
+    )
+  }
+
+  return body
+}
+
 export async function apiGet<T = unknown>(url: string, timeout?: number): Promise<ApiResponse<T>> {
   const resp = await apiFetch(url, { timeout })
-  return resp.json()
+  return parseResponse<T>(resp, url)
 }
 
 export async function apiPost<T = unknown>(url: string, data?: unknown, timeout?: number): Promise<ApiResponse<T>> {
@@ -73,7 +120,7 @@ export async function apiPost<T = unknown>(url: string, data?: unknown, timeout?
     body: data ? JSON.stringify(data) : undefined,
     timeout,
   })
-  return resp.json()
+  return parseResponse<T>(resp, url)
 }
 
 export async function apiPut<T = unknown>(url: string, data?: unknown): Promise<ApiResponse<T>> {
@@ -81,7 +128,7 @@ export async function apiPut<T = unknown>(url: string, data?: unknown): Promise<
     method: 'PUT',
     body: data ? JSON.stringify(data) : undefined,
   })
-  return resp.json()
+  return parseResponse<T>(resp, url)
 }
 
 export async function apiPatch<T = unknown>(url: string, data?: unknown): Promise<ApiResponse<T>> {
@@ -89,10 +136,10 @@ export async function apiPatch<T = unknown>(url: string, data?: unknown): Promis
     method: 'PATCH',
     body: data ? JSON.stringify(data) : undefined,
   })
-  return resp.json()
+  return parseResponse<T>(resp, url)
 }
 
 export async function apiDelete<T = unknown>(url: string): Promise<ApiResponse<T>> {
   const resp = await apiFetch(url, { method: 'DELETE' })
-  return resp.json()
+  return parseResponse<T>(resp, url)
 }

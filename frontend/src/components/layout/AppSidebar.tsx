@@ -15,6 +15,7 @@ import {
   Presentation,
   Compass,
   Sparkles,
+  GraduationCap,
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useAuthStore } from '../../stores/auth'
@@ -31,6 +32,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { name: 'Course', path: '/course', label: '课程概览', group: 'core', icon: <GraduationCap style={{ width: 17, height: 17 }} /> },
   { name: 'Chat', path: '/chat', label: '智能对话', group: 'core', icon: <MessageSquare style={{ width: 17, height: 17 }} /> },
   { name: 'Path', path: '/path', label: '学习路径', group: 'core', icon: <Compass style={{ width: 17, height: 17 }} /> },
   { name: 'Playground', path: '/playground', label: '编程练习', group: 'core', icon: <Code style={{ width: 17, height: 17 }} /> },
@@ -48,6 +50,16 @@ const NAV_GROUPS: Array<{ key: NavItem['group']; label: string }> = [
   { key: 'tools', label: '学习工具' },
   { key: 'growth', label: '成长反馈' },
 ]
+
+const RESOURCE_TYPE_LABEL: Record<string, string> = {
+  quiz: '练习题',
+  video: '教学动画',
+  mindmap: '思维导图',
+  doc: '文档',
+  reading: '阅读材料',
+  slides: '幻灯片',
+  code: '代码案例',
+}
 
 const AppSidebar: React.FC = () => {
   const navigate = useNavigate()
@@ -115,7 +127,18 @@ const AppSidebar: React.FC = () => {
         style={{ width: 216 }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '14px 12px 12px' }}>
-          <div className="rail-card" style={{ padding: '14px 14px 12px', marginBottom: 10 }}>
+          <button
+            onClick={() => navigateTo('/course')}
+            className="rail-card btn-click-feedback"
+            aria-label="进入课程概览"
+            style={{ padding: '14px 14px 12px', marginBottom: 10, cursor: 'pointer', textAlign: 'left', width: '100%', display: 'block' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <GraduationCap style={{ width: 16, height: 16, color: 'var(--py-blue)' }} />
+              <span style={{ fontSize: 10.5, color: 'var(--mute)', fontWeight: 600, letterSpacing: '0.02em' }}>
+                高校 Python 课程
+              </span>
+            </div>
             <h1
               style={{
                 margin: 0,
@@ -127,13 +150,13 @@ const AppSidebar: React.FC = () => {
                 fontWeight: 700,
               }}
             >
-              Python 学习助手
+              Python 程序设计
             </h1>
 
             <p style={{ margin: '6px 0 0', color: 'var(--mute)', fontSize: 11.5, lineHeight: 1.65 }}>
-              面向学习者和评委都更容易理解的学习工作台。
+              智能学习平台 · 因材施教
             </p>
-          </div>
+          </button>
 
           <button
             onClick={startNewChat}
@@ -220,9 +243,28 @@ const AppSidebar: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
             {pendingTasks.length > 0 && (
               <div className="rail-card" style={{ padding: '9px 11px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-soft)', fontSize: 12, fontWeight: 600 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--ink-soft)', fontSize: 12, fontWeight: 600, marginBottom: pendingTasks.length > 0 ? 8 : 0 }}>
                   <Sparkles style={{ width: 13, height: 13, color: 'var(--py-blue)' }} />
                   正在处理 {pendingTasks.length} 个任务
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {pendingTasks.map((task) => {
+                    const pct = task.progress || 0
+                    const typeLabel = RESOURCE_TYPE_LABEL[task.resourceType] || task.resourceType
+                    return (
+                      <div key={task.taskId} style={{ fontSize: 11.5, color: 'var(--ink-soft)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 6 }}>
+                            {typeLabel} · {task.topic || '生成中'}
+                          </span>
+                          <span style={{ color: 'var(--py-blue-deep)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{pct}%</span>
+                        </div>
+                        <div style={{ height: 3, background: 'rgba(48,105,152,0.12)', borderRadius: 3, overflow: 'hidden' }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: 'var(--py-blue)', borderRadius: 3, transition: 'width 0.3s ease' }} />
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )}

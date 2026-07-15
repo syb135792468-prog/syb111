@@ -101,25 +101,27 @@ BLOCKED_MODULES = {
     "importlib", "compileall", "code",
 }
 
-BLOCKED_BUILTINS = {"exec", "eval", "compile", "__import__", "open", "breakpoint"}
+BLOCKED_BUILTINS = {"exec", "eval", "compile", "open", "breakpoint"}
 
 GUARD_CODE = '''
-import sys as _sys
-_blocked = {blocked_modules}
-_original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
-_blocked_triggered = False
+import builtins as _builtins
+
+_blocked_modules = {blocked_modules}
+_blocked_builtins = {blocked_builtins}
+
+# 1. 禁用危险 builtins（设为 None，调用时抛 TypeError）
+for _name in _blocked_builtins:
+    if hasattr(_builtins, _name):
+        setattr(_builtins, _name, None)
+
+# 2. hook __import__ 禁用危险模块
+_original_import = _builtins.__import__
 def _safe_import(name, *args, **kwargs):
-    global _blocked_triggered
     top = name.split('.')[0]
-    if top in _blocked:
-        _blocked_triggered = True
+    if top in _blocked_modules:
         raise ImportError(f"模块 {{name}} 不允许导入")
     return _original_import(name, *args, **kwargs)
-if hasattr(__builtins__, '__import__'):
-    __builtins__.__import__ = _safe_import
-else:
-    import builtins
-    builtins.__import__ = _safe_import
+_builtins.__import__ = _safe_import
 '''
 
 
@@ -185,8 +187,12 @@ async def execute_python_code(code: str, timeout: int = CODE_EXEC_DEFAULT_TIMEOU
             "metrics": dict           # 执行器全局指标
         }
     """
-    blocked_str = ", ".join(f"'{m}'" for m in BLOCKED_MODULES)
-    guard = GUARD_CODE.format(blocked_modules=f"{{{blocked_str}}}")
+    blocked_modules_str = ", ".join(f"'{m}'" for m in BLOCKED_MODULES)
+    blocked_builtins_str = ", ".join(f"'{b}'" for b in BLOCKED_BUILTINS)
+    guard = GUARD_CODE.format(
+        blocked_modules=f"{{{blocked_modules_str}}}",
+        blocked_builtins=f"{{{blocked_builtins_str}}}",
+    )
     full_code = guard + "\n" + code
 
     # 写入临时文件

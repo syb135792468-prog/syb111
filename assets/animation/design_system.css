@@ -1,0 +1,107 @@
+/* ===== 全局重置 ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+
+/* ===== 配色系统 ===== */
+:root {
+  --bg-primary: #0f0f23;
+  --bg-secondary: #1a1a2e;
+  --bg-card: rgba(255, 255, 255, 0.06);
+  --bg-code: #1e1e2e;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-blue: #60a5fa;
+  --accent-purple: #a78bfa;
+  --accent-amber: #fbbf24;
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.1);
+}
+
+body {
+  background: linear-gradient(135deg, var(--bg-primary) 0%, #16213e 50%, #0f0f23 100%);
+  color: var(--text-primary);
+}
+
+/* ===== 卡片毛玻璃质感 ===== */
+.code-editor, .narration-card, .variable-panel, .speechBubble, #memoryPanel, #speechBubble {
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+/* ===== Atom One Dark 代码高亮 ===== */
+.kw { color: #c792ea; font-weight: 600; }
+.str { color: #c3e88d; }
+.cmt { color: #546e7a; font-style: italic; }
+.num { color: #f78c6c; }
+.fn { color: #82aaff; }
+.op { color: #89ddff; }
+.cls { color: #ffcb6b; }
+.self { color: #f07178; }
+
+/* ===== 代码行 ===== */
+.code-line {
+  color: #abb2bf !important;
+  transition: all 0.3s ease !important;
+}
+.code-line.highlight {
+  background: rgba(251, 191, 36, 0.12) !important;
+  border-left: 3px solid #fbbf24 !important;
+  color: #fef3c7 !important;
+}
+.line-num {
+  color: var(--text-muted);
+  display: inline-block;
+  width: 2.5em;
+  text-align: right;
+  margin-right: 16px;
+  user-select: none;
+}
+
+/* ===== 变量面板 ===== */
+.var-card {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-family: "Consolas", monospace;
+  font-size: 13px;
+  border-left: 3px solid var(--accent-purple);
+}
+.var-name { color: var(--accent-purple); }
+.var-value { color: var(--accent-green); }
+
+/* ===== 步骤指示器 ===== */
+.step-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #334155 !important;
+  transition: all 0.3s ease !important;
+  display: inline-block;
+}
+.step-dot.active {
+  background: #fbbf24 !important;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.6) !important;
+}
+.step-dot.done { background: rgba(255, 255, 255, 0.5) !important; }
+
+/* ===== 进度条 ===== */
+.progress-fill, #progressFill {
+  background: linear-gradient(90deg, #8b5cf6 0%, #ec4899 100%) !important;
+}
+
+/* ===== 标题 ===== */
+.narration-card h3, .step-title, #stepTitle {
+  color: #fbbf24 !important;
+}
+
+/* ===== 字幕 ===== */
+.subtitle-bar, #subtitleBar {
+  background: rgba(0, 0, 0, 0.85) !important;
+  color: #fbbf24 !important;
+}

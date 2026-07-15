@@ -89,3 +89,24 @@ data/learning_assistant.db
 
 # Claude Code
 CLAUDE.md
+
+# Debug artifacts
+.dbg/
+frontend/.dbg/
+.trae/
+debug-*.md
+context_pollution_analysis.md
+
+# Database backups
+data/*.db.bak_*
+
+# Test media
+data/xfyun_tts_test.mp3
+
+# Third-party skill packs (external clones, not project code)
+andrej-karpathy-skills-main/
+
+# Runtime-generated video artifacts
+static/videos/cache/
+static/videos/*.webm
+static/latest_video.html

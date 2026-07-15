@@ -1,0 +1,13 @@
+<!-- assets/animation/compatibility_warning.html -->
+<!-- 浏览器兼容性提示：语音合成不支持时显示 -->
+<div id="noVoiceWarning" style="display:none;position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#ff6b6b;color:white;padding:12px 24px;border-radius:8px;z-index:9999;font-size:16px;box-shadow:0 4px 12px rgba(0,0,0,0.15);font-family:system-ui,sans-serif;">
+  ⚠️ 您的浏览器不支持语音合成，将使用纯文字模式
+</div>
+<script>
+if (!('speechSynthesis' in window)) {
+  document.getElementById('noVoiceWarning').style.display = 'block';
+  setTimeout(function() {
+    document.getElementById('noVoiceWarning').style.display = 'none';
+  }, 5000);
+}
+</script>

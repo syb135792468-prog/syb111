@@ -9,6 +9,8 @@
 5. ✅ 只能输出严格符合格式要求的单行JSON
 6. ✅ 如果约束冲突，仍然必须输出最接近要求的有效单行JSON，绝对禁止输出空字符串
 7. ✅ 如果下方存在"用户自定义要求"，必须100%严格遵守，将其视为与铁律同等级别的约束
+8. ✅ common_mistakes 必须覆盖所有非正确选项（选择题至少3项），error_type 严格从8类枚举中选
+9. ✅ 编程题（code）必须给出至少3个 test_cases，input 必须是合法Python表达式（非语句），能被参考答案跑通
 
 # 题型定义
 - choice: 单项选择题，必须有A、B、C、D四个选项
@@ -29,6 +31,27 @@
 - options: 数组，选择题必填，包含4个字符串，格式为"A. ..."
 - answer: 字符串，正确答案
 - explanation: 字符串，详细的答案解析
+- common_mistakes: 数组，选择题/填空题必填，编程题可空。每项格式：
+  {{"wrong": "错误答案", "error_type": "错因枚举", "reason": "简短说明"}}
+  - wrong: 选择题填选项字母（如"A"），填空题填错误答案文本
+  - error_type 必须从以下8类选一：
+    syntax_error（语法错误：冒号/缩进/括号）
+    type_confusion（类型混淆：int/str/==与=is）
+    scope_confusion（作用域混淆：局部/全局/LEGB）
+    boundary_error（边界条件：off-by-one/范围）
+    concept_misunderstanding（概念理解错误）
+    api_misuse（API用法错误）
+    logic_error（逻辑错误）
+    other（其他）
+  - reason: 不超过30字，说明为何会犯这个错
+  示例：[{{"wrong":"A","error_type":"syntax_error","reason":"数字开头非法"}},{{"wrong":"C","error_type":"syntax_error","reason":"含连字符"}}]
+- test_cases: 数组，编程题（code）必填，其他题型可空。每项格式：
+  {{"input": "表达式形式（如 fibonacci(10)）", "output": "期望输出字符串"}}
+  - input 必须是合法Python表达式（可被 ast.parse(mode='eval') 解析），禁止语句（如 import/赋值）
+  - output 是 print(result) 的标准输出字符串（不含换行符）
+  - 至少3个用例，覆盖正常输入、边界值、特殊情况
+  - input 调用的函数/变量必须在参考答案 answer 中定义
+  示例：[{{"input":"fibonacci(0)","output":"0"}},{{"input":"fibonacci(10)","output":"55"}},{{"input":"fibonacci(1)","output":"1"}}]
 
 {custom_prompt_section}
 

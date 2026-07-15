@@ -100,14 +100,14 @@ function sanitizeForStorage(value: unknown, seen = new WeakSet<object>()): unkno
 }
 
 function getPanelEntryLabel(type: string | null, data: Record<string, unknown>): string {
-  const text = typeof data.text === 'string' ? data.text.trim() : ''
-  const code = typeof data.code === 'string' ? data.code.trim() : ''
-  const topic = typeof data.topic === 'string' ? data.topic.trim() : ''
-  const nodeName = typeof data.nodeName === 'string' ? data.nodeName.trim() : ''
-  const itemTitle = typeof (data.item as Record<string, unknown> | undefined)?.title === 'string'
+  const text = typeof data?.text === 'string' ? data.text.trim() : ''
+  const code = typeof data?.code === 'string' ? data.code.trim() : ''
+  const topic = typeof data?.topic === 'string' ? data.topic.trim() : ''
+  const nodeName = typeof data?.nodeName === 'string' ? data.nodeName.trim() : ''
+  const itemTitle = typeof (data?.item as Record<string, unknown> | undefined)?.title === 'string'
     ? ((data.item as Record<string, unknown>).title as string).trim()
     : ''
-  const resourceTitle = typeof (data.resource as Record<string, unknown> | undefined)?.title === 'string'
+  const resourceTitle = typeof (data?.resource as Record<string, unknown> | undefined)?.title === 'string'
     ? ((data.resource as Record<string, unknown>).title as string).trim()
     : ''
 
@@ -137,17 +137,17 @@ function getPanelEntryLabel(type: string | null, data: Record<string, unknown>):
 function getPanelEntryIdentity(type: string | null, data: Record<string, unknown>): string {
   if (!type) return ''
 
-  const nodeId = typeof data.nodeId === 'number' || typeof data.nodeId === 'string'
+  const nodeId = typeof data?.nodeId === 'number' || typeof data?.nodeId === 'string'
     ? String(data.nodeId)
     : ''
-  const pathId = typeof data.pathId === 'number' || typeof data.pathId === 'string'
+  const pathId = typeof data?.pathId === 'number' || typeof data?.pathId === 'string'
     ? String(data.pathId)
     : ''
-  const topic = typeof data.topic === 'string' ? data.topic.trim() : ''
-  const nodeName = typeof data.nodeName === 'string' ? data.nodeName.trim() : ''
-  const messageId = typeof data.messageId === 'number' ? String(data.messageId) : ''
-  const text = typeof data.text === 'string' ? data.text.trim() : ''
-  const itemId = typeof (data.item as Record<string, unknown> | undefined)?.id === 'number'
+  const topic = typeof data?.topic === 'string' ? data.topic.trim() : ''
+  const nodeName = typeof data?.nodeName === 'string' ? data.nodeName.trim() : ''
+  const messageId = typeof data?.messageId === 'number' ? String(data.messageId) : ''
+  const text = typeof data?.text === 'string' ? data.text.trim() : ''
+  const itemId = typeof (data?.item as Record<string, unknown> | undefined)?.id === 'number'
     ? String((data.item as Record<string, unknown>).id)
     : ''
 

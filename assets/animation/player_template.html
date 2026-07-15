@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>__TOPIC__ - 教学动画</title>
+    <style>
+        /* ========== 全局重置与基础变量 ========== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-primary: #020617;
+            --bg-secondary: rgba(15, 23, 42, 0.65);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --accent-yellow: #fbbf24;
+            --accent-purple: #8b5cf6;
+            --accent-pink: #ec4899;
+            --accent-blue: #60a5fa;
+            --accent-cyan: #22d3ee;
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --blur: blur(16px) saturate(180%);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background:
+                radial-gradient(1200px 800px at 10% 0%, #1e1b4b 0%, transparent 60%),
+                radial-gradient(1000px 700px at 100% 100%, #0f172a 0%, transparent 55%),
+                var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        .screen {
+            width: 100%;
+            height: 100%;
+            padding: 32px;
+            display: none;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+        .screen.active { display: flex; opacity: 1; }
+
+        /* ========== 开始界面 ========== */
+        #startScreen {
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+        .start-title {
+            font-size: 48px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-yellow), var(--accent-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 12px;
+        }
+        .start-subtitle {
+            font-size: 18px;
+            color: var(--text-secondary);
+            margin-bottom: 40px;
+        }
+        .goals-card {
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 32px 40px;
+            text-align: left;
+            min-width: 480px;
+            margin-bottom: 40px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .goals-card h3 {
+            color: var(--accent-yellow);
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+        .goals-card ul { list-style: none; }
+        .goals-card li {
+            padding: 8px 0;
+            padding-left: 24px;
+            position: relative;
+            color: var(--text-primary);
+        }
+        .goals-card li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #10b981;
+            font-weight: bold;
+        }
+        .duration-tag {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+        .start-btn {
+            padding: 14px 48px;
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4);
+            transition: all 0.3s ease;
+            animation: breathe 2s ease-in-out infinite;
+        }
+        .start-btn:hover { transform: scale(1.05); box-shadow: 0 6px 28px rgba(139, 92, 246, 0.5); }
+        @keyframes breathe {
+            0%, 100% { box-shadow: 0 4px 20px rgba(139, 92, 246, 0.4); }
+            50% { box-shadow: 0 4px 32px rgba(139, 92, 246, 0.7); }
+        }
+
+        /* ========== 播放器主界面 Grid 布局 ========== */
+        #playerScreen {
+            flex-direction: column;
+            gap: 16px;
+        }
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--text-secondary);
+            font-size: 14px;
+            height: 24px;
+        }
+        .step-dots { display: flex; gap: 8px; }
+        .step-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #334155;
+            transition: all 0.3s ease;
+        }
+        .step-dot.active {
+            background: var(--accent-yellow);
+            box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1.8fr 1fr;
+            gap: 20px;
+            flex: 1;
+            min-height: 0;
+            contain: layout;
+        }
+
+        /* 左侧代码区 */
+        .code-section {
+            display: flex;
+            flex-direction: column;
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            contain: content;
+        }
+        .code-header {
+            padding: 12px 16px;
+            background: rgba(0,0,0,0.25);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .traffic-dot { width: 12px; height: 12px; border-radius: 50%; }
+        .dot-red { background: #ef4444; }
+        .dot-yellow { background: #f59e0b; }
+        .dot-green { background: #10b981; }
+        .code-filename {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-left: 8px;
+            font-family: "JetBrains Mono", Consolas, monospace;
+        }
+        .code-display {
+            flex: 1;
+            padding: 20px;
+            font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+            font-size: 15px;
+            line-height: 1.8;
+            overflow-y: auto;
+            counter-reset: line;
+        }
+        .code-line {
+            display: block;
+            padding-left: 40px;
+            position: relative;
+            color: #abb2bf;
+            opacity: 0;
+            transform: translateX(-20px);
+            will-change: opacity, transform;
+        }
+        .code-line::before {
+            counter-increment: line;
+            content: counter(line);
+            position: absolute;
+            left: 0;
+            width: 30px;
+            text-align: right;
+            color: #4b5263;
+            font-size: 13px;
+        }
+        .code-line.highlight {
+            background: rgba(251, 191, 36, 0.12);
+            border-left: 3px solid var(--accent-yellow);
+            color: #fef3c7;
+            padding-left: 37px;
+        }
+        /* 语法高亮配色 */
+        .tk-keyword { color: #c678dd; }
+        .tk-string { color: #98c379; }
+        .tk-number { color: #d19a66; }
+        .tk-comment { color: #5c6370; font-style: italic; }
+        .tk-function { color: #61afef; }
+        .tk-builtin { color: #e5c07b; }
+
+        /* ========== 流程图风格（chart_type != code_walkthrough） ========== */
+        #flowCanvas {
+            flex: 1;
+            width: 100%;
+            min-height: 420px;
+            background: rgba(2, 6, 23, 0.4);
+            display: none;
+        }
+        #flowCanvas.active { display: block; }
+        .flow-node {
+            cursor: pointer;
+            transition: filter 0.2s;
+            transform-box: fill-box;
+            transform-origin: center;
+        }
+        .flow-node:hover .flow-node-rect {
+            stroke-width: 3;
+            filter: brightness(1.35) drop-shadow(0 0 16px currentColor);
+        }
+        .flow-edge {
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        .flow-edge.highlighted {
+            stroke-width: 3.5;
+            filter: drop-shadow(0 0 10px var(--accent-yellow));
+        }
+        .flow-node--purple  .flow-node-rect { fill: rgba(139, 92, 246, 0.22); stroke: var(--accent-purple); }
+        .flow-node--pink    .flow-node-rect { fill: rgba(236, 72, 153, 0.22); stroke: var(--accent-pink); }
+        .flow-node--cyan    .flow-node-rect { fill: rgba(34, 211, 238, 0.22); stroke: var(--accent-cyan); }
+        .flow-node--yellow   .flow-node-rect { fill: rgba(251, 191, 36, 0.22); stroke: var(--accent-yellow); }
+        .flow-node--blue     .flow-node-rect { fill: rgba(96, 165, 250, 0.22); stroke: var(--accent-blue); }
+        .flow-node-rect {
+            stroke-width: 2;
+            rx: 10;
+            ry: 10;
+            filter: drop-shadow(0 0 8px currentColor);
+        }
+        .flow-node--purple  { color: var(--accent-purple); }
+        .flow-node--pink    { color: var(--accent-pink); }
+        .flow-node--cyan    { color: var(--accent-cyan); }
+        .flow-node--yellow   { color: var(--accent-yellow); }
+        .flow-node--blue     { color: var(--accent-blue); }
+        .flow-node-label {
+            fill: var(--text-primary);
+            font-size: 14px;
+            font-weight: 600;
+            text-anchor: middle;
+            dominant-baseline: middle;
+            pointer-events: none;
+        }
+        .flow-node-pulse {
+            animation: nodePulse 2.4s ease-in-out infinite;
+        }
+        @keyframes nodePulse {
+            0%, 100% { filter: drop-shadow(0 0 4px currentColor); }
+            50% { filter: drop-shadow(0 0 14px currentColor); }
+        }
+        .flow-edge {
+            fill: none;
+            stroke-width: 2;
+            stroke: url(#edgeGradient);
+            stroke-dasharray: 8 6;
+            animation: dashFlow 1.6s linear infinite;
+        }
+        @keyframes dashFlow {
+            to { stroke-dashoffset: -28; }
+        }
+        .flow-edge-label {
+            fill: var(--text-secondary);
+            font-size: 11px;
+            text-anchor: middle;
+            dominant-baseline: middle;
+        }
+        .flow-particle {
+            fill: var(--accent-yellow);
+            filter: drop-shadow(0 0 6px var(--accent-yellow));
+        }
+
+        /* 右侧面板 */
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .speech-bubble {
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            flex: 1;
+            opacity: 0;
+            transform: translateY(20px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            will-change: opacity, transform;
+        }
+        .speech-bubble h3 {
+            color: var(--accent-yellow);
+            font-size: 22px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        .speech-bubble p {
+            color: var(--text-primary);
+            line-height: 1.7;
+            font-size: 15px;
+        }
+        .memory-panel {
+            background: rgba(15, 23, 42, 0.92);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            opacity: 0;
+            transform: scale(0.95);
+            will-change: opacity, transform;
+        }
+        .memory-panel h4 {
+            color: var(--accent-blue);
+            font-size: 14px;
+            margin-bottom: 10px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .var-item {
+            background: rgba(34, 211, 238, 0.08);
+            color: var(--accent-cyan);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 14px;
+            margin-bottom: 8px;
+            transition: all 0.3s ease;
+        }
+        .var-item.flash {
+            background: rgba(34, 211, 238, 0.25);
+            transform: scale(1.02);
+        }
+
+        /* 字幕栏 */
+        .subtitle-bar {
+            background: rgba(0,0,0,0.85);
+            color: var(--accent-yellow);
+            text-align: center;
+            padding: 10px 20px;
+            border-radius: var(--radius-md);
+            font-size: 16px;
+            min-height: 44px;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .subtitle-bar.show { opacity: 1; }
+        /* 逐字字幕高亮（TTS 时间戳驱动）*/
+        .subtitle-word {
+            display: inline-block;
+            color: rgba(255, 255, 255, 0.65);
+            transition: color 0.15s ease, transform 0.15s ease;
+            margin: 0 1px;
+        }
+        .subtitle-word.active {
+            color: var(--accent-yellow);
+            font-weight: 600;
+            transform: scale(1.08);
+        }
+
+        /* 控制栏 */
+        .control-bar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 0 4px;
+        }
+        .ctrl-btn {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            border: 1px solid var(--border-color);
+            background: rgba(255,255,255,0.08);
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: all 0.2s ease;
+        }
+        .ctrl-btn:hover {
+            background: rgba(255,255,255,0.15);
+            transform: scale(1.05);
+        }
+        .progress-wrap {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .progress-bar {
+            flex: 1;
+            height: 6px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--accent-purple), var(--accent-pink));
+            border-radius: 4px;
+            transition: width 0.1s linear;
+        }
+        .time-text {
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-family: monospace;
+            min-width: 80px;
+            text-align: right;
+        }
+
+        /* ========== 结束界面 ========== */
+        #endScreen {
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+        .end-title {
+            font-size: 36px;
+            font-weight: 700;
+            color: var(--accent-yellow);
+            margin-bottom: 32px;
+        }
+        .summary-card {
+            background: var(--bg-secondary);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 32px 48px;
+            text-align: left;
+            min-width: 520px;
+            margin-bottom: 32px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .summary-card h3 {
+            color: var(--accent-purple);
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+        .summary-card ul { list-style: none; }
+        .summary-card li {
+            padding: 10px 0;
+            padding-left: 28px;
+            position: relative;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .summary-card li:last-child { border-bottom: none; }
+        .summary-card li::before {
+            content: "★";
+            position: absolute;
+            left: 0;
+            color: var(--accent-yellow);
+        }
+        .ending-text {
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+            font-size: 16px;
+        }
+        .restart-btn {
+            padding: 12px 36px;
+            font-size: 16px;
+            color: white;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+        .restart-btn:hover { transform: scale(1.05); }
+
+        /* 终极兜底：3秒后强制显示所有隐藏元素（防止 GSAP+JS 双重失败导致白屏） */
+        @keyframes fallback-show {
+            to { opacity: 1; transform: none; }
+        }
+        .screen.active .code-line,
+        .screen.active .speech-bubble,
+        .screen.active .memory-panel {
+            animation: fallback-show 0.01s 3s forwards;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ========== 开始界面 ========== -->
+    <div id="startScreen" class="screen active">
+        <h1 class="start-title">__TOPIC__</h1>
+        <p class="start-subtitle">__SUBTITLE__</p>
+        <div class="goals-card">
+            <h3>🎯 学习目标</h3>
+            <ul>
+                __LEARNING_GOALS__
+            </ul>
+        </div>
+        <p class="duration-tag">⏱ 预计时长：__DURATION__ 秒</p>
+        <button class="start-btn" onclick="startAnimation()">开始学习</button>
+    </div>
+
+    <!-- ========== 播放器主界面 ========== -->
+    <div id="playerScreen" class="screen">
+        <div class="topbar">
+            <span id="stepCounter">第 1 步 / 共 __TOTAL_STEPS__ 步</span>
+            <div class="step-dots" id="stepDots">
+                __STEP_DOTS__
+            </div>
+        </div>
+
+        <div class="main-grid">
+            <!-- 代码区 -->
+            <div class="code-section">
+                <div class="code-header">
+                    <span class="traffic-dot dot-red"></span>
+                    <span class="traffic-dot dot-yellow"></span>
+                    <span class="traffic-dot dot-green"></span>
+                    <span class="code-filename" id="codeFilename">__CODE_FILENAME__</span>
+                </div>
+                <div class="code-display" id="codeDisplay"></div>
+                <svg id="flowCanvas" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid meet">
+                    <defs>
+                        <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="var(--accent-purple)"/>
+                            <stop offset="100%" stop-color="var(--accent-pink)"/>
+                        </linearGradient>
+                    </defs>
+                    <g id="flowEdges"></g>
+                    <g id="flowNodes"></g>
+                    <g id="flowParticles"></g>
+                </svg>
+            </div>
+
+            <!-- 右侧讲解面板 -->
+            <div class="right-panel">
+                <div class="speech-bubble" id="speechBubble">
+                    <h3 id="stepTitle">步骤标题</h3>
+                    <p id="stepNarration">讲解文案</p>
+                </div>
+                <div class="memory-panel" id="memoryPanel">
+                    <h4>📦 变量状态</h4>
+                    <div id="varList"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="subtitle-bar" id="subtitleBar"></div>
+
+        <div class="control-bar">
+            <button class="ctrl-btn" id="playBtn" onclick="togglePlay()">▶</button>
+            <button class="ctrl-btn" onclick="restartAnimation()">↻</button>
+            <div class="progress-wrap">
+                <div class="progress-bar" id="progressBar" onclick="seekProgress(event)">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <span class="time-text" id="timeText">00:00 / 00:00</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 结束界面 ========== -->
+    <div id="endScreen" class="screen">
+        <h2 class="end-title">🎉 学习完成</h2>
+        <div class="summary-card">
+            <h3>📝 核心知识点总结</h3>
+            <ul id="keyPointsList">
+                __KEY_POINTS__
+            </ul>
+        </div>
+        <p class="ending-text">__ENDING_TEXT__</p>
+        <button class="restart-btn" onclick="restartAnimation()">再学一遍</button>
+    </div>
+
+    <!-- GSAP 核心库（主 CDN + 备用 CDN） -->
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"
+            onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js';s.onerror=function(){document.body.innerHTML='<div style=\x22display:flex;align-items:center;justify-content:center;height:100vh;color:#e2e8f0;font-family:system-ui\x22>动画库加载失败，请检查网络后刷新页面</div>'};document.head.appendChild(s)"></script>
+
+    <!-- GSAP 加载兜底：如果 CDN 全挂，强制显示所有 opacity:0 的元素 -->
+    <script>
+    (function() {
+        setTimeout(function() {
+            if (typeof gsap === 'undefined') {
+                var selectors = '.code-line, .speech-bubble, .memory-panel, .subtitle-bar, .flow-node, .flow-edge';
+                document.querySelectorAll(selectors).forEach(function(el) {
+                    el.style.opacity = '1';
+                    el.style.transform = 'none';
+                });
+                // 跳过开始界面，直接显示播放器
+                document.getElementById('startScreen').classList.remove('active');
+                document.getElementById('playerScreen').classList.add('active');
+                // 渲染第一步内容（纯静态，无动画；兼容 code_walkthrough 和 flowchart 两条路径）
+                if (typeof animationData !== 'undefined' && animationData.steps.length > 0) {
+                    var step = animationData.steps[0];
+                    // flowchart 路径：有 nodes 走 renderFlow + 显示 #flowCanvas
+                    if (step.nodes && step.nodes.length > 0 && typeof renderFlow === 'function') {
+                        renderFlow(step);
+                        showFlowCanvas(true);
+                        // 兜底强制节点可见（renderFlow 默认 opacity:0 等动画驱动）
+                        document.querySelectorAll('.flow-node, .flow-edge').forEach(function(el) {
+                            el.setAttribute('opacity', '1');
+                            el.style.opacity = '1';
+                        });
+                    } else {
+                        // code_walkthrough 路径：渲染代码
+                        var codeDisplay = document.getElementById('codeDisplay');
+                        if (codeDisplay && step.code_content) {
+                            var lines = step.code_content.split('\n');
+                            codeDisplay.innerHTML = lines.map(function(line, i) {
+                                return '<div class="code-line" style="opacity:1;transform:none"><span style="color:#4b5263;display:inline-block;width:30px;text-align:right;margin-right:12px;font-size:13px">' + (i+1) + '</span>' + (line || ' ') + '</div>';
+                            }).join('');
+                        }
+                    }
+                    document.getElementById('stepTitle').textContent = step.title || '';
+                    document.getElementById('stepNarration').textContent = step.narration || '';
+                }
+            }
+        }, 3000);
+    })();
+    </script>
+
+    <script>
+    // ===================== 注入数据（后端替换） =====================
+    var animationData = {
+        meta: {
+            topic: __TOPIC_JSON__,
+            totalSteps: __TOTAL_STEPS__,
+            voiceRate: __VOICE_RATE__,
+            filename: __CODE_FILENAME_JSON__,
+            chartType: __CHART_TYPE_JSON__
+        },
+        steps: __STEPS_JSON__,
+        summary: {
+            keyPoints: __KEY_POINTS_JSON__,
+            endingText: __ENDING_TEXT_JSON__
+        }
+    };
+
+    // ===================== 1. 语法高亮引擎 =====================
+    function highlightSyntax(code) {
+        var keywords = ["def", "class", "if", "else", "elif", "for", "while", "in", "return", "import", "from", "as", "try", "except", "finally", "with", "pass", "break", "continue", "and", "or", "not", "is", "None", "True", "False", "print", "range", "len", "str", "int", "float", "list", "dict", "set", "tuple"];
+        var builtins = ["print", "range", "len", "str", "int", "float", "list", "dict", "set", "tuple", "input", "open", "type", "isinstance"];
+
+        var html = code
+            .replace(/(#.*$)/gm, '<span class="tk-comment">$1</span>')
+            .replace(/(["'\x60])(?:(?!\1)[^\\]|\\.)*?\1/g, '<span class="tk-string">$&</span>')
+            .replace(/\b(\d+\.?\d*)\b/g, '<span class="tk-number">$1</span>');
+
+        keywords.forEach(function(kw) {
+            var reg = new RegExp('\\b(' + kw + ')\\b', 'g');
+            html = html.replace(reg, '<span class="tk-keyword">$1</span>');
+        });
+
+        builtins.forEach(function(fn) {
+            var reg = new RegExp('\\b(' + fn + ')(?=\\()', 'g');
+            html = html.replace(reg, '<span class="tk-builtin">$1</span>');
+        });
+
+        html = html.replace(/def\s+(\w+)/g, 'def <span class="tk-function">$1</span>');
+
+        return html;
+    }
+
+    // ===================== 2. 代码渲染引擎 =====================
+    function renderCode(codeContent, highlightLines) {
+        highlightLines = highlightLines || [];
+        var lines = codeContent.split('\n');
+        var codeDisplay = document.getElementById('codeDisplay');
+        var frag = document.createDocumentFragment();
+
+        lines.forEach(function(line, index) {
+            var lineNum = index + 1;
+            var div = document.createElement('div');
+            div.className = 'code-line';
+            div.dataset.line = lineNum;
+            div.innerHTML = highlightSyntax(line || ' ');
+            if (highlightLines.indexOf(lineNum) >= 0) {
+                div.classList.add('highlight');
+            }
+            frag.appendChild(div);
+        });
+
+        codeDisplay.innerHTML = '';
+        codeDisplay.appendChild(frag);
+    }
+
+    // ===================== 3. 变量面板引擎 =====================
+    function renderVariables(vars) {
+        var varList = document.getElementById('varList');
+        varList.innerHTML = '';
+        var entries = Object.entries(vars || {});
+        entries.forEach(function(entry) {
+            var div = document.createElement('div');
+            div.className = 'var-item';
+            div.textContent = entry[0] + ' = ' + entry[1];
+            varList.appendChild(div);
+        });
+    }
+
+    function flashVariables() {
+        document.querySelectorAll('.var-item').forEach(function(el, i) {
+            setTimeout(function() { el.classList.add('flash'); }, i * 50);
+            setTimeout(function() { el.classList.remove('flash'); }, 300 + i * 50);
+        });
+    }
+
+    // ===================== 3b. 流程图渲染引擎（chart_type != code_walkthrough） =====================
+    // 增量更新：节点和边累积保留，新元素才入场，让流程图有"逐步构建"的流动感
+    var _flowNodeIdMap = {}; // id -> {x, y, w, h}，累积保留
+    var _renderedNodeIds = new Set();  // 已渲染的节点 id
+    var _renderedEdgeKeys = new Set(); // 已渲染的边 key（from->to）
+    var _activeParticleTls = []; // 当前活跃的粒子独立 timeline，用于 pause/resume/kill 同步
+
+    function resetFlowState() {
+        // kill 所有粒子独立 timeline，避免 restart 后旧 ptl 操作 detached element
+        _activeParticleTls.forEach(function(tl) { tl.kill(); });
+        _activeParticleTls = [];
+        _flowNodeIdMap = {};
+        _renderedNodeIds.clear();
+        _renderedEdgeKeys.clear();
+        var edgesG = document.getElementById('flowEdges');
+        var nodesG = document.getElementById('flowNodes');
+        var particlesG = document.getElementById('flowParticles');
+        if (edgesG) edgesG.innerHTML = '';
+        if (nodesG) nodesG.innerHTML = '';
+        if (particlesG) particlesG.innerHTML = '';
+    }
+
+    function renderFlow(step) {
+        var svgNS = 'http://www.w3.org/2000/svg';
+        var edgesG = document.getElementById('flowEdges');
+        var nodesG = document.getElementById('flowNodes');
+        var particlesG = document.getElementById('flowParticles');
+        // 粒子每次清空（临时效果），但节点和边累积保留
+        if (particlesG) particlesG.innerHTML = '';
+
+        var nodes = step.nodes || [];
+        var edges = step.edges || [];
+
+        // 1. 增量渲染节点：已有的跳过，只创建新节点
+        nodes.forEach(function(n) {
+            var id = n.id;
+            if (_renderedNodeIds.has(id)) return; // 已存在，保留不动
+
+            var label = n.label || '', x = n.x || 100, y = n.y || 100;
+            var color = (n.color || 'accent-blue').replace('accent-', '');
+            var w = 120, h = 50;
+
+            var g = document.createElementNS(svgNS, 'g');
+            g.setAttribute('class', 'flow-node flow-node--' + color + ' flow-node-pulse');
+            g.setAttribute('data-id', id);
+            g.setAttribute('opacity', '0');
+            // 呼吸动画随机 delay，避免所有节点同步脉冲
+            g.style.animationDelay = (Math.random() * 2.4) + 's';
+
+            var rect = document.createElementNS(svgNS, 'rect');
+            rect.setAttribute('class', 'flow-node-rect');
+            rect.setAttribute('x', x - w / 2);
+            rect.setAttribute('y', y - h / 2);
+            rect.setAttribute('width', w);
+            rect.setAttribute('height', h);
+            rect.setAttribute('rx', 10);
+            rect.setAttribute('ry', 10);
+            g.appendChild(rect);
+
+            var text = document.createElementNS(svgNS, 'text');
+            text.setAttribute('class', 'flow-node-label');
+            text.setAttribute('x', x);
+            text.setAttribute('y', y);
+            text.textContent = label;
+            g.appendChild(text);
+
+            // hover 高亮关联边
+            g.addEventListener('mouseenter', function() {
+                var nid = this.getAttribute('data-id');
+                document.querySelectorAll('.flow-edge').forEach(function(edge) {
+                    if (edge.getAttribute('data-from') === nid || edge.getAttribute('data-to') === nid) {
+                        edge.classList.add('highlighted');
+                    }
+                });
+            });
+            g.addEventListener('mouseleave', function() {
+                document.querySelectorAll('.flow-edge.highlighted').forEach(function(e) {
+                    e.classList.remove('highlighted');
+                });
+            });
+
+            nodesG.appendChild(g);
+            _flowNodeIdMap[id] = { x: x, y: y, w: w, h: h };
+            _renderedNodeIds.add(id);
+        });
+
+        // 2. 增量渲染边：已有的跳过
+        edges.forEach(function(e) {
+            var edgeKey = e.from + '->' + e.to;
+            if (_renderedEdgeKeys.has(edgeKey)) return;
+
+            var from = _flowNodeIdMap[e.from], to = _flowNodeIdMap[e.to];
+            if (!from || !to) return;
+
+            var path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('class', 'flow-edge');
+            path.setAttribute('data-from', e.from);
+            path.setAttribute('data-to', e.to);
+            var x1 = from.x + from.w / 2, y1 = from.y;
+            var x2 = to.x - to.w / 2, y2 = to.y;
+            var mx = (x1 + x2) / 2;
+            var d = 'M ' + x1 + ' ' + y1 + ' C ' + mx + ' ' + y1 + ', ' + mx + ' ' + y2 + ', ' + x2 + ' ' + y2;
+            path.setAttribute('d', d);
+            path.setAttribute('opacity', '0');
+            edgesG.appendChild(path);
+            // 预设绘制基础：dasharray=len, dashoffset=len（flow_draw 动画 dashoffset→0 实现绘制效果）
+            try {
+                var len = path.getTotalLength();
+                path.style.strokeDasharray = len;
+                path.style.strokeDashoffset = len;
+            } catch(err) {}
+
+            if (e.label) {
+                var lbl = document.createElementNS(svgNS, 'text');
+                lbl.setAttribute('class', 'flow-edge-label');
+                lbl.setAttribute('x', mx);
+                lbl.setAttribute('y', (y1 + y2) / 2 - 8);
+                lbl.textContent = e.label;
+                lbl.setAttribute('opacity', '0');
+                edgesG.appendChild(lbl);
+            }
+            _renderedEdgeKeys.add(edgeKey);
+        });
+    }
+
+    function showFlowCanvas(show) {
+        var flow = document.getElementById('flowCanvas');
+        var codeD = document.getElementById('codeDisplay');
+        if (show) {
+            flow.classList.add('active');
+            codeD.style.display = 'none';
+        } else {
+            flow.classList.remove('active');
+            codeD.style.display = '';
+        }
+    }
+
+    // ===================== 4. 动画映射表 =====================
+    var animMap = {
+        code_fade_up: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, y: 10, filter: "blur(3px)" },
+                { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.35, stagger: 0.03, ease: "power2.out" }
+            );
+        },
+        code_slide_left: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, x: -16, filter: "blur(3px)" },
+                { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.35, stagger: 0.03, ease: "power2.out" }
+            );
+        },
+        code_typewriter: function(target) {
+            gsap.set(target, { opacity: 1, x: 0, filter: "none" });
+            return gsap.fromTo(target, { width: 0 }, { width: "100%", duration: 0.5, ease: "none" });
+        },
+        bubble_fade_up: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, y: 12, filter: "blur(3px)" },
+                { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.35, ease: "power2.out" }
+            );
+        },
+        bubble_slide_right: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, x: 12, filter: "blur(3px)" },
+                { opacity: 1, x: 0, filter: "blur(0px)", duration: 0.35, ease: "power2.out" }
+            );
+        },
+        bubble_zoom_in: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, scale: 0.92, filter: "blur(3px)" },
+                { opacity: 1, scale: 1, filter: "blur(0px)", duration: 0.35, ease: "power2.out" }
+            );
+        },
+        panel_pop: function(target) {
+            return gsap.fromTo(target,
+                { opacity: 0, scale: 0.95, filter: "blur(3px)" },
+                { opacity: 1, scale: 1, filter: "blur(0px)", duration: 0.3, ease: "power2.out" }
+            );
+        },
+        highlight_pulse: function() {
+            return gsap.fromTo('.code-line.highlight',
+                { backgroundColor: "rgba(251, 191, 36, 0.3)" },
+                { backgroundColor: "rgba(251, 191, 36, 0.12)", duration: 0.3, ease: "power2.out" }
+            );
+        },
+        flow_draw: function() {
+            // 用 selector string 让 GSAP 延迟查询 DOM（播放时 renderFlow 已创建元素）
+            // [opacity="0"] 只匹配新元素，已有元素（opacity 已被设为 1）不重复入场
+            var tl = gsap.timeline();
+            // 边线绘制：strokeDashoffset len→0（renderFlow 已预设 dasharray=len）
+            tl.fromTo('.flow-edge[opacity="0"]',
+                { opacity: 0 },
+                { opacity: 1, strokeDashoffset: 0, duration: 0.5, stagger: 0.1, ease: "power2.out" }
+            );
+            // 新节点从中心缩放入场
+            tl.fromTo('.flow-node[opacity="0"]',
+                { opacity: 0, scale: 0.6 },
+                { opacity: 1, scale: 1, duration: 0.4, stagger: 0.08, ease: "back.out(1.4)" },
+                "-=0.3"
+            );
+            // 边标签淡入
+            tl.fromTo('.flow-edge-label[opacity="0"]',
+                { opacity: 0 },
+                { opacity: 1, duration: 0.3 },
+                "-=0.2"
+            );
+            // 绘制完成后切换为虚线流动效果
+            tl.call(function() {
+                document.querySelectorAll('.flow-edge').forEach(function(edge) {
+                    if (edge.style.opacity === '1' || edge.getAttribute('opacity') === '1') {
+                        edge.style.strokeDasharray = '8 6';
+                        edge.style.strokeDashoffset = '';
+                    }
+                });
+            });
+            return tl;
+        },
+        particle_flow: function() {
+            // 在 mainTimeline.call 里执行，此时 renderFlow 已创建 DOM 元素
+            var svgNS = 'http://www.w3.org/2000/svg';
+            var particlesG = document.getElementById('flowParticles');
+            if (!particlesG) return;
+            // kill 上一轮的粒子 timeline，避免累积泄漏
+            _activeParticleTls.forEach(function(tl) { tl.kill(); });
+            _activeParticleTls = [];
+            particlesG.innerHTML = '';
+            var edges = document.querySelectorAll('.flow-edge');
+            edges.forEach(function(edge, i) {
+                var particle = document.createElementNS(svgNS, 'circle');
+                particle.setAttribute('class', 'flow-particle');
+                particle.setAttribute('r', '4');
+                particle.setAttribute('opacity', '0');
+                particlesG.appendChild(particle);
+                try {
+                    var len = edge.getTotalLength();
+                    var pathObj = { p: 0 };
+                    var ptl = gsap.timeline();
+                    ptl.to(particle, { opacity: 1, duration: 0.2 }, i * 0.15);
+                    ptl.to(pathObj, {
+                        p: 1, duration: 1.4, ease: "none",
+                        onUpdate: function() {
+                            var pt = edge.getPointAtLength(pathObj.p * len);
+                            particle.setAttribute('cx', pt.x);
+                            particle.setAttribute('cy', pt.y);
+                        }
+                    }, i * 0.15);
+                    _activeParticleTls.push(ptl); // 追踪，供 pause/resume/kill 同步
+                } catch(err) {
+                    // path 不可用，跳过粒子
+                }
+            });
+            // 不返回 tl，由 mainTimeline.call 调用，粒子动画独立于主时间轴
+        }
+    };
+
+    // ===================== 5. 语音合成引擎（HTML5 Audio + Web Speech 降级）=====================
+    var currentUtterance = null;
+    // 主动取消标志：stopSpeech 设为 true，让 cancel/onended 触发的回调不再推进下一句
+    var _speechCancelled = false;
+    window.finalVoiceRate = animationData.meta.voiceRate || 1.15;
+
+    // HTML5 Audio 单例（避免多实例 onended 冲突）
+    var _audioEl = null;
+    var _currentStepData = null;
+    var _currentOnEnd = null;
+    var _audioEndedFired = false;  // onended 与 timeupdate 兜底去重
+
+    function speak(text, onEnd, stepData) {
+        _speechCancelled = false;
+        // 优先级：audio_base64（第一段内嵌）> audio_url（后续段懒加载）> Web Speech 降级
+        var audioSrc = null;
+        if (stepData) {
+            if (stepData.audio_base64) audioSrc = stepData.audio_base64;
+            else if (stepData.audio_url) audioSrc = stepData.audio_url;
+        }
+
+        if (audioSrc) {
+            _playAudioStep(audioSrc, text, stepData, onEnd);
+        } else {
+            _playWebSpeechStep(text, onEnd);
+        }
+    }
+
+    function _playAudioStep(audioSrc, text, stepData, onEnd) {
+        if (!_audioEl) {
+            _audioEl = new Audio();
+            _audioEl.addEventListener('timeupdate', _handleAudioTimeupdate);
+        }
+        _audioEl.onended = null;
+        _audioEl.onerror = null;
+        _audioEndedFired = false;
+
+        _currentStepData = stepData;
+        _currentOnEnd = onEnd;
+
+        _audioEl.src = audioSrc;
+        _audioEl.playbackRate = window.finalVoiceRate || 1.0;
+
+        _audioEl.onended = function() {
+            if (_speechCancelled || _audioEndedFired) return;
+            _audioEndedFired = true;
+            if (onEnd) onEnd();
+        };
+        _audioEl.onerror = function() {
+            console.warn('[TTS] audio error, fallback to Web Speech');
+            _playWebSpeechStep(text, onEnd);
+        };
+
+        _renderSubtitle(text, stepData);
+
+        var playPromise = _audioEl.play();
+        if (playPromise && playPromise.catch) {
+            playPromise.catch(function(e) {
+                console.warn('[TTS] play() rejected, fallback to Web Speech:', e);
+                _playWebSpeechStep(text, onEnd);
+            });
+        }
+    }
+
+    function _playWebSpeechStep(text, onEnd) {
+        if (!window.speechSynthesis) {
+            var estMs = (text.length / 4.5) * 1000 / (window.finalVoiceRate || 1);
+            setTimeout(function() { if (!_speechCancelled && onEnd) onEnd(); }, Math.max(1500, estMs));
+            _renderSubtitlePlain(text);
+            return;
+        }
+        window.speechSynthesis.cancel();
+        currentUtterance = new SpeechSynthesisUtterance(text);
+        currentUtterance.lang = 'zh-CN';
+        currentUtterance.rate = window.finalVoiceRate;
+        currentUtterance.onend = function() {
+            if (_speechCancelled) return;
+            if (onEnd) onEnd();
+        };
+        window.speechSynthesis.speak(currentUtterance);
+        _renderSubtitlePlain(text);
+    }
+
+    function _handleAudioTimeupdate() {
+        if (!_audioEl || !_audioEl.duration) return;
+        // iOS Safari onended 兜底：currentTime 接近结尾时触发 onEnd
+        if (!_audioEndedFired && _audioEl.currentTime >= _audioEl.duration - 0.05) {
+            _audioEndedFired = true;
+            if (_currentOnEnd && !_speechCancelled) _currentOnEnd();
+        }
+        // 逐字字幕高亮
+        if (_currentStepData && _currentStepData.word_timestamps && _currentStepData.word_timestamps.length > 0) {
+            _highlightCurrentWord(_audioEl.currentTime * 1000);
+        }
+    }
+
+    function stopSpeech() {
+        _speechCancelled = true;
+        if (_audioEl) {
+            _audioEl.onended = null;
+            _audioEl.onerror = null;
+            _audioEl.pause();
+            _audioEl.removeAttribute('src');
+            _audioEl.load();  // 强制释放
+        }
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+        _currentStepData = null;
+        _currentOnEnd = null;
+    }
+
+    // ===================== 5b. 字幕渲染（逐字高亮）=====================
+    var _wordSpans = null;
+
+    function _renderSubtitle(text, stepData) {
+        var sub = document.getElementById('subtitleBar');
+        if (stepData && stepData.word_timestamps && stepData.word_timestamps.length > 0) {
+            sub.innerHTML = '';
+            _wordSpans = [];
+            stepData.word_timestamps.forEach(function(item) {
+                var span = document.createElement('span');
+                span.textContent = item.text;
+                span.setAttribute('data-start', item.start_ms || 0);
+                span.className = 'subtitle-word';
+                sub.appendChild(span);
+                _wordSpans.push(span);
+            });
+        } else {
+            sub.textContent = text;
+            _wordSpans = null;
+        }
+        sub.classList.add('show');
+    }
+
+    function _renderSubtitlePlain(text) {
+        var sub = document.getElementById('subtitleBar');
+        sub.textContent = text;
+        _wordSpans = null;
+        sub.classList.add('show');
+    }
+
+    function _highlightCurrentWord(currentMs) {
+        if (!_wordSpans || _wordSpans.length === 0) return;
+        var activeIdx = -1;
+        for (var i = 0; i < _wordSpans.length; i++) {
+            var start = parseInt(_wordSpans[i].getAttribute('data-start'), 10) || 0;
+            if (currentMs >= start) activeIdx = i;
+            else break;
+        }
+        if (activeIdx < 0) return;
+        for (var j = 0; j < _wordSpans.length; j++) {
+            if (j === activeIdx) {
+                if (!_wordSpans[j].classList.contains('active')) _wordSpans[j].classList.add('active');
+            } else {
+                if (_wordSpans[j].classList.contains('active')) _wordSpans[j].classList.remove('active');
+            }
+        }
+    }
+
+    // ===================== 6. 核心：时间轴构建 =====================
+    var mainTimeline = null;
+    var currentStepIndex = 0;
+    var isPlaying = false;
+
+    function buildTimeline() {
+        mainTimeline = gsap.timeline({
+            paused: true,
+            onUpdate: updateProgressUI,
+            onComplete: onAnimationEnd
+        });
+
+        var steps = animationData.steps;
+        var isFlowChart = animationData.meta.chartType && animationData.meta.chartType !== 'code_walkthrough';
+
+        steps.forEach(function(step, index) {
+            mainTimeline.add('step' + (index + 1));
+
+            // 1. 旧内容退场（非第一步：淡出 + 模糊）
+            // flowchart 路径：节点/边累积保留不退场，只退讲解面板（保持流程图连贯性）
+            if (index > 0) {
+                var exitTargets = isFlowChart
+                    ? ['#speechBubble', '#memoryPanel']
+                    : ['.code-line', '#speechBubble', '#memoryPanel'];
+                mainTimeline.to(exitTargets, {
+                    opacity: 0, filter: 'blur(3px)', y: -6,
+                    duration: 0.2, ease: 'power2.in'
+                });
+            }
+
+            // 2. 替换内容（退场动画结束后执行）
+            mainTimeline.call(function() {
+                document.getElementById('stepTitle').textContent = step.title;
+                document.getElementById('stepNarration').textContent = step.narration;
+                renderVariables(step.variable_panel || {});
+                currentStepIndex = index + 1;
+                updateStepUI();
+
+                // chart_type 分支：有 nodes 走流程图路径，否则走原代码路径
+                if (step.nodes && step.nodes.length > 0) {
+                    renderFlow(step);
+                    showFlowCanvas(true);
+                } else {
+                    renderCode(step.code_content, step.highlight_lines);
+                    showFlowCanvas(false);
+                }
+            });
+
+            // 3. 新内容入场（模糊→清晰）
+            var codeAnim = step.code_animation || 'code_fade_up';
+            // 流程图风格特殊处理：用 flow 元素作为目标，而非 .code-line
+            var isFlowStep = step.nodes && step.nodes.length > 0;
+            var animTarget = isFlowStep ? '.flow-node' : '.code-line';
+            if (animMap[codeAnim]) {
+                if (codeAnim === 'flow_draw') {
+                    // flow_draw 用 selector string，GSAP lazy 查询，播放时 DOM 已有元素
+                    mainTimeline.add(animMap.flow_draw());
+                } else if (codeAnim === 'particle_flow') {
+                    // particle_flow 需要 querySelectorAll 创建粒子，必须用 call 延迟到播放时执行
+                    mainTimeline.call(animMap.particle_flow);
+                    mainTimeline.to({}, { duration: 1.6 }); // 占位等待粒子动画
+                } else {
+                    mainTimeline.add(animMap[codeAnim](animTarget));
+                }
+            }
+
+            var bubbleAnim = step.bubble_animation || 'bubble_fade_up';
+            if (animMap[bubbleAnim]) {
+                mainTimeline.add(animMap[bubbleAnim]('#speechBubble'), "-=0.15");
+            }
+
+            if (step.variable_panel && Object.keys(step.variable_panel).length > 0) {
+                mainTimeline.add(animMap.panel_pop('#memoryPanel'), "-=0.15");
+                mainTimeline.call(flashVariables);
+            }
+
+            if (!isFlowStep && step.highlight_lines && step.highlight_lines.length > 0) {
+                mainTimeline.add(animMap.highlight_pulse(), "-=0.1");
+            }
+
+            // 4. 语音播放占位（有 TTS 音频时用精确时长，否则字数估算）
+            var stepDuration;
+            if (step.audio_duration_ms && step.audio_duration_ms > 0) {
+                stepDuration = step.audio_duration_ms / 1000;
+            } else {
+                stepDuration = estimateSpeechDuration(step.narration);
+            }
+            mainTimeline.to({}, { duration: stepDuration });
+        });
+    }
+
+    function estimateSpeechDuration(text) {
+        var validChars = (text.match(/[一-龥a-zA-Z0-9]/g) || []).length;
+        return Math.max(validChars / 4.5, 1.0);
+    }
+
+    // ===================== 7. UI 同步更新 =====================
+    var _progressFill = null;
+    var _timeText = null;
+    var _stepCounter = null;
+    var _lastProgress = -1;
+
+    function _cacheElements() {
+        _progressFill = document.getElementById('progressFill');
+        _timeText = document.getElementById('timeText');
+        _stepCounter = document.getElementById('stepCounter');
+    }
+
+    function updateProgressUI() {
+        if (!mainTimeline) return;
+        if (!_progressFill) _cacheElements();
+        var progress = mainTimeline.progress();
+        if (Math.abs(progress - _lastProgress) < 0.005) return;
+        _lastProgress = progress;
+        _progressFill.style.width = (progress * 100) + '%';
+
+        var ts = mainTimeline.timeScale() || 1;
+        var current = mainTimeline.time() / ts;
+        var total = mainTimeline.duration() / ts;
+        _timeText.textContent = formatTime(current) + ' / ' + formatTime(total);
+    }
+
+    function updateStepUI() {
+        if (!_stepCounter) _cacheElements();
+        var total = animationData.meta.totalSteps;
+        _stepCounter.textContent = '第 ' + currentStepIndex + ' 步 / 共 ' + total + ' 步';
+
+        var dots = document.querySelectorAll('.step-dot');
+        dots.forEach(function(dot, i) {
+            if (i < currentStepIndex) {
+                dot.classList.add('active');
+            } else {
+                dot.classList.remove('active');
+            }
+        });
+    }
+
+    function formatTime(seconds) {
+        var m = Math.floor(seconds / 60).toString();
+        if (m.length < 2) m = '0' + m;
+        var s = Math.floor(seconds % 60).toString();
+        if (s.length < 2) s = '0' + s;
+        return m + ':' + s;
+    }
+
+    // ===================== 8. 全局播放控制接口 =====================
+    function startAnimation() {
+        switchScreen('playerScreen');
+        if (!mainTimeline) buildTimeline();
+
+        // 动态缩放：让实际时长匹配目标时长
+        var targetSec = animationData.meta.duration || 60;
+        var actualSec = mainTimeline.duration();
+        var safeScale = 1;
+        if (actualSec > 0 && Math.abs(actualSec - targetSec) > 3) {
+            safeScale = actualSec / targetSec;
+            safeScale = Math.max(0.7, Math.min(1.5, safeScale));
+            mainTimeline.timeScale(safeScale);
+        }
+        // 语音速率同步缩放
+        window.finalVoiceRate = (animationData.meta.voiceRate || 1.15) * safeScale;
+
+        mainTimeline.restart();
+        isPlaying = true;
+        updatePlayBtn();
+        playStepVoice(1);
+    }
+
+    function pauseAnimation() {
+        if (!mainTimeline) return;
+        // 顺序很关键：先关状态再 cancel，否则 stopSpeech 触发的 onend 会推进一步
+        isPlaying = false;
+        voiceGeneration++; // 让队列里 setTimeout(playStepVoice+1, 80) 的 gen 检查失效
+        mainTimeline.pause();
+        _activeParticleTls.forEach(function(tl) { tl.pause(); }); // 粒子同步暂停
+        stopSpeech(); // _speechCancelled 会拦截 onend 推进
+        updatePlayBtn();
+    }
+
+    function resumeAnimation() {
+        if (!mainTimeline) return;
+        if (isPlaying) return; // 防重入
+        isPlaying = true;
+        mainTimeline.resume();
+        _activeParticleTls.forEach(function(tl) { tl.play(); }); // 粒子同步恢复
+        updatePlayBtn();
+        // 用 playStepVoice 重建语音链（speak 完会自动推进下一句），不要用裸 speak 否则链断了
+        playStepVoice(currentStepIndex);
+    }
+
+    function restartAnimation() {
+        isPlaying = false;
+        voiceGeneration++; // 让旧语音链的 setTimeout 失效
+        stopSpeech();
+        switchScreen('startScreen');
+        if (mainTimeline) {
+            mainTimeline.kill();
+            mainTimeline = null; // 强制下次 startAnimation 重建 timeline，让 tween 重新查询 DOM
+        }
+        resetFlowState(); // 清空流程图累积状态
+        currentStepIndex = 0;
+        updatePlayBtn();
+        updateProgressUI();
+    }
+
+    function seekTo(percent) {
+        if (!mainTimeline) return;
+        voiceGeneration++; // 让旧语音链的 setTimeout 失效，避免跳转后旧链推进一步
+        stopSpeech();
+        // 清理粒子，避免跳转后残留（跳到 particle_flow 步骤时该步 call 会重建）
+        _activeParticleTls.forEach(function(tl) { tl.kill(); });
+        _activeParticleTls = [];
+        var particlesG = document.getElementById('flowParticles');
+        if (particlesG) particlesG.innerHTML = '';
+        percent = Math.max(0, Math.min(100, percent));
+        mainTimeline.progress(percent / 100);
+
+        var total = animationData.meta.totalSteps;
+        currentStepIndex = Math.max(1, Math.min(total, Math.ceil(percent / 100 * total)));
+        updateStepUI();
+
+        if (isPlaying) {
+            playStepVoice(currentStepIndex); // 重建当前 step 语音链
+        }
+    }
+
+    function togglePlay() {
+        if (isPlaying) pauseAnimation();
+        else resumeAnimation();
+    }
+
+    function seekProgress(e) {
+        var rect = e.currentTarget.getBoundingClientRect();
+        var percent = (e.clientX - rect.left) / rect.width * 100;
+        seekTo(percent);
+    }
+
+    function updatePlayBtn() {
+        document.getElementById('playBtn').textContent = isPlaying ? '⏸' : '▶';
+    }
+
+    // ===================== 9. 语音驱动步骤切换 =====================
+    var voiceGeneration = 0;
+    function playStepVoice(stepNum) {
+        var gen = ++voiceGeneration;
+        var steps = animationData.steps;
+        if (stepNum > steps.length) {
+            onAnimationEnd();
+            return;
+        }
+        var step = steps[stepNum - 1];
+        speak(step.narration, function() {
+            if (!isPlaying || gen !== voiceGeneration) return;
+            if (stepNum < steps.length) {
+                mainTimeline.tweenTo('step' + (stepNum + 1));
+                setTimeout(function() { if (gen === voiceGeneration) playStepVoice(stepNum + 1); }, 80);
+            } else {
+                onAnimationEnd();
+            }
+        }, step);
+    }
+
+    function onAnimationEnd() {
+        isPlaying = false;
+        updatePlayBtn();
+        stopSpeech();
+        setTimeout(function() {
+            switchScreen('endScreen');
+        }, 500);
+    }
+
+    // ===================== 10. 界面切换 =====================
+    function switchScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(function(s) {
+            s.classList.remove('active');
+        });
+        document.getElementById(screenId).classList.add('active');
+    }
+
+    // ===================== 11. 键盘快捷键 =====================
+    document.addEventListener('keydown', function(e) {
+        switch(e.code) {
+            case 'Space':
+                e.preventDefault();
+                togglePlay();
+                break;
+            case 'ArrowLeft':
+                if (currentStepIndex > 1) {
+                    seekTo((currentStepIndex - 2) / animationData.meta.totalSteps * 100);
+                    playStepVoice(currentStepIndex - 1);
+                }
+                break;
+            case 'ArrowRight':
+                if (currentStepIndex < animationData.meta.totalSteps) {
+                    seekTo(currentStepIndex / animationData.meta.totalSteps * 100);
+                    playStepVoice(currentStepIndex + 1);
+                }
+                break;
+            case 'KeyR':
+                restartAnimation();
+                break;
+        }
+    });
+
+    // ===================== 初始化 =====================
+    window.addEventListener('load', function() {
+        var dotsContainer = document.getElementById('stepDots');
+        dotsContainer.innerHTML = '';
+        for (var i = 0; i < animationData.meta.totalSteps; i++) {
+            var dot = document.createElement('div');
+            dot.className = 'step-dot';
+            dotsContainer.appendChild(dot);
+        }
+    });
+    </script>
+</body>
+</html>

@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
-import { generateResource, listResources, deleteResource } from '../api/resource'
+import { useTaskStore } from '../stores/taskStore'
+import { generateResourceAsync, listResources, deleteResource } from '../api/resource'
+import { pollTaskProgress } from '../composables/useSSE'
 import AppHeader from '../components/layout/AppHeader'
 import ConfirmDialog from '../components/common/ConfirmDialog'
+import ProgressBar from '../components/common/ProgressBar'
 import {
   PlayCircle, Plus, Trash2, Eye, Download, Loader2,
   Film, Clock, Search, ExternalLink
@@ -68,6 +71,9 @@ const TeachingAnimationView: React.FC = () => {
   const [formDuration, setFormDuration] = useState(60)
   const [formStyle, setFormStyle] = useState('tutorial')
   const [generating, setGenerating] = useState(false)
+  const [genProgress, setGenProgress] = useState(0)
+  const [genStage, setGenStage] = useState('')
+  const [genMessage, setGenMessage] = useState('')
 
   // --- 列表状态 ---
   const [animations, setAnimations] = useState<AnimationItem[]>([])
@@ -212,6 +218,9 @@ const TeachingAnimationView: React.FC = () => {
   const handleGenerate = useCallback(async () => {
     if (!formTopic.trim() || generating) return
     setGenerating(true)
+    setGenProgress(0)
+    setGenStage('')
+    setGenMessage('')
 
     try {
       const config: Record<string, unknown> = {
@@ -222,7 +231,7 @@ const TeachingAnimationView: React.FC = () => {
         config.customPrompt = formContent.trim()
       }
 
-      const resp = await generateResource(
+      const resp = await generateResourceAsync(
         authStore.userId,
         formTopic.trim(),
         'video',
@@ -230,23 +239,61 @@ const TeachingAnimationView: React.FC = () => {
       )
 
       if (!mountedRef.current) return
-      if (resp.code === 200 && resp.data) {
-        appStore.showToast('教学动画生成成功', 'success')
-        setFormTopic('')
-        setFormContent('')
-        const newItem = resp.data as AnimationItem
-        setAnimations(prev => [newItem, ...prev])
-        setTotal(prev => prev + 1)
-        openAnimationDetail(newItem)
-      } else {
+      if (resp.code !== 200 || !resp.data?.task_id) {
         appStore.showToast(resp.message || '生成失败', 'error')
+        setGenerating(false)
+        return
       }
+
+      const taskId = resp.data.task_id
+      useTaskStore.getState().addTask({
+        taskId,
+        resourceType: 'video',
+        topic: formTopic.trim(),
+        status: 'pending',
+        createdAt: Date.now(),
+        progress: 0,
+      })
+
+      pollTaskProgress(
+        taskId,
+        (data) => {
+          if (!mountedRef.current) return
+          setGenerating(false)
+          setGenProgress(100)
+          appStore.showToast('教学动画生成成功', 'success')
+          setFormTopic('')
+          setFormContent('')
+          const newItem = data as AnimationItem
+          setAnimations(prev => [newItem, ...prev])
+          setTotal(prev => prev + 1)
+          openAnimationDetail(newItem)
+          setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
+        },
+        (error) => {
+          if (!mountedRef.current) return
+          setGenerating(false)
+          appStore.showToast('生成失败：' + error, 'error')
+          setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
+        },
+      )
+
+      // 本地也订阅 taskStore 进度更新（pollTaskProgress 内部更新 store，这里同步到本地 state）
+      const unsub = useTaskStore.subscribe((state) => {
+        const t = state.tasks.find(x => x.taskId === taskId)
+        if (t) {
+          setGenProgress(t.progress || 0)
+          setGenStage(t.stage || '')
+          setGenMessage(t.message || '')
+        }
+      })
+      // 5 分钟后自动取消订阅（安全兜底）
+      setTimeout(() => unsub(), 300000)
     } catch (e: unknown) {
       if (!mountedRef.current) return
       const msg = e instanceof Error ? e.message : '网络错误，请稍后重试'
       appStore.showToast('生成失败：' + msg, 'error')
-    } finally {
-      if (mountedRef.current) setGenerating(false)
+      setGenerating(false)
     }
   }, [formTopic, formContent, formDuration, formStyle, generating, authStore.userId, appStore, openAnimationDetail])
 
@@ -383,6 +430,11 @@ const TeachingAnimationView: React.FC = () => {
                     )}
                     {generating ? 'AI 正在生成中...' : '生成动画'}
                   </button>
+                  {generating && (
+                    <div style={{ marginTop: 10 }}>
+                      <ProgressBar percent={genProgress} stage={genStage} message={genMessage} />
+                    </div>
+                  )}
                 </div>
               </div>
 

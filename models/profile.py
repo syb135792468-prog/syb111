@@ -139,6 +139,15 @@ class UserProfile(Base):
         comment="high / medium / low"
     )
 
+    # 8. 易错点偏好（赛题明确要求的画像维度，从错题行为聚合，非 LLM 提取）
+    error_preferences: Mapped[List[str]] = mapped_column(
+        JSON,
+        default=list,
+        server_default="'[]'",
+        nullable=False,
+        comment="JSON数组，用户top-3错因类型，如['syntax_error','boundary_error','type_confusion']"
+    )
+
     # ------------------------------
     # 「随学随新」辅助字段
     # ------------------------------

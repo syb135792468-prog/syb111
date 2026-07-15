@@ -25,6 +25,15 @@ export type ContentBlock = TextBlock | CodeBlock | ThinkingBlock | CardBlock
 // 流式构建时带临时 blockId 的 block
 export type StreamingContentBlock = ContentBlock & { _blockId?: string }
 
+// 思考步骤（结构化，支持 Agent 协作可见性）
+export interface ThinkingStep {
+  text: string
+  agent_name?: string
+  agent_role?: string
+  status?: 'start' | 'working' | 'done'
+  timestamp?: string
+}
+
 interface Message {
   id?: number
   role: 'user' | 'assistant' | 'system'
@@ -60,7 +69,7 @@ interface ChatState {
   conversations: Conversation[]
   currentIntent: string
   lastLearningPath: unknown
-  thinkingSteps: string[]
+  thinkingSteps: ThinkingStep[]
   thinkingCompleted: boolean
   socraticThreadId: string | null
   masteryData: MasteryData | null
@@ -77,7 +86,7 @@ interface ChatState {
   deleteConversation: (conversationId: number | string) => Promise<boolean>
   setCurrentIntent: (intent: string) => void
   setLastLearningPath: (path: unknown) => void
-  addThinkingStep: (step: string) => void
+  addThinkingStep: (step: ThinkingStep | string) => void
   clearThinkingSteps: () => void
   setThinkingCompleted: (val: boolean) => void
   appendCardToLastAssistant: (card: ContentCardRef) => void
@@ -231,7 +240,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setCurrentIntent: (intent) => set({ currentIntent: intent }),
   setLastLearningPath: (path) => set({ lastLearningPath: path }),
 
-  addThinkingStep: (step) => set((state) => ({ thinkingSteps: [...state.thinkingSteps, step] })),
+  addThinkingStep: (step) => set((state) => ({
+    thinkingSteps: [...state.thinkingSteps, typeof step === 'string' ? { text: step } : step],
+  })),
   clearThinkingSteps: () => set({ thinkingSteps: [], thinkingCompleted: false }),
   setThinkingCompleted: (val) => set({ thinkingCompleted: val }),
 

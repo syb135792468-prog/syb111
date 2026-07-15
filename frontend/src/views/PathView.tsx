@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app'
 import { useLearningCenterStore } from '../stores/learningCenter'
 import AppHeader from '../components/layout/AppHeader'
 import PathTimeline from '../components/path/PathTimeline'
+import RecommendedPath from '../components/path/RecommendedPath'
 import { PathNodeData } from '../components/path/PathStep'
 import {
   listLearningPaths, getLearningPath, generateLearningPath,
@@ -217,7 +218,7 @@ const PathView: React.FC = () => {
       .reduce((sum, n) => sum + n.estimated_time, 0)
 
     // 打开右侧知识点详情面板
-    useAppStore.getState().openRightPanel('path-detail', {
+    const panelData = {
       pathId: activePath.id,
       nodeId: node.id,
       nodeName: node.knowledge_point,
@@ -244,6 +245,24 @@ const PathView: React.FC = () => {
       nextNodeId: nextNode?.id || null,
       nextNodeName: nextNode?.knowledge_point || '',
       nextNodeStatus: nextNode?.status || '',
+    }
+    // eslint-disable-next-line no-console
+    console.log('[path-panel-debug] handleNodeClick', {
+      nodeId: node.id,
+      pathId: activePath.id,
+      routeKey: useAppStore.getState().rightPanel.routeKey,
+      isCollapsed: useAppStore.getState().rightPanel.isCollapsed,
+      isOpen: useAppStore.getState().rightPanel.isOpen,
+      panelDataKeys: Object.keys(panelData),
+    })
+    useAppStore.getState().openRightPanel('path-detail', panelData)
+    // eslint-disable-next-line no-console
+    console.log('[path-panel-debug] after openRightPanel', {
+      routeKey: useAppStore.getState().rightPanel.routeKey,
+      type: useAppStore.getState().rightPanel.type,
+      dataNodeId: (useAppStore.getState().rightPanel.data as Record<string, unknown>).nodeId,
+      isCollapsed: useAppStore.getState().rightPanel.isCollapsed,
+      isOpen: useAppStore.getState().rightPanel.isOpen,
     })
 
     // 如果没有资源，异步加载
@@ -302,6 +321,11 @@ const PathView: React.FC = () => {
     }
   }, [recordLearningEvent])
 
+  // 路径数据更新（前置测试答对跳过 / 取消跳过 触发）
+  const handlePathUpdated = useCallback((path: LearningPathData) => {
+    setPaths(prev => prev.map(p => p.id === path.id ? path : p))
+  }, [])
+
   // 删除路径
   const handleDeletePath = useCallback(async (pathId: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -331,6 +355,12 @@ const PathView: React.FC = () => {
     navigate('/chat')
   }, [chatStore, navigate])
 
+  const useRecommendedPath = useCallback((topic: string) => {
+    setNewTopic(topic)
+    setFormTab('quick')
+    setShowNewForm(true)
+  }, [])
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <AppHeader title="学习路径">
@@ -353,6 +383,7 @@ const PathView: React.FC = () => {
       </AppHeader>
 
       <div className="page-scroll-area">
+        <RecommendedPath onUse={useRecommendedPath} />
         {/* 新建路径表单 */}
         {showNewForm && (
           <div className="page-panel max-w-2xl mx-auto mb-6 p-5">
@@ -660,6 +691,7 @@ const PathView: React.FC = () => {
               onNodeClick={handleNodeClick}
               onResourceClick={handleResourceClick}
               onComplete={handleNodeComplete}
+              onPathUpdated={handlePathUpdated}
             />
           </div>
         )}

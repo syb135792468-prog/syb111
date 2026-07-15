@@ -305,7 +305,7 @@ const QuizView: React.FC<QuizViewProps> = ({ resourceId, show, onClose }) => {
     codeTimerRef.current = setInterval(() => setCodeElapsed(Date.now() - t0), 100)
 
     try {
-      const result = await executeCode(currentAnswer, 5)
+      const result = await executeCode(currentAnswer, 5, quizKnowledgePoints[0])
       clearCodeTimer()
       setCodeElapsed(result.total_time)
       setCodeOutput(prev => { const next = [...prev]; next[idx] = result; return next })

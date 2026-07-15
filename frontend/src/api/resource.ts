@@ -39,6 +39,27 @@ export function generateResource(
   return apiPost(`${API_BASE}/resource/generate`, body, 180000)
 }
 
+/**
+ * 异步资源生成（立即返回 task_id，前端轮询 /tasks/{task_id} 拿进度）。
+ * 用于 video + 多题测验等慢速生成，配合 pollTaskProgress 显示进度条。
+ */
+export function generateResourceAsync(
+  userId: string | number,
+  topic: string,
+  resourceType: string,
+  config: Record<string, unknown> | null = null
+) {
+  const body: Record<string, unknown> = {
+    user_id: String(userId),
+    topic,
+    resource_type: resourceType,
+  }
+  if (config && Object.keys(config).length > 0) {
+    body.config = config
+  }
+  return apiPost<{ task_id: string }>(`${API_BASE}/resource/generate-async`, body, 10000)
+}
+
 export function deleteResource(resourceId: string | number, userId: string | number) {
   return apiDelete(`${API_BASE}/resource/${resourceId}?user_id=${userId}`)
 }
@@ -77,4 +98,38 @@ export function expandMindmapNode(params: {
 
 export function renderVideo(resourceId: number, userId: string | number) {
   return apiPost(`${API_BASE}/resource/${resourceId}/render-video?user_id=${userId}`, {}, 300000)
+}
+
+// ==================== 推荐资源（画像驱动精准推送） ====================
+
+export interface Recommendation {
+  resource_type: string
+  knowledge_point: string
+  title: string
+  content_preview: string
+  difficulty: string
+  reason: string
+  resource_data: {
+    title: string
+    content: string
+    knowledge_points: string[]
+    extra_metadata: Record<string, unknown>
+  }
+}
+
+export interface RecommendResult {
+  recommendations: Recommendation[]
+  profile_summary: {
+    learning_style: string
+    motivation_level: string
+    weak_points_count: number
+  }
+}
+
+/** 基于画像 8 维度生成 3 条精准推荐资源（按需生成） */
+export function recommendResources(userId: string | number) {
+  return apiGet<RecommendResult>(
+    `${API_BASE}/resource/recommend?user_id=${userId}`,
+    90000
+  )
 }

@@ -1,0 +1,7 @@
+请为以下Python知识点生成一份教学幻灯片（Markdown格式，用 --- 分隔每页）：
+
+知识点：{topic}
+
+{rag_context}
+
+请直接输出Markdown格式的幻灯片内容，不要添加任何额外说明。

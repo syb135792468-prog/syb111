@@ -12,6 +12,8 @@ const CodePlaygroundView = lazy(() => import('../views/CodePlaygroundView'))
 const TeachingAnimationView = lazy(() => import('../views/TeachingAnimationView'))
 const MultimodalView = lazy(() => import('../views/MultimodalView'))
 const SlidesView = lazy(() => import('../views/SlidesView'))
+const KnowledgeGraphView = lazy(() => import('../views/KnowledgeGraphView'))
+const CourseView = lazy(() => import('../views/CourseView'))
 
 // 加载占位
 const PageLoading: React.FC = () => (
@@ -26,6 +28,7 @@ const AppRoutes: React.FC = () => {
     <Suspense fallback={<PageLoading />}>
       <Routes>
         <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route path="/course" element={<CourseView />} />
         <Route path="/profile" element={<ProfileView />} />
         <Route path="/resources" element={<ResourcesView />} />
         <Route path="/mindmap" element={<MindmapView />} />
@@ -35,6 +38,7 @@ const AppRoutes: React.FC = () => {
         <Route path="/animation" element={<TeachingAnimationView />} />
         <Route path="/multimodal" element={<MultimodalView />} />
         <Route path="/slides" element={<SlidesView />} />
+        <Route path="/knowledge-graph" element={<KnowledgeGraphView />} />
       </Routes>
     </Suspense>
   )

@@ -506,11 +506,16 @@ class AsyncLLMClient:
         response_format: Optional[dict] = None,
     ) -> str:
         """异步调用大模型（自动降级）"""
+        from utils.content_moderation import moderate_input, moderate_output
+
         temp = temperature if temperature is not None else PRIMARY_MODEL_CONFIG.default_temperature
         tokens = max_tokens if max_tokens is not None else PRIMARY_MODEL_CONFIG.default_max_tokens
 
+        # 输入审核（命中则抛 ContentSecurityError）
+        await moderate_input(messages)
+
         try:
-            return await self._call_with_retry(
+            content = await self._call_with_retry(
                 client=self.primary_client,
                 model=self.primary_model,
                 messages=messages,
@@ -519,13 +524,14 @@ class AsyncLLMClient:
                 provider_name="DeepSeek",
                 response_format=response_format,
             )
+            return await moderate_output(content)
         except ContentSecurityError:
             raise
         except Exception as primary_exc:
             logger.warning(f"DeepSeek主模型调用失败: {primary_exc}")
             if self.fallback_client is not None:
                 try:
-                    return await self._call_with_retry(
+                    content = await self._call_with_retry(
                         client=self.fallback_client,
                         model=self.fallback_model,
                         messages=messages,
@@ -534,6 +540,7 @@ class AsyncLLMClient:
                         provider_name="GLM备用",
                         response_format=response_format,
                     )
+                    return await moderate_output(content)
                 except ContentSecurityError:
                     raise
                 except Exception as fallback_exc:
@@ -552,14 +559,19 @@ class AsyncLLMClient:
         """直接调用备用模型（GLM），跳过主模型 DeepSeek。
         适用于 DeepSeek 主模型在重任务上频繁超时/返回空内容的场景。
         备用客户端未启用时抛 RuntimeError。"""
+        from utils.content_moderation import moderate_input, moderate_output
+
         if self.fallback_client is None:
             raise RuntimeError("备用模型未启用，请将 config/model_config.py 的 ENABLE_FALLBACK 设为 True")
 
         temp = temperature if temperature is not None else GLM_FALLBACK_MODEL_CONFIG.default_temperature
         tokens = max_tokens if max_tokens is not None else GLM_FALLBACK_MODEL_CONFIG.default_max_tokens
 
+        # 输入审核（命中则抛 ContentSecurityError）
+        await moderate_input(messages)
+
         try:
-            return await self._call_with_retry(
+            content = await self._call_with_retry(
                 client=self.fallback_client,
                 model=self.fallback_model,
                 messages=messages,
@@ -568,6 +580,7 @@ class AsyncLLMClient:
                 provider_name="GLM",
                 response_format=response_format,
             )
+            return await moderate_output(content)
         except ContentSecurityError:
             raise
 
@@ -582,8 +595,13 @@ class AsyncLLMClient:
         首 chunk 延迟约 0.5-2s，之后实时输出。
         """
         import time as _time
+        from utils.content_moderation import moderate_input
+
         temp = temperature if temperature is not None else PRIMARY_MODEL_CONFIG.default_temperature
         tokens = max_tokens if max_tokens is not None else PRIMARY_MODEL_CONFIG.default_max_tokens
+
+        # 输入审核（流式仅输入侧，输出 chunk 不拦截避免 buffer 延迟）
+        await moderate_input(messages)
 
         async def _try_stream(client, model, provider_name):
             """尝试流式调用，成功则 yield 所有 chunk，失败则抛异常"""

@@ -38,6 +38,11 @@ COMPETITION_INFO = {
     "problem_id": "A3",
     "problem_name": "基于大模型的个性化资源生成与学习多智能体系统开发",
     "course_name": "Python程序设计",  # 明确指定课程
+    # 课程展示信息（赛题对齐"高等教育"方向，前端课程概览页用）
+    "course_intro": "面向高校 Python 编程课程的个性化智能学习平台，覆盖学-练-测-评-路径规划完整学习闭环。",
+    "course_target": "帮助不同基础、不同学习风格的学生，通过多智能体协作生成定制化学习资源，实现因材施教。",
+    "course_audience": "Python 编程初学者到中级学习者（高校 Python 课程在校生、自主学习者）",
+    "course_modules": ["基础语法", "流程控制", "函数与模块", "数据结构", "面向对象", "异常与文件"],
 }
 
 # ============================================================
@@ -186,7 +191,7 @@ GLM_FALLBACK_MODEL_CONFIG = ModelConfig(
     timeout=180,
 )
 
-# 多模态视觉理解模型：火山方舟 doubao-vision（图片+文本 → 文本，用于多模态代码识别）
+# 多模态视觉理解模型：火山方舟 doubao-seed-2.1-turbo（图片+文本 → 文本，用于多模态代码识别）
 # 注意：必须走标准端点 /api/v3，不能用 coding 端点 /api/coding/v3（coding 端点只认 glm-5.2 这类）
 ARK_VISION_CONFIG = ModelConfig(
     provider="ark_vision",
@@ -224,6 +229,14 @@ class TTSConfig(BaseModel):
     audio_encoding: str = "mp3"
     sample_rate: int = 24000
     enabled: bool = settings.TTS_ENABLED
+    # 科大讯飞超拟人合成（主用，火山降级）
+    xfyun_app_id: str = settings.TTS_XFYUN_APP_ID
+    xfyun_api_key: str = settings.TTS_XFYUN_API_KEY
+    xfyun_api_secret: str = settings.TTS_XFYUN_API_SECRET
+    xfyun_api_password: str = settings.TTS_XFYUN_API_PASSWORD
+    xfyun_ws_url: str = settings.TTS_XFYUN_WS_URL
+    xfyun_voice_id: str = settings.TTS_XFYUN_VOICE_ID
+    xfyun_service_param: str = settings.TTS_XFYUN_SERVICE_PARAM
 
 TTS_CONFIG = TTSConfig()
 
@@ -296,6 +309,7 @@ SCENE_CONFIG: Dict[str, SceneConfig] = {
     "reading_generation": SceneConfig(temperature=0.6, max_tokens=4096, description="拓展阅读材料生成"),
     "slides_generation": SceneConfig(temperature=0.6, max_tokens=8192, description="教学幻灯片生成"),
     "aggregation": SceneConfig(temperature=0.4, max_tokens=8192, description="多Agent内容聚合整合"),
+    "chat_judge": SceneConfig(temperature=0.1, max_tokens=512, description="对话判题：信号触发评估用户作答"),
 }
 
 # ============================================================

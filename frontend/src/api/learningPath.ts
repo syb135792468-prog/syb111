@@ -91,6 +91,42 @@ export interface QuizSubmitResult {
   }
 }
 
+export interface CommonMistake {
+  wrong: string
+  error_type: string
+  reason: string
+}
+
+export interface CollaborationAgent {
+  name: string
+  role: string
+  action: string
+}
+
+export interface CollaborationInfo {
+  agents: CollaborationAgent[]
+  description: string
+}
+
+export interface PreTest {
+  question: string
+  answer: string
+  explanation: string
+  common_mistakes: CommonMistake[]
+  difficulty: string
+  resource_id: number
+  cached: boolean
+  collaboration_info?: CollaborationInfo
+}
+
+export interface PreTestSubmitResult {
+  is_correct: boolean
+  correct_answer: string
+  explanation: string
+  matched_error_type: string | null
+  path: LearningPathData | null
+}
+
 // ==================== API 函数 ====================
 
 /** 获取用户的学习路径列表 */
@@ -146,4 +182,34 @@ export async function submitQuizResult(
 /** 删除学习路径 */
 export async function deleteLearningPath(pathId: number) {
   return apiDelete(`/api/learning-path/${pathId}`)
+}
+
+/** 生成节点前置测试题（PathAgent 调 QuizAgent，Agent 间协作） */
+export async function generatePreTest(nodeId: number) {
+  return apiPost<PreTest>(
+    `/api/learning-path/nodes/${nodeId}/pre-test`,
+    {},
+    60000
+  )
+}
+
+/** 提交前置测试答案（答对则节点跳过并推进路径进度） */
+export async function submitPreTest(
+  nodeId: number,
+  body: { user_answer: string; resource_id: number }
+) {
+  return apiPost<PreTestSubmitResult>(
+    `/api/learning-path/nodes/${nodeId}/pre-test/submit`,
+    body,
+    15000
+  )
+}
+
+/** 取消跳过节点（恢复 NOT_STARTED，路径进度回退） */
+export async function unskipNode(nodeId: number) {
+  return apiPost<LearningPathData>(
+    `/api/learning-path/nodes/${nodeId}/unskip`,
+    {},
+    10000
+  )
 }

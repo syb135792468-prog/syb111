@@ -80,6 +80,61 @@ def get_profile_from_context(context: Optional[Dict[str, Any]]) -> Dict[str, Any
     return context.get("profile_data", {})
 
 
+# 画像维度 -> 中文标签映射（供 build_profile_text 使用）
+_PROFILE_LEVEL_MAP = {
+    "beginner": "零基础", "intermediate": "入门级", "advanced": "进阶级",
+}
+_PROFILE_STYLE_MAP = {
+    "visual": "视觉型（偏好图示）", "auditory": "听觉型（偏好讲解）",
+    "kinesthetic": "动手型（偏好练习）", "mixed": "混合型",
+}
+_PROFILE_DURATION_MAP = {
+    "short": "碎片化（10-15min）", "medium": "标准（30-45min）", "long": "深度（1h+）",
+}
+
+
+def build_profile_text(profile: Optional[Dict[str, Any]], dims: List[str]) -> str:
+    """按指定维度构建画像文本，空值跳过。
+
+    各 Agent 按自身相关度传入 dims 子集，避免无关维度干扰 LLM。
+
+    Args:
+        profile: 用户画像字典，可为 None 或空
+        dims: 需要注入的维度名列表，可选值：
+            knowledge_level / learning_style / duration_preference /
+            weak_points / error_preferences
+
+    Returns:
+        多行画像文本，无任何有效信息时返回"（暂无画像信息）"
+    """
+    if not profile:
+        return "（暂无画像信息）"
+
+    parts: List[str] = []
+    if "knowledge_level" in dims:
+        lv = profile.get("knowledge_level")
+        if lv:
+            parts.append(f"- 基础水平：{_PROFILE_LEVEL_MAP.get(lv, lv)}")
+    if "learning_style" in dims:
+        st = profile.get("learning_style")
+        if st:
+            parts.append(f"- 学习风格：{_PROFILE_STYLE_MAP.get(st, st)}")
+    if "duration_preference" in dims:
+        dp = profile.get("duration_preference")
+        if dp:
+            parts.append(f"- 时长偏好：{_PROFILE_DURATION_MAP.get(dp, dp)}")
+    if "weak_points" in dims:
+        wp = profile.get("weak_points") or []
+        if wp:
+            parts.append(f"- 薄弱知识点：{', '.join(wp)}")
+    if "error_preferences" in dims:
+        ep = profile.get("error_preferences") or []
+        if ep:
+            parts.append(f"- 易错类型：{', '.join(ep)}")
+
+    return "\n".join(parts) if parts else "（暂无画像信息）"
+
+
 def append_resource_to_list(
     context: Optional[Dict[str, Any]],
     resource: Any,

@@ -11,11 +11,17 @@ interface CodeResult {
   total_time: number
 }
 
-export async function executeCode(code: string, timeout = 10): Promise<CodeResult> {
+export async function executeCode(
+  code: string,
+  timeout = 10,
+  knowledgePoint?: string,
+): Promise<CodeResult> {
   const startTime = Date.now()
 
   try {
-    const resp = await apiPost<CodeResult>(`${API_BASE}/code/execute`, { code, timeout }, 30000)
+    const payload: Record<string, unknown> = { code, timeout }
+    if (knowledgePoint) payload.knowledge_point = knowledgePoint
+    const resp = await apiPost<CodeResult>(`${API_BASE}/code/execute`, payload, 30000)
     const networkTime = Date.now() - startTime
 
     if (resp.code === 200 && resp.data) {

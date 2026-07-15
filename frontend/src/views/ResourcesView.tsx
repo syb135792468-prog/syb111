@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
+import { useTaskStore } from '../stores/taskStore'
 import { useLearningCenterStore } from '../stores/learningCenter'
-import { listResources, generateResource, deleteResource, addToLibrary } from '../api/resource'
+import { listResources, generateResource, generateResourceAsync, deleteResource, addToLibrary } from '../api/resource'
+import { pollTaskProgress } from '../composables/useSSE'
 import AppHeader from '../components/layout/AppHeader'
 import ResourceCard from '../components/resource/ResourceCard'
 import ResourceDetail from '../components/resource/ResourceDetail'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import GenerateModal from '../components/resource/GenerateModal'
 import QuizView from '../components/quiz/QuizView'
+import ProgressBar from '../components/common/ProgressBar'
 import { BookOpen, Plus } from 'lucide-react'
 
 // --- 类型定义 ---
@@ -33,6 +37,7 @@ const ResourcesView: React.FC = () => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
   const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   // --- 状态 ---
   const [resources, setResources] = useState<Resource[]>([])
@@ -51,6 +56,7 @@ const ResourcesView: React.FC = () => {
   const [detailResource, setDetailResource] = useState<Resource | null>(null)
   const [showQuiz, setShowQuiz] = useState(false)
   const [quizResourceId, setQuizResourceId] = useState('')
+  const [quizGenTaskId, setQuizGenTaskId] = useState<string | null>(null)
 
   // --- 删除状态 ---
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -82,6 +88,19 @@ const ResourcesView: React.FC = () => {
   useEffect(() => {
     fetchResources()
   }, [fetchResources])
+
+  // --- URL ?quiz=<id> 自动打开测验弹窗（来自图谱"开始练习"跳转） ---
+  useEffect(() => {
+    const quizId = searchParams.get('quiz')
+    if (quizId) {
+      setQuizResourceId(String(quizId))
+      setShowQuiz(true)
+      // 消费后清掉 query 参数，避免刷新或返回时重复打开
+      const next = new URLSearchParams(searchParams)
+      next.delete('quiz')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
 
   // --- 打开详情 ---
   const openDetail = useCallback((r: Resource) => {
@@ -119,6 +138,52 @@ const ResourcesView: React.FC = () => {
 
   // --- 生成资源 ---
   const handleGenerate = useCallback(async ({ topic, type, config = {} }: GeneratePayload) => {
+    // 多题测验走异步进度路径，其他类型走同步
+    const questionCount = (config.questionCount as number) || 1
+    const useAsync = type === 'quiz' && questionCount > 1
+
+    if (useAsync) {
+      try {
+        const resp = await generateResourceAsync(authStore.userId, topic, type, config)
+        if (resp.code === 200 && resp.data?.task_id) {
+          const taskId = resp.data.task_id
+          setQuizGenTaskId(taskId)
+          setShowGenerate(false)
+          useTaskStore.getState().addTask({
+            taskId,
+            resourceType: type,
+            topic,
+            status: 'pending',
+            createdAt: Date.now(),
+            progress: 0,
+          })
+          pollTaskProgress(
+            taskId,
+            () => {
+              if (!mountedRef.current) return
+              setQuizGenTaskId(null)
+              appStore.showToast('资源生成成功', 'success')
+              fetchResources()
+              setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
+            },
+            (error) => {
+              if (!mountedRef.current) return
+              setQuizGenTaskId(null)
+              appStore.showToast('生成失败：' + error, 'error')
+              setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
+            },
+          )
+        } else {
+          appStore.showToast(resp.message || '生成失败', 'error')
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : '网络错误'
+        appStore.showToast('生成失败：' + msg, 'error')
+      }
+      return
+    }
+
+    // 同步路径（原有逻辑）
     try {
       const resp = await generateResource(authStore.userId, topic, type, config)
       if (resp.code === 200) {
@@ -236,6 +301,9 @@ const ResourcesView: React.FC = () => {
       </AppHeader>
 
       <div className="page-scroll-area">
+        {quizGenTaskId && (
+          <QuizGenProgress taskId={quizGenTaskId} />
+        )}
         {/* Loading */}
         {loading ? (
           <div className="page-content flex items-center justify-center h-64">
@@ -318,3 +386,25 @@ const ResourcesView: React.FC = () => {
 }
 
 export default ResourcesView
+
+const QuizGenProgress: React.FC<{ taskId: string }> = ({ taskId }) => {
+  const task = useTaskStore((state) => state.tasks.find((t) => t.taskId === taskId))
+  if (!task) return null
+  return (
+    <div className="page-content">
+      <div className="page-panel-soft" style={{ padding: '14px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-brand-600" />
+          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink, #1e293b)' }}>
+            正在生成练习题：{task.topic}
+          </span>
+        </div>
+        <ProgressBar
+          percent={task.progress || 0}
+          stage={task.stage}
+          message={task.message}
+        />
+      </div>
+    </div>
+  )
+}

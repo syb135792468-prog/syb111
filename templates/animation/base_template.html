@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, height=1080">
+  <title>{{TOPIC}} · 教学动画</title>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+  <style>
+    /* ===== 全局重置 ===== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+
+    /* ===== 配色系统 ===== */
+    :root {
+      --bg-primary: #0f0f23;
+      --bg-secondary: #1a1a2e;
+      --bg-card: rgba(255, 255, 255, 0.06);
+      --bg-code: #1e1e2e;
+      --text-primary: #e2e8f0;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-blue: #60a5fa;
+      --accent-purple: #a78bfa;
+      --accent-amber: #fbbf24;
+      --accent-green: #34d399;
+      --accent-red: #f87171;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --glass-bg: rgba(255, 255, 255, 0.04);
+      --glass-border: rgba(255, 255, 255, 0.1);
+    }
+
+    body {
+      background: linear-gradient(135deg, var(--bg-primary) 0%, #16213e 50%, #0f0f23 100%);
+      color: var(--text-primary);
+    }
+
+    /* ===== 开始界面 ===== */
+    #startScreen {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 100;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    #startScreen h1 { font-size: 56px; font-weight: 700; color: white; margin-bottom: 12px; text-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    #startScreen .subtitle { font-size: 20px; color: rgba(255,255,255,0.8); margin-bottom: 32px; }
+    #startScreen .goals { list-style: none; margin-bottom: 40px; }
+    #startScreen .goals li { font-size: 16px; color: rgba(255,255,255,0.9); margin: 8px 0; padding-left: 28px; position: relative; }
+    #startScreen .goals li::before { content: "✓"; position: absolute; left: 0; color: #fbbf24; font-weight: bold; }
+    #startScreen .duration-hint { font-size: 14px; color: rgba(255,255,255,0.6); margin-bottom: 24px; }
+    #startButton {
+      padding: 16px 48px; font-size: 18px; font-weight: 600;
+      background: rgba(255,255,255,0.2); color: white;
+      border: 2px solid rgba(255,255,255,0.4); border-radius: 50px;
+      cursor: pointer; backdrop-filter: blur(10px);
+      transition: all 0.3s;
+    }
+    #startButton:hover { background: rgba(255,255,255,0.3); transform: scale(1.05); }
+
+    /* ===== 播放器界面 ===== */
+    #playerScreen { display: none; position: absolute; inset: 0; }
+
+    /* 顶部栏 */
+    #topBar {
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 48px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border-subtle); z-index: 10;
+    }
+    #stepCounter { font-size: 13px; color: var(--text-secondary); }
+    #stepDots { display: flex; gap: 6px; }
+    .step-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.2); transition: all 0.3s; }
+    .step-dot.active { background: white; box-shadow: 0 0 8px rgba(255,255,255,0.8); }
+    .step-dot.done { background: rgba(255,255,255,0.5); }
+
+    /* 主内容区 */
+    #mainContent {
+      position: absolute; top: 48px; bottom: 64px; left: 0; right: 0;
+      display: flex; padding: 20px; gap: 20px;
+    }
+
+    /* 左侧代码区 */
+    #codeArea {
+      flex: 1.2; min-width: 0;
+      background: var(--bg-code); border-radius: 16px;
+      border: 1px solid var(--border-subtle);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #codeAreaHeader {
+      padding: 12px 20px; border-bottom: 1px solid var(--border-subtle);
+      display: flex; align-items: center; gap: 12px;
+    }
+    #codeAreaHeader .title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+    #codeDisplay {
+      flex: 1; padding: 16px 20px; overflow-y: auto;
+      font-family: "Consolas", "Monaco", "JetBrains Mono", monospace;
+      font-size: 15px; line-height: 1.8;
+    }
+    .code-line { padding: 2px 0 2px 12px; border-left: 3px solid transparent; border-radius: 4px; transition: all 0.3s; }
+    .code-line.highlight { border-left-color: var(--accent-amber); background: rgba(251, 191, 36, 0.08); }
+    .line-num { color: var(--text-muted); display: inline-block; width: 2.5em; text-align: right; margin-right: 16px; user-select: none; }
+
+    /* 语法高亮 */
+    .kw { color: #c792ea; font-weight: 600; }
+    .str { color: #c3e88d; }
+    .cmt { color: #546e7a; font-style: italic; }
+    .num { color: #f78c6c; }
+    .fn { color: #82aaff; }
+    .op { color: #89ddff; }
+    .cls { color: #ffcb6b; }
+    .self { color: #f07178; }
+
+    /* 右侧讲解面板 */
+    #explainArea {
+      flex: 0.8; min-width: 0;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    /* 讲解气泡 */
+    #speechBubble {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 20px;
+      backdrop-filter: blur(12px);
+      flex: 0 0 auto;
+      min-height: 120px;
+    }
+    #speechBubble .step-title { font-size: 18px; font-weight: 700; color: var(--accent-blue); margin-bottom: 12px; }
+    #speechBubble .step-narration { font-size: 15px; color: var(--text-primary); line-height: 1.7; }
+
+    /* 变量状态面板 */
+    #memoryPanel {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 16px;
+      backdrop-filter: blur(12px);
+      flex: 1;
+      overflow-y: auto;
+    }
+    #memoryPanel .panel-title { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+    .var-card {
+      background: rgba(0,0,0,0.3); border-radius: 8px;
+      padding: 8px 12px; margin-bottom: 8px;
+      font-family: "Consolas", monospace; font-size: 13px;
+      border-left: 3px solid var(--accent-purple);
+    }
+    .var-name { color: var(--accent-purple); }
+    .var-value { color: var(--accent-green); }
+
+    /* 步骤导航 */
+    #stepNav {
+      background: var(--glass-bg);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 12px;
+      backdrop-filter: blur(12px);
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .step-btn {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border-subtle);
+      color: var(--text-secondary); font-size: 13px; font-weight: 600;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .step-btn.active { background: var(--accent-blue); color: white; border-color: var(--accent-blue); }
+    .step-btn.done { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); }
+
+    /* ===== 底部控制栏 ===== */
+    #controls {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      height: 64px; display: flex; align-items: center; gap: 16px;
+      padding: 0 24px; background: rgba(0,0,0,0.4);
+      backdrop-filter: blur(12px); border-top: 1px solid var(--border-subtle);
+      z-index: 10;
+    }
+    .ctrl-btn {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: rgba(255,255,255,0.08); border: 1px solid var(--border-subtle);
+      color: white; font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .ctrl-btn:hover { background: rgba(255,255,255,0.15); }
+    #progressBar {
+      flex: 1; height: 6px; background: rgba(255,255,255,0.1);
+      border-radius: 3px; cursor: pointer; position: relative;
+    }
+    #progressFill {
+      height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+      border-radius: 3px; width: 0%; transition: width 0.1s;
+    }
+    #timeDisplay { font-size: 12px; color: var(--text-muted); min-width: 80px; text-align: right; }
+
+    /* 语速控制 */
+    #speedControl {
+      display: flex; align-items: center; gap: 6px;
+    }
+    #speedBtn {
+      padding: 4px 10px; font-size: 12px; border-radius: 6px;
+      background: rgba(255,255,255,0.08); border: 1px solid var(--border-subtle);
+      color: var(--text-secondary); cursor: pointer;
+    }
+
+    /* 字幕 */
+    #subtitleBar {
+      position: absolute; bottom: 72px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.7); padding: 8px 24px; border-radius: 8px;
+      font-size: 15px; color: white; max-width: 80%;
+      text-align: center; backdrop-filter: blur(8px);
+      display: none; z-index: 10;
+    }
+
+    /* ===== 浮动装饰 ===== */
+    .deco-circle {
+      position: absolute; border-radius: 50%; pointer-events: none;
+      background: radial-gradient(circle, rgba(100,130,255,0.08), transparent 70%);
+    }
+  </style>
+</head>
+<body>
+  <!-- 浮动装饰 -->
+  <div class="deco-circle" style="width:400px;height:400px;top:-100px;right:-100px;"></div>
+  <div class="deco-circle" style="width:300px;height:300px;bottom:-80px;left:-80px;"></div>
+
+  <!-- 开始界面 -->
+  <div id="startScreen">
+    <h1 id="mainTitle">{{TOPIC}}</h1>
+    <p class="subtitle" id="subtitle">{{SUBTITLE}}</p>
+    <ul class="goals" id="learningGoals">{{LEARNING_GOALS}}</ul>
+    <p class="duration-hint" id="durationHint">{{DURATION_HINT}}</p>
+    <button id="startButton">开始学习</button>
+  </div>
+
+  <!-- 播放器界面 -->
+  <div id="playerScreen">
+    <!-- 顶部栏 -->
+    <div id="topBar">
+      <span id="stepCounter">第 1 步 / 共 {{TOTAL_STEPS}} 步</span>
+      <div id="stepDots">{{STEP_DOTS}}</div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div id="mainContent">
+      <!-- 左侧代码区 -->
+      <div id="codeArea">
+        <div id="codeAreaHeader">
+          <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#ff5f56;"></span>
+          <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#ffbd2e;"></span>
+          <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#27c93f;"></span>
+          <span class="title">{{TOPIC}}.py</span>
+        </div>
+        <div id="codeDisplay">{{CODE_DISPLAY_INIT}}</div>
+      </div>
+
+      <!-- 右侧讲解面板 -->
+      <div id="explainArea">
+        <div id="speechBubble">
+          <div class="step-title" id="stepTitle">{{INITIAL_STEP_TITLE}}</div>
+          <div class="step-narration" id="stepNarration">{{INITIAL_NARRATION}}</div>
+        </div>
+        <div id="memoryPanel">
+          <div class="panel-title">📦 变量状态</div>
+          <div id="varContainer">{{INITIAL_VARS}}</div>
+        </div>
+        <div id="stepNav">{{STEP_NAV_BUTTONS}}</div>
+      </div>
+    </div>
+
+    <!-- 字幕 -->
+    <div id="subtitleBar"></div>
+
+    <!-- 底部控制栏 -->
+    <div id="controls">
+      <button class="ctrl-btn" id="playPauseButton">⏸</button>
+      <button class="ctrl-btn" id="restartButton">🔄</button>
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <span id="timeDisplay">0:00 / {{TOTAL_DURATION}}</span>
+      <div id="speedControl">
+        <button id="speedBtn">1.0x</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== 全局状态 =====
+    var totalSteps = {{TOTAL_STEPS}};
+    var currentStep = 0;
+    var speechRate = 1.0;
+    var subtitlesEnabled = true;
+    window.isPlaying = false;
+    window.mainTimeline = null;
+
+    // ===== 语法高亮辅助 =====
+    function highlightSyntax(code) {{
+      var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      // 注释
+      escaped = escaped.replace(/(#.*)$/gm, '<span class="cmt">$1</span>');
+      // 字符串
+      escaped = escaped.replace(/("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
+      // 关键字
+      escaped = escaped.replace(/\b(def|class|if|elif|else|for|while|return|import|from|try|except|finally|with|as|yield|lambda|pass|break|continue|raise|and|or|not|in|is|True|False|None|self|print)\b/g, function(m) {{
+        if (m === 'self') return '<span class="self">' + m + '</span>';
+        if (m === 'print' || m === 'range' || m === 'len' || m === 'type' || m === 'int' || m === 'str' || m === 'list' || m === 'dict') return '<span class="fn">' + m + '</span>';
+        return '<span class="kw">' + m + '</span>';
+      }});
+      // 数字
+      escaped = escaped.replace(/\b(\d+\.?\d*)\b/g, '<span class="num">$1</span>');
+      return escaped;
+    }}
+
+    // ===== 代码区渲染 =====
+    function renderCode(code, highlights) {{
+      var lines = code.split('\\n');
+      var html = '';
+      for (var i = 0; i < lines.length; i++) {{
+        var hl = highlights && highlights.indexOf(i + 1) >= 0 ? ' highlight' : '';
+        html += '<div class="code-line' + hl + '" id="codeLine' + (i+1) + '">';
+        html += '<span class="line-num">' + (i+1) + '</span>';
+        html += highlightSyntax(lines[i]);
+        html += '</div>';
+      }}
+      document.getElementById('codeDisplay').innerHTML = html;
+    }}
+
+    // ===== 变量面板 =====
+    function showVar(name, value) {{
+      var container = document.getElementById('varContainer');
+      var existing = document.getElementById('var-' + name);
+      if (existing) {{
+        var valEl = existing.querySelector('.var-value');
+        var oldVal = valEl.textContent;
+        if (oldVal !== String(value)) {{
+          valEl.textContent = value;
+          gsap.fromTo(valEl, {{backgroundColor: 'rgba(251,191,36,0.4)'}}, {{backgroundColor: 'transparent', duration: 0.8}});
+        }}
+      }} else {{
+        var card = document.createElement('div');
+        card.className = 'var-card';
+        card.id = 'var-' + name;
+        card.innerHTML = '<span class="var-name">' + name + '</span> = <span class="var-value">' + value + '</span>';
+        container.appendChild(card);
+        gsap.from(card, {{autoAlpha: 0, x: -20, duration: 0.4, ease: 'power2.out'}});
+      }}
+    }}
+
+    function clearVars() {{
+      document.getElementById('varContainer').innerHTML = '';
+    }}
+
+    // ===== 步骤指示器更新 =====
+    function updateStepDisplay(step) {{
+      currentStep = step;
+      document.getElementById('stepCounter').textContent = '第 ' + step + ' 步 / 共 ' + totalSteps + ' 步';
+      // 更新圆点
+      var dots = document.querySelectorAll('.step-dot');
+      dots.forEach(function(dot, i) {{
+        dot.className = 'step-dot';
+        if (i < step - 1) dot.classList.add('done');
+        if (i === step - 1) dot.classList.add('active');
+      }});
+      // 更新步骤导航按钮
+      var btns = document.querySelectorAll('.step-btn');
+      btns.forEach(function(btn, i) {{
+        btn.className = 'step-btn';
+        if (i < step - 1) btn.classList.add('done');
+        if (i === step - 1) btn.classList.add('active');
+      }});
+    }}
+
+    // ===== 语音合成 =====
+    function speak(text, callback) {{
+      if (!('speechSynthesis' in window)) {{
+        if (callback) setTimeout(callback, 2000);
+        return;
+      }}
+      window.speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN';
+      u.rate = speechRate;
+      if (callback) u.onend = callback;
+      window.speechSynthesis.speak(u);
+      // 字幕
+      if (subtitlesEnabled) {{
+        var bar = document.getElementById('subtitleBar');
+        bar.textContent = text;
+        bar.style.display = 'block';
+      }}
+    }}
+
+    // ===== 语速控制 =====
+    var speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+    var speedIdx = 2;
+    document.getElementById('speedBtn').addEventListener('click', function() {{
+      speedIdx = (speedIdx + 1) % speeds.length;
+      speechRate = speeds[speedIdx];
+      this.textContent = speechRate + 'x';
+    }});
+
+    // ===== 进度条更新 =====
+    function updateProgress(percent) {{
+      document.getElementById('progressFill').style.width = percent + '%';
+    }}
+
+    // ===== 动画骨架（由 LLM 填充） =====
+    function buildTimeline() {{
+      window.mainTimeline = gsap.timeline({{ paused: true }});
+      // {{ANIMATION_STEPS}}
+    }}
+
+    // ===== 控制接口 =====
+    function startAnimation() {{
+      document.getElementById('startScreen').style.display = 'none';
+      document.getElementById('playerScreen').style.display = 'block';
+      window.isPlaying = true;
+      buildTimeline();
+      window.mainTimeline.play();
+    }}
+
+    function pauseAnimation() {{
+      window.isPlaying = false;
+      if (window.mainTimeline) window.mainTimeline.pause();
+      if ('speechSynthesis' in window) window.speechSynthesis.pause();
+    }}
+
+    function resumeAnimation() {{
+      window.isPlaying = true;
+      if (window.mainTimeline) window.mainTimeline.resume();
+      if ('speechSynthesis' in window) window.speechSynthesis.resume();
+    }}
+
+    function restartAnimation() {{
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      if (window.mainTimeline) window.mainTimeline.kill();
+      window.isPlaying = false;
+      currentStep = 0;
+      clearVars();
+      document.getElementById('subtitleBar').style.display = 'none';
+      document.getElementById('playerScreen').style.display = 'none';
+      document.getElementById('startScreen').style.display = 'flex';
+      document.getElementById('progressFill').style.width = '0%';
+      document.getElementById('stepCounter').textContent = '第 1 步 / 共 ' + totalSteps + ' 步';
+      var dots = document.querySelectorAll('.step-dot');
+      dots.forEach(function(d) {{ d.className = 'step-dot'; }});
+    }}
+
+    function seekTo(percent) {{
+      if (!window.mainTimeline) return;
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      var time = (percent / 100) * window.mainTimeline.duration();
+      window.mainTimeline.seek(time);
+      window.isPlaying = true;
+      window.mainTimeline.resume();
+    }}
+
+    // ===== 按钮事件绑定 =====
+    document.getElementById('startButton').addEventListener('click', startAnimation);
+    document.getElementById('playPauseButton').addEventListener('click', function() {{
+      if (window.isPlaying) {{ pauseAnimation(); this.textContent = '▶'; }}
+      else {{ resumeAnimation(); this.textContent = '⏸'; }}
+    }});
+    document.getElementById('restartButton').addEventListener('click', restartAnimation);
+    document.getElementById('progressBar').addEventListener('click', function(e) {{
+      var rect = e.currentTarget.getBoundingClientRect();
+      var percent = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      document.getElementById('progressFill').style.width = percent + '%';
+      seekTo(percent);
+    }});
+
+    // ===== 键盘快捷键 =====
+    document.addEventListener('keydown', function(e) {{
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      switch (e.code) {{
+        case 'Space': e.preventDefault(); document.getElementById('playPauseButton').click(); break;
+        case 'KeyR': e.preventDefault(); document.getElementById('restartButton').click(); break;
+      }}
+    }});
+
+    // ===== 装饰动画 =====
+    gsap.to('.deco-circle', {{y: 20, duration: 8, repeat: -1, yoyo: true, ease: 'sine.inOut'}});
+    gsap.from('#startScreen h1', {{y: -30, opacity: 0, duration: 0.8, ease: 'back.out'}});
+    gsap.from('#startScreen .subtitle', {{y: 20, opacity: 0, duration: 0.6, delay: 0.2}});
+    gsap.from('#startScreen .goals li', {{x: -20, opacity: 0, duration: 0.4, stagger: 0.1, delay: 0.4}});
+    gsap.from('#startButton', {{scale: 0.8, opacity: 0, duration: 0.5, delay: 0.8, ease: 'back.out'}});
+    gsap.to('#startButton', {{boxShadow: '0 0 30px rgba(255,255,255,0.3)', duration: 1.5, repeat: -1, yoyo: true, ease: 'sine.inOut'}});
+  </script>
+</body>
+</html>

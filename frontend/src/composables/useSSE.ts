@@ -36,6 +36,11 @@ async function pollTaskStatus(taskId: string, streamConvId: number | string | nu
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.status === 'pending') {
+        useTaskStore.getState().updateTask(taskId, {
+          progress: data.progress_percent,
+          stage: data.stage,
+          message: data.message,
+        })
         if (++retries > TASK_POLL_MAX_RETRIES) {
           useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '轮询超时' })
           return
@@ -67,9 +72,58 @@ async function pollTaskStatus(taskId: string, streamConvId: number | string | nu
         useTaskStore.getState().updateTask(taskId, { status: 'failed', error: data.error })
         useAppStore.getState().showToast('资源生成失败', 'error')
       }
-    } catch {
+    } catch (e) {
+      console.error('[task-poll] 轮询失败:', e instanceof Error ? e.message : e, 'taskId=', taskId)
       if (++retries > TASK_POLL_MAX_RETRIES) {
         useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '网络错误' })
+        return
+      }
+      setTimeout(poll, TASK_POLL_INTERVAL)
+    }
+  }
+  poll()
+}
+
+/**
+ * 通用任务进度轮询（非 chat 路径用）。
+ * 轮询 /api/tasks/{taskId}，更新 taskStore 进度，完成/失败时调回调。
+ * 回调返回资源数据（completed）或错误信息（failed）。
+ */
+export function pollTaskProgress(
+  taskId: string,
+  onComplete: (data: any) => void,
+  onFail: (error: string) => void,
+): void {
+  let retries = 0
+  const poll = async () => {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.status === 'pending') {
+        useTaskStore.getState().updateTask(taskId, {
+          progress: data.progress_percent,
+          stage: data.stage,
+          message: data.message,
+        })
+        if (++retries > TASK_POLL_MAX_RETRIES) {
+          useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '轮询超时' })
+          onFail('轮询超时')
+          return
+        }
+        setTimeout(poll, TASK_POLL_INTERVAL)
+      } else if (data.status === 'completed') {
+        useTaskStore.getState().updateTask(taskId, { status: 'completed', data: data.data, progress: 100 })
+        onComplete(data.data)
+      } else {
+        useTaskStore.getState().updateTask(taskId, { status: 'failed', error: data.error })
+        onFail(data.error || '生成失败')
+      }
+    } catch (e) {
+      console.error('[task-poll] 轮询失败:', e instanceof Error ? e.message : e, 'taskId=', taskId)
+      if (++retries > TASK_POLL_MAX_RETRIES) {
+        useTaskStore.getState().updateTask(taskId, { status: 'failed', error: '网络错误' })
+        onFail('网络错误')
         return
       }
       setTimeout(poll, TASK_POLL_INTERVAL)
@@ -287,7 +341,13 @@ export function useSSE() {
               case 'thinking': {
                 const thinkingText = typeof data.data === 'string' ? data.data : data.data?.text || ''
                 if (thinkingText) {
-                  useChatStore.getState().addThinkingStep(thinkingText)
+                  useChatStore.getState().addThinkingStep({
+                    text: thinkingText,
+                    agent_name: data.agent_name,
+                    agent_role: data.agent_role,
+                    status: data.data?.status,
+                    timestamp: data.timestamp,
+                  })
                 }
                 // 提前保存 conversation_id（后端在首个 thinking 事件中附带）
                 if (data.data?.conversation_id) {
@@ -323,6 +383,16 @@ export function useSSE() {
                 if (socraticData.thread_id) {
                   useChatStore.getState().setSocraticThreadId(socraticData.thread_id)
                 }
+                // 回填 AI 消息 id（后端在发送事件前已保存消息）
+                if (socraticData.message_id) {
+                  const state = useChatStore.getState()
+                  const msgs = [...state.messages]
+                  const last = msgs[msgs.length - 1]
+                  if (last && last.role === 'assistant' && !last.id) {
+                    msgs[msgs.length - 1] = { ...last, id: socraticData.message_id }
+                    useChatStore.setState({ messages: msgs })
+                  }
+                }
                 break
               }
 
@@ -342,6 +412,16 @@ export function useSSE() {
                 const endData = data.data || {}
                 if (endData.conversation_id) {
                   useChatStore.setState({ currentConversationId: endData.conversation_id })
+                }
+                // 回填 AI 消息 id（兜底，interrupt 分支已在 sse_event 里带过）
+                if (endData.message_id) {
+                  const state = useChatStore.getState()
+                  const msgs = [...state.messages]
+                  const last = msgs[msgs.length - 1]
+                  if (last && last.role === 'assistant' && !last.id) {
+                    msgs[msgs.length - 1] = { ...last, id: endData.message_id }
+                    useChatStore.setState({ messages: msgs })
+                  }
                 }
                 // 苏格拉底对话结束，通知刷新画像
                 window.dispatchEvent(new CustomEvent('learning-profile-dirty'))
@@ -376,6 +456,16 @@ export function useSSE() {
                 // 如果 end 事件带了 content_blocks，用它覆盖（最终权威数据）
                 if (endData.content_blocks && endData.content_blocks.length > 0) {
                   useChatStore.getState().setContentBlocks(endData.content_blocks)
+                }
+                // 回填 AI 消息 id（后端在 end 之前已保存消息），供解释/收藏等功能使用
+                if (endData.message_id) {
+                  const state = useChatStore.getState()
+                  const msgs = [...state.messages]
+                  const last = msgs[msgs.length - 1]
+                  if (last && last.role === 'assistant' && !last.id) {
+                    msgs[msgs.length - 1] = { ...last, id: endData.message_id }
+                    useChatStore.setState({ messages: msgs })
+                  }
                 }
                 useAppStore.getState().showToast('正在分析你的学习状态...', 'info')
                 break
@@ -414,6 +504,7 @@ export function useSSE() {
         }
       } else {
         const msg = e instanceof Error ? e.message : String(e)
+        console.error('[SSE] sendMessage 失败:', e instanceof Error ? e : { error: e }, 'convId=', streamConvId)
         setError(msg)
         if (useChatStore.getState().currentConversationId === streamConvId) {
           useChatStore.getState().addMessage('system', `错误：${msg}`)
@@ -541,6 +632,16 @@ export function useSSE() {
                 if (socraticData.ended) {
                   useChatStore.getState().setSocraticThreadId(null)
                 }
+                // 回填 AI 消息 id（后端在发送事件前已保存消息）
+                if (socraticData.message_id) {
+                  const state = useChatStore.getState()
+                  const msgs = [...state.messages]
+                  const last = msgs[msgs.length - 1]
+                  if (last && last.role === 'assistant' && !last.id) {
+                    msgs[msgs.length - 1] = { ...last, id: socraticData.message_id }
+                    useChatStore.setState({ messages: msgs })
+                  }
+                }
                 break
               }
 
@@ -561,6 +662,16 @@ export function useSSE() {
                   const s = useChatStore.getState()
                   if (s.currentConversationId === streamConvId) {
                     useChatStore.setState({ currentConversationId: endData.conversation_id })
+                  }
+                }
+                // 回填 AI 消息 id（兜底）
+                if (endData.message_id) {
+                  const state = useChatStore.getState()
+                  const msgs = [...state.messages]
+                  const last = msgs[msgs.length - 1]
+                  if (last && last.role === 'assistant' && !last.id) {
+                    msgs[msgs.length - 1] = { ...last, id: endData.message_id }
+                    useChatStore.setState({ messages: msgs })
                   }
                 }
                 window.dispatchEvent(new CustomEvent('learning-profile-dirty'))
@@ -589,6 +700,7 @@ export function useSSE() {
         }
       } else {
         const msg = e instanceof Error ? e.message : String(e)
+        console.error('[SSE] sendSocraticAction 失败:', e instanceof Error ? e : { error: e }, 'convId=', streamConvId)
         setError(msg)
         if (useChatStore.getState().currentConversationId === streamConvId) {
           useChatStore.getState().addMessage('system', `错误：${msg}`)

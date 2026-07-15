@@ -12,6 +12,10 @@ from models.socratic_session import SocraticSession
 from models.learning_path import LearningPath, LearningPathNode, LearningPathNodeResource
 from models.daily_challenge import DailyChallenge
 from models.explanation import Explanation
+from models.knowledge_graph import (
+    KnowledgeNode, KnowledgeEdge, UserKnowledgeMastery,
+    KnowledgeMasteryEvidence, QuestionKnowledgeMap, UserMisconception,
+)
 
 __all__ = [
     "User", "UserProfile", "Resource", "LearningProgress",
@@ -19,4 +23,6 @@ __all__ = [
     "Experiment", "ExperimentAssignment", "SocraticSession",
     "LearningPath", "LearningPathNode", "LearningPathNodeResource",
     "DailyChallenge", "Explanation",
+    "KnowledgeNode", "KnowledgeEdge", "UserKnowledgeMastery",
+    "KnowledgeMasteryEvidence", "QuestionKnowledgeMap", "UserMisconception",
 ]

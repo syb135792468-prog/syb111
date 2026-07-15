@@ -36,14 +36,35 @@ class Settings(BaseSettings):
     TTS_APP_ID: str = Field(default="", env="TTS_APP_ID", description="火山引擎语音合成应用 ID")
     TTS_ACCESS_TOKEN: str = Field(default="", env="TTS_ACCESS_TOKEN", description="火山引擎语音合成 Access Token")
     TTS_DEFAULT_VOICE_ID: str = Field(default="zh_female_wanwanxiaohe_moon_bigtts", env="TTS_DEFAULT_VOICE_ID", description="默认音色 ID")
+    # --- 科大讯飞超拟人合成 TTS（WebSocket，主用；火山TTS自动降级为备用）---
+    TTS_XFYUN_APP_ID: str = Field(default="", env="TTS_XFYUN_APP_ID", description="讯飞应用 APPID")
+    TTS_XFYUN_API_KEY: str = Field(default="", env="TTS_XFYUN_API_KEY", description="讯飞 API Key")
+    TTS_XFYUN_API_SECRET: str = Field(default="", env="TTS_XFYUN_API_SECRET", description="讯飞 API Secret")
+    TTS_XFYUN_API_PASSWORD: str = Field(default="", env="TTS_XFYUN_API_PASSWORD", description="讯飞超拟人合成 APIPassword（ak- 前缀，Bearer 鉴权用，与 APIKey/APISecret 不同）")
+    TTS_XFYUN_WS_URL: str = Field(default="wss://cbm01.cn-huabei-1.xf-yun.com/v1/private/mcd9m97e6", env="TTS_XFYUN_WS_URL", description="讯飞超拟人合成 WebSocket 接口地址")
+    TTS_XFYUN_VOICE_ID: str = Field(default="x6_lingyuyan_pro", env="TTS_XFYUN_VOICE_ID", description="讯飞默认音色（超拟人合成音色名形如 x6_lingyuyan_pro，非 legacy 小燕）")
+    TTS_XFYUN_SERVICE_PARAM: str = Field(default="mcd9m97e6", env="TTS_XFYUN_SERVICE_PARAM", description="讯飞服务标识，URL path 的一部分")
     # --- 火山方舟视觉理解模型（多模态代码识别用，必须走标准端点 /api/v3，不是 /api/coding/v3）---
     ARK_VISION_API_KEY: str = Field(default="", description="火山方舟 API Key（ark- 前缀，视觉模型用）")
     ARK_VISION_BASE_URL: str = Field(default="https://ark.cn-beijing.volces.com/api/v3", env="ARK_VISION_BASE_URL")
-    ARK_VISION_MODEL: str = Field(default="doubao-1.5-vision-pro-32k", env="ARK_VISION_MODEL", description="方舟视觉理解模型名")
+    ARK_VISION_MODEL: str = Field(default="doubao-seed-2-1-turbo-260628", env="ARK_VISION_MODEL", description="方舟视觉理解模型名（注意是 2-1 不是 2.1，必须带日期后缀）")
     ARK_VISION_ENDPOINT_ID: str = Field(default="", env="ARK_VISION_ENDPOINT_ID", description="方舟推理接入点 ID（ep-xxx），配置后优先于 ARK_VISION_MODEL")
+    # --- 讯飞图片理解 WebApi（多模态代码识别用，WebSocket 协议，签名鉴权）---
+    XF_VISION_APP_ID: str = Field(default="", env="XF_VISION_APP_ID", description="讯飞应用 APPID（图片理解服务）")
+    XF_VISION_API_KEY: str = Field(default="", env="XF_VISION_API_KEY", description="讯飞 APIKey（图片理解服务）")
+    XF_VISION_API_SECRET: str = Field(default="", env="XF_VISION_API_SECRET", description="讯飞 APISecret（图片理解服务）")
+    XF_VISION_DOMAIN: str = Field(default="imagev3", env="XF_VISION_DOMAIN", description="讯飞图片理解模型版本：general(基础版) / imagev3(高级版)")
+    XF_VISION_HOST: str = Field(default="spark-api.cn-huabei-1.xf-yun.com", env="XF_VISION_HOST", description="讯飞图片理解 WebSocket 域名")
+    XF_VISION_PATH: str = Field(default="/v2.1/image", env="XF_VISION_PATH", description="讯飞图片理解 WebSocket 路径")
+    # --- 视觉模型 provider 选择（multimodal_code_agent 用）---
+    VISION_PROVIDER: str = Field(default="xf", env="VISION_PROVIDER", description="视觉模型主 provider：xf(讯飞图片理解) / ark(火山方舟)。另一个自动作为降级 provider")
     DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com/v1", env="DEEPSEEK_BASE_URL")
     SEEDANCE_BASE_URL: str = Field(default="https://seedance.xf-yun.com/v1/generate", env="SEEDANCE_BASE_URL")
-    MODERATION_BASE_URL: str = Field(default="https://spark-api-open.xf-yun.com/v1/moderations", env="MODERATION_BASE_URL")
+    MODERATION_BASE_URL: str = Field(default="https://audit.iflyaisol.com/audit/v2/auditText", env="MODERATION_BASE_URL")
+
+    # --- 内容审核开关（赛题对齐：讯飞生态内容安全，复用 SPARK_API_KEY） ---
+    CONTENT_MODERATION_ENABLED: bool = Field(default=True, env="CONTENT_MODERATION_ENABLED", description="内容审核开关，默认开启")
+    CONTENT_MODERATION_TIMEOUT: int = Field(default=5, env="CONTENT_MODERATION_TIMEOUT", description="审核 API 超时秒数")
 
     # --- 内容安全凭证 ---
     SECURITY_APP_ID: str = Field(default="", description="内容安全应用 ID")

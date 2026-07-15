@@ -45,6 +45,12 @@ class ErrorBook(Base):
     explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
     knowledge_point: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    error_type: Mapped[Optional[str]] = mapped_column(
+        String(40),
+        nullable=True,
+        default=None,
+        comment="错因类型: syntax_error/type_confusion/scope_confusion/boundary_error/concept_misunderstanding/api_misuse/logic_error/other"
+    )
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_wrong_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -73,6 +79,7 @@ class ErrorBook(Base):
             "explanation": self.explanation,
             "knowledge_point": self.knowledge_point,
             "difficulty": self.difficulty,
+            "error_type": self.error_type,
             "error_count": self.error_count,
             "last_wrong_at": self.last_wrong_at.isoformat() if self.last_wrong_at else None,
             "mastered": self.mastered,

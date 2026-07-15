@@ -209,6 +209,11 @@ async def _auto_migrate() -> None:
                     "ALTER TABLE error_book ADD COLUMN repetition_count INTEGER NOT NULL DEFAULT 0"
                 ))
                 logger.info("✅ 已添加 error_book.repetition_count 列")
+            if "error_type" not in eb_columns:
+                await conn.execute(text(
+                    "ALTER TABLE error_book ADD COLUMN error_type VARCHAR(40)"
+                ))
+                logger.info("✅ 已添加 error_book.error_type 列（易错点偏好维度）")
 
             # user_profiles 表迁移：人口统计字段
             profile_columns = await conn.run_sync(
@@ -251,6 +256,11 @@ async def _auto_migrate() -> None:
                     "ALTER TABLE user_profiles ADD COLUMN last_challenge_date VARCHAR(10)"
                 ))
                 logger.info("✅ 已添加 user_profiles.last_challenge_date 列")
+            if "error_preferences" not in profile_columns:
+                await conn.execute(text(
+                    "ALTER TABLE user_profiles ADD COLUMN error_preferences JSON NOT NULL DEFAULT '[]'"
+                ))
+                logger.info("✅ 已添加 user_profiles.error_preferences 列（易错点偏好维度）")
 
             # resources 表迁移：in_library 字段
             resource_columns = await conn.run_sync(
@@ -392,8 +402,194 @@ async def _auto_migrate() -> None:
                     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_explanations_conversation_id ON explanations (conversation_id)"))
                     logger.info("✅ explanations 表已重建（conversation_id/message_id 可空）")
 
+            # knowledge_mastery_evidence 存量去重 + 部分唯一索引
+            # 历史数据可能因重复提交导致同一 (user,node,source_type,source_id) 有多条证据，
+            # 建唯一索引前需清理，保留最早一条（MIN(id)），其余备份后删除。
+            kme_tables = await conn.run_sync(
+                lambda sync_conn: inspector.get_table_names()
+            )
+            if "knowledge_mastery_evidence" in kme_tables:
+                # 检查是否已有重复（避免无谓操作）
+                dup_count = (
+                    await conn.execute(text(
+                        "SELECT COUNT(*) FROM knowledge_mastery_evidence "
+                        "WHERE source_id IS NOT NULL "
+                        "AND id NOT IN ("
+                        "  SELECT MIN(id) FROM knowledge_mastery_evidence "
+                        "  WHERE source_id IS NOT NULL "
+                        "  GROUP BY user_id, node_code, source_type, source_id"
+                        ")"
+                    ))
+                ).scalar_one()
+
+                if dup_count and dup_count > 0:
+                    # 1. 备份重复行到维护表
+                    await conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS knowledge_mastery_evidence_dedup_backup AS "
+                        "SELECT * FROM knowledge_mastery_evidence WHERE 0"
+                    ))
+                    await conn.execute(text(
+                        "INSERT INTO knowledge_mastery_evidence_dedup_backup "
+                        "SELECT * FROM knowledge_mastery_evidence "
+                        "WHERE source_id IS NOT NULL "
+                        "AND id NOT IN ("
+                        "  SELECT MIN(id) FROM knowledge_mastery_evidence "
+                        "  WHERE source_id IS NOT NULL "
+                        "  GROUP BY user_id, node_code, source_type, source_id"
+                        ")"
+                    ))
+                    logger.info(f"✅ 已备份 {dup_count} 条重复证据到 knowledge_mastery_evidence_dedup_backup")
+
+                    # 2. 删除重复行（保留最早一条）
+                    await conn.execute(text(
+                        "DELETE FROM knowledge_mastery_evidence "
+                        "WHERE source_id IS NOT NULL "
+                        "AND id NOT IN ("
+                        "  SELECT MIN(id) FROM knowledge_mastery_evidence "
+                        "  WHERE source_id IS NOT NULL "
+                        "  GROUP BY user_id, node_code, source_type, source_id"
+                        ")"
+                    ))
+                    logger.info(f"✅ 已删除 {dup_count} 条重复证据（保留每组最早一条）")
+
+                # 3. 建部分唯一索引（幂等）
+                await conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_kme_user_node_source "
+                    "ON knowledge_mastery_evidence (user_id, node_code, source_type, source_id) "
+                    "WHERE source_id IS NOT NULL"
+                ))
+                logger.info("✅ 已确认 uq_kme_user_node_source 部分唯一索引存在")
+
+            # ---- 精准画像重构：user_knowledge_mastery 加列 ----
+            if "user_knowledge_mastery" in kme_tables:
+                ukm_columns = await conn.run_sync(
+                    lambda sync_conn: [c["name"] for c in inspector.get_columns("user_knowledge_mastery")]
+                )
+                ukm_col_names = set(ukm_columns)
+                new_ukm_cols = [
+                    ("posterior", "FLOAT NOT NULL DEFAULT 0.0"),
+                    ("uncertainty", "FLOAT NOT NULL DEFAULT 0.9"),
+                    ("last_verified", "DATETIME"),
+                    ("review_risk", "FLOAT NOT NULL DEFAULT 0.0"),
+                ]
+                added_ukm = []
+                for col_name, col_def in new_ukm_cols:
+                    if col_name not in ukm_col_names:
+                        await conn.execute(text(
+                            f"ALTER TABLE user_knowledge_mastery ADD COLUMN {col_name} {col_def}"
+                        ))
+                        added_ukm.append(col_name)
+                if added_ukm:
+                    logger.info(f"✅ user_knowledge_mastery 已添加列: {added_ukm}")
+                # 存量迁移：mastery_score/100 -> posterior（仅当 posterior=0 且 mastery_score>0）
+                backfill_result = await conn.execute(text(
+                    "UPDATE user_knowledge_mastery SET posterior = mastery_score / 100.0 "
+                    "WHERE posterior = 0.0 AND mastery_score > 0"
+                ))
+                if backfill_result.rowcount and backfill_result.rowcount > 0:
+                    logger.info(f"✅ 存量 posterior 回填: {backfill_result.rowcount} 行")
+
+            # ---- 精准画像重构：knowledge_mastery_evidence 重建（扩 CHECK + 加列）----
+            if "knowledge_mastery_evidence" in kme_tables:
+                kme_columns = await conn.run_sync(
+                    lambda sync_conn: [c["name"] for c in inspector.get_columns("knowledge_mastery_evidence")]
+                )
+                kme_col_names = set(kme_columns)
+
+                def _get_kme_create_sql(sync_conn):
+                    result = sync_conn.execute(text(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_mastery_evidence'"
+                    ))
+                    row = result.fetchone()
+                    return row[0] if row else ""
+
+                kme_create_sql = await conn.run_sync(_get_kme_create_sql)
+                needs_rebuild = ("chat_judge" not in kme_create_sql) or ("signal_type" not in kme_col_names)
+
+                if needs_rebuild:
+                    logger.info("🔧 knowledge_mastery_evidence 重建：扩 source_type CHECK + 加 signal_type/source_weight/difficulty/weak_signal 列...")
+                    # 1. 删除旧索引（含部分唯一索引，避免重建时名称冲突）
+                    kme_idx_rows = await conn.execute(text(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_mastery_evidence' AND sql IS NOT NULL"
+                    ))
+                    for idx_row in kme_idx_rows.fetchall():
+                        await conn.execute(text(f'DROP INDEX IF EXISTS "{idx_row[0]}"'))
+                    # 2. 重命名旧表
+                    await conn.execute(text("ALTER TABLE knowledge_mastery_evidence RENAME TO knowledge_mastery_evidence_old"))
+                    # 3. 用 ORM metadata 创建新表（含新 CHECK + 新列 + 索引）
+                    await conn.run_sync(
+                        Base.metadata.create_all,
+                        tables=[Base.metadata.tables["knowledge_mastery_evidence"]]
+                    )
+                    # 4. 复制数据（旧表无新列，新列用默认值）
+                    old_kme_cols = await conn.run_sync(
+                        lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("knowledge_mastery_evidence_old")]
+                    )
+                    new_kme_cols = await conn.run_sync(
+                        lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("knowledge_mastery_evidence")]
+                    )
+                    common_kme = [c for c in old_kme_cols if c in new_kme_cols]
+                    kme_cols_str = ", ".join(common_kme)
+                    await conn.execute(text(
+                        f"INSERT INTO knowledge_mastery_evidence ({kme_cols_str}) SELECT {kme_cols_str} FROM knowledge_mastery_evidence_old"
+                    ))
+                    # 5. 删除旧表
+                    await conn.execute(text("DROP TABLE knowledge_mastery_evidence_old"))
+                    logger.info("✅ knowledge_mastery_evidence 重建完成（新列默认：signal_type='direct', source_weight=1.0, difficulty=NULL, weak_signal=0）")
+                else:
+                    logger.debug("knowledge_mastery_evidence schema 已是最新，跳过重建")
+
+            # ---- 精准画像重构：user_misconceptions 建表（新表）----
+            if "user_misconceptions" not in kme_tables:
+                await conn.run_sync(
+                    Base.metadata.create_all,
+                    tables=[Base.metadata.tables["user_misconceptions"]]
+                )
+                logger.info("✅ user_misconceptions 表已创建")
+
     except Exception as e:
         logger.warning(f"⚠️ 自动迁移跳过（可能表尚未创建）: {e}")
+
+
+async def _recompute_after_dedup() -> None:
+    """存量去重后，重算受影响用户的掌握度 + 重新投影画像。
+
+    仅当 knowledge_mastery_evidence_dedup_backup 表存在且非空时触发。
+    幂等：重算完成后清空 backup 标记（保留表结构作为审计痕迹）。
+    """
+    try:
+        async with engine.connect() as conn:
+            tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+            if "knowledge_mastery_evidence_dedup_backup" not in tables:
+                return
+            affected_users = (
+                await conn.execute(text(
+                    "SELECT DISTINCT user_id FROM knowledge_mastery_evidence_dedup_backup"
+                ))
+            ).all()
+        if not affected_users:
+            return
+
+        # 延迟导入避免循环依赖
+        from sqlalchemy.ext.asyncio import AsyncSessionLocal
+        from services.mastery_service import recalculate_all_mastery, project_to_profile
+
+        logger.info(f"🔄 重算 {len(affected_users)} 个受影响用户的掌握度...")
+        for (uid,) in affected_users:
+            try:
+                async with AsyncSessionLocal() as s:
+                    async with s.begin():
+                        await recalculate_all_mastery(s, uid)
+                        await project_to_profile(s, uid)
+            except Exception as e:
+                logger.warning(f"⚠️ 用户 {uid} 掌握度重算失败: {e}")
+
+        # 清空 backup 表（保留结构作审计），避免下次启动重复重算
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM knowledge_mastery_evidence_dedup_backup"))
+        logger.info("✅ 受影响用户掌握度重算完成，已清空 backup 表")
+    except Exception as e:
+        logger.warning(f"⚠️ 去重后重算跳过: {e}")
 
 async def init_db(force: bool = False) -> None:
     """
@@ -428,6 +624,9 @@ async def init_db(force: bool = False) -> None:
 
         # 4. 自动迁移：检查并添加缺失的列
         await _auto_migrate()
+
+        # 5. 若刚清理过重复证据，重算受影响用户的掌握度 + 重新投影画像
+        await _recompute_after_dedup()
 
         _db_initialized = True
         logger.info("✅ 数据库表结构初始化成功")

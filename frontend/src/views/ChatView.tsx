@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useChatStore } from '../stores/chat'
 import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import { useSSE } from '../composables/useSSE'
 import { toggleMessageBookmark } from '../api/chat'
+import { recommendResources, type Recommendation } from '../api/resource'
 import AppHeader from '../components/layout/AppHeader'
 import ChatWelcome from '../components/chat/ChatWelcome'
 import ChatMessage from '../components/chat/ChatMessage'
@@ -10,7 +12,7 @@ import ChatTyping from '../components/chat/ChatTyping'
 import ChatInput from '../components/chat/ChatInput'
 import SocraticControls from '../components/chat/SocraticControls'
 import { MasteryBar } from '../components/chat/MasteryBar'
-import { Trash2, Zap, Brain, GraduationCap, Sparkles } from 'lucide-react'
+import { Trash2, Zap, Brain, GraduationCap, Sparkles, FileText, Video, Code, HelpCircle, Presentation, BookOpen } from 'lucide-react'
 
 interface ModeOption {
   key: string
@@ -31,6 +33,78 @@ const MODE_OPTIONS: Array<{
   { key: 'socratic', label: '交互学习', icon: <GraduationCap style={{ width: 12, height: 12 }} />, description: '通过提问引导理解' },
 ]
 
+// 资源类型 -> 图标/标签/颜色映射（推荐卡片用）
+const RESOURCE_TYPE_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+  doc: { icon: <FileText style={{ width: 14, height: 14 }} />, label: '文档', color: '#2563eb' },
+  video: { icon: <Video style={{ width: 14, height: 14 }} />, label: '视频', color: '#7c3aed' },
+  code: { icon: <Code style={{ width: 14, height: 14 }} />, label: '代码', color: '#059669' },
+  mindmap: { icon: <Brain style={{ width: 14, height: 14 }} />, label: '思维导图', color: '#ea580c' },
+  quiz: { icon: <HelpCircle style={{ width: 14, height: 14 }} />, label: '练习题', color: '#dc2626' },
+  slides: { icon: <Presentation style={{ width: 14, height: 14 }} />, label: '讲义', color: '#0891b2' },
+  reading: { icon: <BookOpen style={{ width: 14, height: 14 }} />, label: '阅读', color: '#475569' },
+}
+
+const RECOMMEND_TYPE_LABEL: Record<string, string> = {
+  doc: '文档', video: '视频', code: '代码示例', mindmap: '思维导图',
+  quiz: '练习题', slides: '讲义', reading: '阅读材料',
+}
+
+// Agent 协作可见性：Agent 名 -> 图标 + 中文名
+const AGENT_DISPLAY: Record<string, { icon: string; name: string }> = {
+  UnifiedRouter: { icon: '🧭', name: '路由 Agent' },
+  TutorAgent: { icon: '👨‍🏫', name: '教学 Agent' },
+  ContentAgent: { icon: '📦', name: '文档 Agent' },
+  CodeAgent: { icon: '💻', name: '代码 Agent' },
+  MindmapAgent: { icon: '🗺️', name: '思维导图 Agent' },
+  QuizAgent: { icon: '📝', name: '测验 Agent' },
+  PathAgent: { icon: '🛤️', name: '路径 Agent' },
+  ProfileAgent: { icon: '👤', name: '画像 Agent' },
+  AggregatorAgent: { icon: '🔗', name: '聚合 Agent' },
+  VideoAgent: { icon: '🎬', name: '视频 Agent' },
+}
+
+const RecommendCard: React.FC<{ rec: Recommendation; onClick: () => void }> = ({ rec, onClick }) => {
+  const meta = RESOURCE_TYPE_META[rec.resource_type] || RESOURCE_TYPE_META.doc
+  return (
+    <button
+      onClick={onClick}
+      className="btn-click-feedback"
+      style={{
+        textAlign: 'left',
+        padding: 12,
+        borderRadius: 12,
+        border: '1px solid rgba(48,105,152,0.12)',
+        background: 'rgba(255,255,255,0.92)',
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        transition: 'transform 0.2s, box-shadow 0.2s',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.transform = 'translateY(-2px)'
+        e.currentTarget.style.boxShadow = '0 8px 20px rgba(48,105,152,0.12)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = 'translateY(0)'
+        e.currentTarget.style.boxShadow = 'none'
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: meta.color }}>
+        {meta.icon}
+        <span style={{ fontSize: 11, fontWeight: 600 }}>{meta.label}</span>
+        <span style={{ fontSize: 10, color: 'var(--mute)', marginLeft: 'auto' }}>{rec.difficulty}</span>
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+        {rec.title}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--mute)', lineHeight: 1.5 }}>
+        {rec.reason}
+      </div>
+    </button>
+  )
+}
+
 const ChatView: React.FC = () => {
   const messages = useChatStore((state) => state.messages)
   const isStreaming = useChatStore((state) => state.isStreaming)
@@ -49,6 +123,7 @@ const ChatView: React.FC = () => {
   const clearThinkingSteps = useChatStore((state) => state.clearThinkingSteps)
   const updateMessageBookmark = useChatStore((state) => state.updateMessageBookmark)
   const showToast = useAppStore((state) => state.showToast)
+  const authStore = useAuthStore()
   const { sendMessage, sendSocraticAction } = useSSE()
 
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -58,6 +133,7 @@ const ChatView: React.FC = () => {
 
   const [inputPlaceholder, setInputPlaceholder] = useState('')
   const [chatMode, setChatMode] = useState<'fast' | 'deep' | 'socratic'>('fast')
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([])
 
   const scrollToBottom = useCallback((force = false) => {
     if (!messagesContainerRef.current) return
@@ -144,6 +220,14 @@ const ChatView: React.FC = () => {
     [addMessage],
   )
 
+  const handleRecommendClick = useCallback(
+    (rec: Recommendation) => {
+      const label = RECOMMEND_TYPE_LABEL[rec.resource_type] || rec.resource_type
+      handleSend(`给我看一下「${rec.knowledge_point}」的${label}资源`)
+    },
+    [handleSend],
+  )
+
   useEffect(() => {
     scrollToBottom(true)
   }, [messages.length, thinkingSteps.length, scrollToBottom])
@@ -174,6 +258,30 @@ const ChatView: React.FC = () => {
 
   const hasMessages = messages.length > 0
   const showWelcome = !hasMessages && !isLoadingConversation
+
+  // 按 agent_name 分组 thinkingSteps（协作可见性）
+  const groupedThinking = useMemo(() => {
+    const groups: Record<string, { agentName: string; agentRole: string; icon: string; steps: typeof thinkingSteps }> = {}
+    const order: string[] = []
+    for (const step of thinkingSteps) {
+      const key = step.agent_name || '_generic'
+      if (!groups[key]) {
+        const display = step.agent_name
+          ? (AGENT_DISPLAY[step.agent_name] || { icon: '🤖', name: step.agent_name })
+          : { icon: '🧠', name: '通用' }
+        groups[key] = {
+          agentName: step.agent_name || '',
+          agentRole: step.agent_role || display.name,
+          icon: display.icon,
+          steps: [],
+        }
+        order.push(key)
+      }
+      groups[key].steps.push(step)
+    }
+    return order.map(k => groups[k])
+  }, [thinkingSteps])
+
   const showTypingIndicator = useMemo(() => {
     if (!isStreaming) return false
     const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
@@ -181,6 +289,29 @@ const ChatView: React.FC = () => {
     const hasContent = lastAssistant.content || (lastAssistant.content_blocks && lastAssistant.content_blocks.length > 0)
     return !hasContent
   }, [isStreaming, messages])
+
+  // 进入欢迎页（showWelcome）时加载一次基于画像的推荐资源
+  useEffect(() => {
+    if (!showWelcome) return
+    const uid = authStore.userId
+    if (!uid) return
+
+    let cancelled = false
+    recommendResources(uid)
+      .then((resp) => {
+        if (cancelled) return
+        if (resp.code === 200 && resp.data) {
+          setRecommendations(resp.data.recommendations || [])
+        }
+      })
+      .catch((err) => {
+        console.warn('推荐资源加载失败:', err)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [showWelcome, authStore.userId])
 
   return (
     <div className="chat-stage">
@@ -210,7 +341,26 @@ const ChatView: React.FC = () => {
 
       <div ref={messagesContainerRef} onScroll={handleScroll} className="chat-scroll-zone smooth-scroll">
         {showWelcome ? (
-          <ChatWelcome onSelectMode={handleSelectMode} />
+          <>
+            {recommendations.length > 0 && (
+              <div style={{ padding: '0 20px', marginBottom: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <Sparkles style={{ width: 14, height: 14, color: 'var(--py-yellow-deep)' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>今日推荐 · 基于你的画像</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                  {recommendations.map((rec, i) => (
+                    <RecommendCard
+                      key={`${rec.knowledge_point}-${rec.resource_type}-${i}`}
+                      rec={rec}
+                      onClick={() => handleRecommendClick(rec)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            <ChatWelcome onSelectMode={handleSelectMode} />
+          </>
         ) : (
           <div className="chat-feed">
             {messages.map((message, index) => (
@@ -264,27 +414,50 @@ const ChatView: React.FC = () => {
                   </div>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: thinkingCompleted ? '#2563eb' : '#7c3aed' }}>
-                      {thinkingCompleted ? '开始组织回答' : '正在处理你的问题'}
+                      {thinkingCompleted
+                        ? '开始组织回答'
+                        : `${groupedThinking.length} 个 Agent 正在协作`}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--mute)' }}>
-                      {thinkingCompleted ? '思考阶段已完成，正在生成内容。' : '系统正在梳理重点、路由工具和知识结构。'}
+                      {thinkingCompleted ? '思考阶段已完成，正在生成内容。' : '多智能体协作处理中，各司其职。'}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {thinkingSteps.map((step, index) => (
-                    <div
-                      key={index}
-                      className="thinking-step"
-                      style={{
-                        fontSize: 12,
-                        color: thinkingCompleted ? 'var(--mute)' : 'var(--ink-soft)',
-                        lineHeight: 1.7,
-                        textDecoration: thinkingCompleted ? 'line-through' : 'none',
-                      }}
-                    >
-                      {step}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {groupedThinking.map((group, gIdx) => (
+                    <div key={gIdx} style={{ padding: '6px 0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: 14 }}>{group.icon}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: thinkingCompleted ? 'var(--mute)' : 'var(--ink)' }}>
+                          {group.agentRole}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: thinkingCompleted ? '#16a34a' : '#7c3aed',
+                            marginLeft: 'auto',
+                          }}
+                        >
+                          {thinkingCompleted ? '✓' : '⏳'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 22 }}>
+                        {group.steps.map((step, sIdx) => (
+                          <div
+                            key={sIdx}
+                            className="thinking-step"
+                            style={{
+                              fontSize: 12,
+                              color: thinkingCompleted ? 'var(--mute)' : 'var(--ink-soft)',
+                              lineHeight: 1.7,
+                              textDecoration: thinkingCompleted ? 'line-through' : 'none',
+                            }}
+                          >
+                            {step.text}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>

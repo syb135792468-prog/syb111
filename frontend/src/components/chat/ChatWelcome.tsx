@@ -158,7 +158,7 @@ const ChatWelcome: React.FC<ChatWelcomeProps> = ({ onSelectMode }) => {
             lineHeight: 1.8,
           }}
         >
-          这里不是单纯聊天框，而是把提问、练习、路径规划、知识结构和进度反馈编排进同一条学习流里。
+          提问、练习、路径规划、知识结构和进度反馈，串成同一条学习流。
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginTop: 24 }}>
@@ -265,7 +265,7 @@ const ChatWelcome: React.FC<ChatWelcomeProps> = ({ onSelectMode }) => {
         <div className="chat-hero-card" style={{ borderRadius: 28, padding: '24px 22px' }}>
           <div style={{ color: 'var(--ink)', fontSize: 20, fontWeight: 700, marginBottom: 8 }}>选择一种学习入口</div>
           <p style={{ margin: 0, color: 'var(--mute)', fontSize: 13, lineHeight: 1.8 }}>
-            参考优秀产品的思路，我们把高频动作做成“任务入口”，让第一次进入页面时就知道下一步该做什么。
+            不知道从哪儿开始？选一个入口即可，下一步会跟着浮现。
           </p>
         </div>
 

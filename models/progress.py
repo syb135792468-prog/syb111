@@ -63,6 +63,13 @@ class LearningProgress(Base):
         DateTime, onupdate=func.now(), nullable=True
     )
 
+    _STATUS_PRIORITY = {
+        "not_started": 0,
+        "failed": 1,
+        "in_progress": 2,
+        "completed": 3,
+    }
+
     def update_progress(
         self,
         status: Optional[str] = None,
@@ -70,10 +77,14 @@ class LearningProgress(Base):
         duration: Optional[int] = None,
         overwrite_duration: bool = False,
     ) -> LearningProgress:
-        if status is not None and status in ("not_started", "in_progress", "completed", "failed"):
-            self.status = status
+        if status is not None and status in self._STATUS_PRIORITY:
+            current_priority = self._STATUS_PRIORITY.get(self.status or "not_started", 0)
+            next_priority = self._STATUS_PRIORITY[status]
+            if next_priority >= current_priority:
+                self.status = status
         if score is not None:
-            self.score = max(0.0, min(100.0, score))
+            bounded_score = max(0.0, min(100.0, score))
+            self.score = bounded_score if self.score is None else max(self.score, bounded_score)
         if duration is not None and duration >= 0:
             self.duration = duration if overwrite_duration else (self.duration or 0) + duration
         self.updated_at = datetime.now(UTC).replace(tzinfo=None)

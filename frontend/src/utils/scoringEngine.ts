@@ -52,20 +52,20 @@ export function calcTopicMastery(records: ProgressRecord[]): number {
 
   const scores = records.filter((r) => r.score != null).map((r) => r.score!)
   const bestScore = scores.length > 0 ? Math.max(...scores) : 0
-  const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
 
   const latestRecord = [...records].sort(
     (a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
   )[0]
-  const statusBonus: Record<string, number> = {
-    completed: 100,
-    in_progress: 40,
-    failed: 20,
+  const statusFloor: Record<string, number> = {
+    completed: 80,
+    in_progress: 0,
+    failed: 0,
     not_started: 0,
   }
-  const bonus = statusBonus[latestRecord?.status] || 0
+  const floor = statusFloor[latestRecord?.status] || 0
 
-  const mastery = bestScore * 0.6 + avgScore * 0.25 + bonus * 0.15
+  // Scores are already evidence-based mastery values; avoid distorting them a second time.
+  const mastery = Math.max(bestScore, floor)
   return Math.round(Math.min(100, Math.max(0, mastery)))
 }
 

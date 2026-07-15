@@ -13,6 +13,7 @@ import ProfileCards from '../components/profile/ProfileCards'
 import RadarChart from '../components/profile/RadarChart'
 import StyleChart from '../components/profile/StyleChart'
 import KnowledgeTags from '../components/profile/KnowledgeTags'
+import KnowledgeGraph from '../components/knowledge/KnowledgeGraph'
 import StudyTimeChart from '../components/profile/StudyTimeChart'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import { RefreshCw, Activity, RotateCcw, UserCog, Lightbulb } from 'lucide-react'
@@ -242,7 +243,9 @@ function resolveKnowledgeTargets(event: LearningEvent) {
 
 function resolveKnowledgeEventScore(event: LearningEvent) {
   if (typeof event.score === 'number') {
-    return Math.round(Math.max(0, Math.min(100, event.score)))
+    // Quiz APIs use a 0-10 scale; the profile consistently uses percentages.
+    const percentScore = event.sourcePage === 'quiz' ? event.score * 10 : event.score
+    return Math.round(Math.max(0, Math.min(100, percentScore)))
   }
   return KNOWLEDGE_SCORE_FALLBACK[event.actionType] || 0
 }
@@ -301,6 +304,9 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
   // 确认弹窗状态
   const [confirmProgress, setConfirmProgress] = useState(false)
   const [confirmProfile, setConfirmProfile] = useState(false)
+
+  // 知识图谱刷新触发器（与 loadProfile 同步）
+  const [graphRefreshKey, setGraphRefreshKey] = useState(0)
 
   // --- 加载画像 ---
   const loadProfile = useCallback(async () => {
@@ -429,6 +435,7 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
       if (debounceTimer) clearTimeout(debounceTimer)
       debounceTimer = setTimeout(() => {
         loadProfile()
+        setGraphRefreshKey(k => k + 1)
       }, 1500)
     }
     window.addEventListener('learning-profile-dirty', handleDirty)
@@ -583,6 +590,8 @@ const ProfileView = forwardRef<ProfileViewHandle>((_props, ref) => {
               mastered={mergedProfile.masteredPoints}
               weak={mergedProfile.weakPoints}
             />
+
+            <KnowledgeGraph refreshKey={graphRefreshKey} mode="profile" />
 
             {/* 画像详情 */}
             <div className="page-panel p-5">

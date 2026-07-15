@@ -18,6 +18,7 @@
 - weak_points: 用户**明确表示**不会或困难的知识点列表
 - mastered_points: 用户**明确表示**已经掌握的知识点列表
 - current_topic: 用户当前正在学习或询问的知识点
+- error_preferences: 易错点偏好（系统从错题本自动统计，LLM 无需提取；如用户口头表达"我老是忘加冒号"，会通过后续答题自然反映）
 
 # 允许的知识点列表（只能从这里选）
 {knowledge_points}

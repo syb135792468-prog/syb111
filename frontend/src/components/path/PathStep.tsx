@@ -1,8 +1,13 @@
 import React, { useState, useCallback } from 'react'
 import {
   CheckCircle, Clock, AlertTriangle, SkipForward, ChevronDown, ChevronUp,
-  FileText, HelpCircle, GitBranch, Code, PlayCircle, Loader2, Award
+  FileText, HelpCircle, GitBranch, Code, PlayCircle, Loader2, Award,
+  Zap, RotateCcw
 } from 'lucide-react'
+import {
+  generatePreTest, submitPreTest, unskipNode,
+  type PreTest,
+} from '../../api/learningPath'
 
 // --- 类型定义 ---
 export interface PathNodeResource {
@@ -44,6 +49,7 @@ interface PathStepProps {
   onNodeClick?: (nodeId: number) => void
   onResourceClick?: (nodeId: number, resourceType: string) => void
   onComplete?: (nodeId: number) => void
+  onPathUpdated?: (path: import('../../api/learningPath').LearningPathData) => void
 }
 
 // --- 状态配置：py-blue=进行中 / green=完成 / py-yellow=需复习 / faint=未开始 ---
@@ -123,9 +129,15 @@ function difficultyLabel(d?: number): string {
 }
 
 // --- 组件 ---
-const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, onResourceClick, onComplete }) => {
+const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, onResourceClick, onComplete, onPathUpdated }) => {
   const [expanded, setExpanded] = useState(false)
   const [completing, setCompleting] = useState(false)
+  const [preTest, setPreTest] = useState<PreTest | null>(null)
+  const [preTestLoading, setPreTestLoading] = useState(false)
+  const [preTestSubmitting, setPreTestSubmitting] = useState(false)
+  const [selectedAnswer, setSelectedAnswer] = useState<string>('')
+  const [preTestResult, setPreTestResult] = useState<{ is_correct: boolean; correct_answer: string; explanation: string; matched_error_type: string | null } | null>(null)
+  const [unskipping, setUnskipping] = useState(false)
 
   const isReview = (step.type || step.node_type) === 'review'
   const status = step.status || 'not_started'
@@ -154,6 +166,75 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
       setCompleting(false)
     }
   }, [step.id, onComplete, completing])
+
+  const handleGeneratePreTest = useCallback(async () => {
+    if (!step.id || preTestLoading) return
+    setPreTestLoading(true)
+    setPreTestResult(null)
+    setSelectedAnswer('')
+    try {
+      const resp = await generatePreTest(step.id)
+      if (resp.code === 200 && resp.data) {
+        setPreTest(resp.data)
+        if (!resp.data.cached) {
+          setExpanded(true)
+        }
+      }
+    } catch (e) {
+      console.error('生成前置测试失败:', e)
+    } finally {
+      setPreTestLoading(false)
+    }
+  }, [step.id, preTestLoading])
+
+  const handleSubmitPreTest = useCallback(async () => {
+    if (!step.id || !preTest || !selectedAnswer || preTestSubmitting) return
+    setPreTestSubmitting(true)
+    try {
+      const resp = await submitPreTest(step.id, {
+        user_answer: selectedAnswer,
+        resource_id: preTest.resource_id,
+      })
+      if (resp.code === 200 && resp.data) {
+        setPreTestResult({
+          is_correct: resp.data.is_correct,
+          correct_answer: resp.data.correct_answer,
+          explanation: resp.data.explanation,
+          matched_error_type: resp.data.matched_error_type,
+        })
+        if (resp.data.is_correct && resp.data.path && onPathUpdated) {
+          onPathUpdated(resp.data.path)
+        }
+      }
+    } catch (e) {
+      console.error('提交前置测试失败:', e)
+    } finally {
+      setPreTestSubmitting(false)
+    }
+  }, [step.id, preTest, selectedAnswer, preTestSubmitting, onPathUpdated])
+
+  const handleUnskip = useCallback(async () => {
+    if (!step.id || unskipping) return
+    setUnskipping(true)
+    try {
+      const resp = await unskipNode(step.id)
+      if (resp.code === 200 && resp.data && onPathUpdated) {
+        onPathUpdated(resp.data)
+      }
+    } catch (e) {
+      console.error('取消跳过失败:', e)
+    } finally {
+      setUnskipping(false)
+    }
+  }, [step.id, unskipping, onPathUpdated])
+
+  // 从题目内容解析选项（选择题格式：A. xxx / B. xxx）
+  const parseOptions = (content: string): string[] => {
+    const lines = content.split('\n').map(l => l.trim()).filter(Boolean)
+    const optLines = lines.filter(l => /^[A-D][.、)]\s/.test(l))
+    return optLines.length >= 2 ? optLines : []
+  }
+  const preTestOptions = preTest ? parseOptions(preTest.question) : []
 
   return (
     <div style={{ display: 'flex', gap: 14 }}>
@@ -367,6 +448,179 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
                     ))}
                   </div>
                 </div>
+              )}
+
+              {/* 前置测试（PathAgent ↔ QuizAgent 协作） */}
+              {step.id && onPathUpdated && (status === 'not_started' || status === 'skipped') && (
+                <div style={{ marginBottom: 12, padding: 12, background: 'var(--paper-soft)', border: '1px solid var(--rule-soft)', borderRadius: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: 'var(--py-blue)' }}>
+                      <Zap style={{ width: 13, height: 13 }} />
+                      前置测试（答对可跳过节点）
+                    </span>
+                    {!preTest && !preTestLoading && (
+                      <button
+                        onClick={e => { e.stopPropagation(); handleGeneratePreTest() }}
+                        style={{
+                          fontSize: 12, padding: '4px 10px', borderRadius: 6,
+                          background: 'var(--py-blue-tint)', color: 'var(--py-blue)',
+                          border: '1px solid var(--py-blue)', cursor: 'pointer',
+                        }}
+                      >
+                        生成测试题
+                      </button>
+                    )}
+                    {preTestLoading && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--py-blue)' }}>
+                        <Loader2 style={{ width: 12, height: 12, animation: 'spin 0.8s linear infinite' }} />
+                        生成中...
+                      </span>
+                    )}
+                  </div>
+
+                  {/* 题目卡片 */}
+                  {preTest && preTestOptions.length > 0 && (
+                    <div>
+                      {preTest.collaboration_info && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: 6,
+                            fontSize: 11,
+                            color: 'var(--mute)',
+                            margin: '0 0 8px',
+                            padding: '4px 8px',
+                            background: 'rgba(124,58,237,0.06)',
+                            borderRadius: 4,
+                          }}
+                        >
+                          <span>🤝 {preTest.collaboration_info.description}</span>
+                          {preTest.collaboration_info.agents.map(a => (
+                            <span
+                              key={a.name}
+                              style={{
+                                padding: '1px 6px',
+                                background: 'rgba(124,58,237,0.1)',
+                                borderRadius: 3,
+                                color: '#7c3aed',
+                              }}
+                            >
+                              {a.name}·{a.role}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <p style={{ fontSize: 13, color: 'var(--ink)', margin: '0 0 8px', lineHeight: 1.5 }}>
+                        {preTest.question.split('\n').find(l => !/^[A-D][.、)]\s/.test(l.trim()))}
+                      </p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                        {preTestOptions.map((opt, i) => {
+                          const letter = opt[0]
+                          const isSelected = selectedAnswer === letter
+                          const isCorrectAns = preTestResult && letter === preTestResult.correct_answer.replace(/[^A-D]/g, '')
+                          const isWrongPick = preTestResult && !preTestResult.is_correct && isSelected
+                          return (
+                            <button
+                              key={i}
+                              disabled={!!preTestResult}
+                              onClick={e => { e.stopPropagation(); setSelectedAnswer(letter) }}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: 8,
+                                padding: '8px 12px', fontSize: 13, textAlign: 'left',
+                                background: isCorrectAns ? '#ecfdf5' : isWrongPick ? '#fef2f2' : isSelected ? 'var(--py-blue-tint)' : 'var(--paper)',
+                                border: `1px solid ${isCorrectAns ? '#a7f3d0' : isWrongPick ? '#fecaca' : isSelected ? 'var(--py-blue)' : 'var(--rule)'}`,
+                                borderRadius: 6, cursor: preTestResult ? 'default' : 'pointer',
+                                color: 'var(--ink)',
+                              }}
+                            >
+                              {opt}
+                              {isCorrectAns && <CheckCircle style={{ width: 14, height: 14, color: '#059669', marginLeft: 'auto' }} />}
+                              {isWrongPick && <AlertTriangle style={{ width: 14, height: 14, color: '#dc2626', marginLeft: 'auto' }} />}
+                            </button>
+                          )
+                        })}
+                      </div>
+
+                      {/* 提交按钮 */}
+                      {!preTestResult && (
+                        <button
+                          onClick={e => { e.stopPropagation(); handleSubmitPreTest() }}
+                          disabled={!selectedAnswer || preTestSubmitting}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '6px 16px', fontSize: 13, fontWeight: 500,
+                            background: !selectedAnswer || preTestSubmitting ? 'var(--rule-soft)' : 'var(--py-blue)',
+                            color: !selectedAnswer || preTestSubmitting ? 'var(--faint)' : '#fff',
+                            border: 'none', borderRadius: 6,
+                            cursor: !selectedAnswer || preTestSubmitting ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {preTestSubmitting ? (
+                            <Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} />
+                          ) : (
+                            <CheckCircle style={{ width: 13, height: 13 }} />
+                          )}
+                          提交答案
+                        </button>
+                      )}
+
+                      {/* 答题反馈 */}
+                      {preTestResult && (
+                        <div style={{
+                          padding: 10, marginTop: 8, borderRadius: 6,
+                          background: preTestResult.is_correct ? '#ecfdf5' : '#fffbeb',
+                          border: `1px solid ${preTestResult.is_correct ? '#a7f3d0' : '#fde68a'}`,
+                          fontSize: 12,
+                        }}>
+                          <p style={{ fontWeight: 600, margin: '0 0 6px', color: preTestResult.is_correct ? '#059669' : '#92400e' }}>
+                            {preTestResult.is_correct ? '✓ 答对！节点已跳过，路径进度已推进' : `✗ 答错${preTestResult.matched_error_type ? `（错因：${preTestResult.matched_error_type}）` : ''}`}
+                          </p>
+                          <p style={{ color: 'var(--mute)', margin: 0, lineHeight: 1.5 }}>
+                            {preTestResult.explanation}
+                          </p>
+                          {!preTestResult.is_correct && (
+                            <button
+                              onClick={e => { e.stopPropagation(); setPreTestResult(null); setSelectedAnswer('') }}
+                              style={{
+                                marginTop: 8, fontSize: 12, padding: '4px 10px',
+                                background: 'var(--paper)', border: '1px solid var(--rule)',
+                                borderRadius: 4, cursor: 'pointer', color: 'var(--ink)',
+                              }}
+                            >
+                              再答一次
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 取消跳过按钮（skipped 状态） */}
+              {step.id && onPathUpdated && status === 'skipped' && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleUnskip() }}
+                  disabled={unskipping}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '5px 12px', fontSize: 12, fontWeight: 500,
+                    background: 'var(--paper)', color: 'var(--mute)',
+                    border: '1px solid var(--rule)', borderRadius: 6,
+                    cursor: unskipping ? 'not-allowed' : 'pointer',
+                    opacity: unskipping ? 0.6 : 1,
+                    marginRight: 8,
+                  }}
+                >
+                  {unskipping ? (
+                    <Loader2 style={{ width: 12, height: 12, animation: 'spin 0.8s linear infinite' }} />
+                  ) : (
+                    <RotateCcw style={{ width: 12, height: 12 }} />
+                  )}
+                  取消跳过
+                </button>
               )}
 
               {/* 完成按钮 */}

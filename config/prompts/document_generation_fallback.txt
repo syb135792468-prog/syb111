@@ -1,5 +1,7 @@
 # Python {kp}
 
+> 面向用户画像：{profile_text}
+
 ## 概念说明
 {kp}是Python编程中的一个重要知识点。
 

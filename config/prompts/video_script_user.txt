@@ -1,0 +1,8 @@
+请根据以下主题生成教学脚本：
+
+主题：{topic}
+目标时长：{duration}秒
+教学风格：{style}
+步骤数量：{min_steps} 到 {max_steps} 步
+
+直接输出 JSON，不要输出任何其他内容。

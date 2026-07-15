@@ -15,9 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 前端构建
+# 前端构建（保留 dist 在 frontend/ 下，api/app.py 会找 frontend/dist/）
 COPY frontend/ /app/frontend/
-RUN cd frontend && npm install && npm run build && cp -r dist/* /app/static/
+RUN cd frontend && npm install && npm run build
 
 # 后端代码
 COPY . .

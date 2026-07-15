@@ -1,5 +1,6 @@
 import React from 'react'
 import PathStep, { PathNodeData } from './PathStep'
+import type { LearningPathData } from '../../api/learningPath'
 
 // --- 类型定义 ---
 interface PathTimelineProps {
@@ -7,10 +8,11 @@ interface PathTimelineProps {
   onNodeClick?: (nodeId: number) => void
   onResourceClick?: (nodeId: number, resourceType: string) => void
   onComplete?: (nodeId: number) => void
+  onPathUpdated?: (path: LearningPathData) => void
 }
 
 // --- 组件 ---
-const PathTimeline: React.FC<PathTimelineProps> = ({ steps = [], onNodeClick, onResourceClick, onComplete }) => {
+const PathTimeline: React.FC<PathTimelineProps> = ({ steps = [], onNodeClick, onResourceClick, onComplete, onPathUpdated }) => {
   return (
     <div className="space-y-0">
       {steps.map((step, i) => (
@@ -21,6 +23,7 @@ const PathTimeline: React.FC<PathTimelineProps> = ({ steps = [], onNodeClick, on
           onNodeClick={onNodeClick}
           onResourceClick={onResourceClick}
           onComplete={onComplete}
+          onPathUpdated={onPathUpdated}
         />
       ))}
     </div>
