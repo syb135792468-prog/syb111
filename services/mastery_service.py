@@ -291,7 +291,7 @@ async def get_effective_state(
                 )
             )
         )
-    ).scalars().all()
+    ).all()
     # Every prerequisite needs its own mastered record. Counting states in a set
     # collapses multiple "mastered" values and leaves multi-prerequisite nodes locked.
     prereq_states = {code: state for code, state in prereq_mastery}

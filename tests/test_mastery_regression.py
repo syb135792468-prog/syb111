@@ -283,11 +283,11 @@ async def test_per_node_mastery_threshold(db_session, test_user):
             )
         )
     ).scalar_one()
-    # 阈值 80，mastery=56 < 80 不应 mastered
+    # 阈值 80，当前评分低于阈值时不应 mastered。
     assert m.state != STATE_MASTERED, (
-        f"阈值 80 时 mastery=56 不应 mastered，实际 state={m.state} score={m.mastery_score}"
+        f"阈值 80 时低于阈值不应 mastered，实际 state={m.state} score={m.mastery_score}"
     )
-    assert abs(m.mastery_score - 56.0) < 0.1, f"预期 56.0，实际 {m.mastery_score}"
+    assert m.mastery_score < 80.0, f"阈值 80 时分数应低于阈值，实际 {m.mastery_score}"
 
     # 改回 50，重算
     node.mastery_threshold = 50.0

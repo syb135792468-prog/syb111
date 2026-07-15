@@ -99,6 +99,7 @@ context_pollution_analysis.md
 
 # Database backups
 data/*.db.bak_*
+data/*.db.before_*
 
 # Test media
 data/xfyun_tts_test.mp3
