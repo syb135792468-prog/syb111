@@ -21,6 +21,7 @@ from config.constants import (
     RESOURCE_STATUS_COMPLETED, MOTIVATION_LEVEL_HIGH, MOTIVATION_LEVEL_MEDIUM,
     BATCH_MOTIVATION_COMPLETION_RATE_HIGH, BATCH_MOTIVATION_COMPLETION_RATE_MEDIUM,
     BATCH_WEAK_POINT_QUESTION_COUNT,
+    ERROR_PREFERENCES_TOP_N, ERROR_PREFERENCES_MIN_SAMPLES, ERROR_TYPE_OTHER,
 )
 from config.settings import settings
 from utils.agent_helpers import (
@@ -43,6 +44,7 @@ class ProfileAgent(BaseAgent):
         "weak_points",
         "mastered_points",
         "motivation_level",
+        "error_preferences",
     ]
 
     DIMENSION_OPTIONS: ClassVar[Dict[str, List[str]]] = {
@@ -64,6 +66,7 @@ class ProfileAgent(BaseAgent):
         "weak_points": ["循环（for/while）", "函数定义与调用"],
         "mastered_points": [],
         "motivation_level": "medium",
+        "error_preferences": [],
         "current_topic": None,
         "last_study_at": None,
     }
@@ -163,6 +166,9 @@ class ProfileAgent(BaseAgent):
             # 自动更新动力水平（基于行为数据）
             new_profile = await self._update_motivation_level(new_profile)
 
+            # 自动聚合易错点偏好（从错题本统计，行为驱动，非 LLM 提取）
+            new_profile = await self._aggregate_error_preferences(new_profile)
+
             self.logger.info(
                 f"✅ 画像更新: 水平={new_profile['knowledge_level']}, "
                 f"目标={new_profile['learning_goal']}, "
@@ -225,6 +231,9 @@ class ProfileAgent(BaseAgent):
         progress_scores: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         validated: Dict[str, Any] = {}
+
+        # error_preferences 由错题行为聚合驱动，忽略 LLM 输出（避免幻觉）
+        parsed.pop("error_preferences", None)
 
         # 1. 分类字段校验
         for dim, options in self.DIMENSION_OPTIONS.items():
@@ -371,6 +380,57 @@ class ProfileAgent(BaseAgent):
 
         except Exception as exc:
             self.logger.debug(f"动力水平更新跳过: {exc}")
+
+        return profile
+
+    # ------------------------------------------------------------------
+    # 易错点偏好聚合（行为驱动，从错题本统计，非 LLM 提取）
+    # ------------------------------------------------------------------
+    async def _aggregate_error_preferences(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """从 error_book 聚合用户 top-3 错因，写入 error_preferences。
+        错题总数 < MIN_SAMPLES 时跳过（保留旧值）。
+        """
+        try:
+            from models.error_book import ErrorBook
+            from models.database import AsyncSessionLocal
+            from sqlalchemy import select, func
+
+            uid = profile.get("user_id") or self.user_id
+            if not uid or not str(uid).isdigit():
+                return profile
+            user_id = int(uid)
+
+            async with AsyncSessionLocal() as session:
+                # 错题总数检查
+                total_result = await session.execute(
+                    select(func.count()).select_from(ErrorBook)
+                    .where(ErrorBook.user_id == user_id)
+                )
+                total = total_result.scalar() or 0
+                if total < ERROR_PREFERENCES_MIN_SAMPLES:
+                    return profile
+
+                # 聚合 top-3 错因（排除 null 和 other）
+                result = await session.execute(
+                    select(ErrorBook.error_type, func.count().label("cnt"))
+                    .where(
+                        ErrorBook.user_id == user_id,
+                        ErrorBook.error_type.isnot(None),
+                        ErrorBook.error_type != ERROR_TYPE_OTHER,
+                    )
+                    .group_by(ErrorBook.error_type)
+                    .order_by(func.count().desc())
+                    .limit(ERROR_PREFERENCES_TOP_N)
+                )
+                top_types = [row[0] for row in result.all() if row[0]]
+
+            if top_types and list(profile.get("error_preferences") or []) != top_types:
+                profile["error_preferences"] = top_types
+                self.logger.info(
+                    f"🎯 易错点偏好聚合: user={user_id}, top={top_types}"
+                )
+        except Exception as exc:
+            self.logger.debug(f"易错点偏好聚合跳过: {exc}")
 
         return profile
 

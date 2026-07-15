@@ -314,16 +314,6 @@ class ExpandNodeRequest(BaseSchema):
     node_advice: str = Field("", description="节点学习建议")
 
 
-class SaveExternalVideoRequest(BaseSchema):
-    """收藏外部视频到资源库"""
-    user_id: int = Field(..., description="用户ID")
-    title: str = Field(..., min_length=1, max_length=200, description="视频标题")
-    url: str = Field(..., min_length=1, max_length=500, description="视频链接")
-    thumbnail: str = Field("", max_length=500, description="缩略图URL")
-    author: str = Field("", max_length=100, description="作者")
-    description: str = Field("", max_length=500, description="视频简介")
-
-
 class ResourceResponse(BaseSchema):
     """学习资源响应"""
     id: Optional[int] = Field(None, description="资源ID")
@@ -359,6 +349,8 @@ class StreamEvent(BaseSchema):
     )
     data: Any = Field(..., description="事件数据")
     current_step: Optional[str] = Field(None, description="当前工作流步骤")
+    agent_name: Optional[str] = Field(None, description="产生此事件的 Agent 名称（如 UnifiedRouter/TutorAgent），用于协作可见性")
+    agent_role: Optional[str] = Field(None, description="Agent 角色中文标签（如 路由/教学/资源/聚合）")
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC).replace(tzinfo=None),
         description="事件时间戳"
@@ -591,3 +583,15 @@ class MultimodalAnalysisData(BaseModel):
     problems: List[CodeProblem] = Field(default_factory=list, description="问题诊断")
     exercises: List[Exercise] = Field(default_factory=list, description="练习题")
     knowledge_points: List[str] = Field(default_factory=list, description="涉及的知识点")
+
+
+class SaveAnalysisRequest(MultimodalAnalysisData):
+    """多模态分析结果保存请求（POST body）"""
+    image_url: str = Field(..., description="已上传图片的URL")
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, v: str) -> str:
+        if not v.startswith("/static/uploads/images/"):
+            raise ValueError("图片URL格式不正确，应以 /static/uploads/images/ 开头")
+        return v.strip()

@@ -18,7 +18,7 @@ import re
 import threading
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from agents.base_agent import BaseAgent
 from agents.video_schema import parse_script, AnimationScript, ValidationResult
@@ -194,6 +194,7 @@ class VideoAgent(BaseAgent):
         self,
         user_input: str,
         context: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         target_kp = self._get_target_kp(user_input, context)
         video_config = self._build_video_config((context or {}).get("config", {}))
@@ -212,7 +213,7 @@ class VideoAgent(BaseAgent):
             self.logger.info(f"开始生成教学视频，知识点：{target_kp}")
             self.logger.info(f"视频配置: {video_config}")
 
-            html_code = await self._generate_with_retry(target_kp, video_config)
+            html_code = await self._generate_with_retry(target_kp, video_config, progress_callback)
             if not html_code or len(html_code.strip()) < 50:
                 self.logger.error(f"LLM返回的HTML过短或为空，长度: {len(html_code) if html_code else 0}")
                 raise ValueError("LLM返回的HTML内容无效")
@@ -409,29 +410,47 @@ class VideoAgent(BaseAgent):
 
         return html
 
-    async def _generate_with_retry(self, topic: str, video_config: Dict[str, Any]) -> str:
-        """脚本 → TTS音频 → 模板注入，失败时降级到 LLM 直接生成"""
+    async def _generate_with_retry(
+        self,
+        topic: str,
+        video_config: Dict[str, Any],
+        progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
+    ) -> str:
+        """脚本 -> TTS音频 -> 模板注入，失败时降级到 LLM 直接生成"""
+
+        async def _report(percent: int, stage: str, message: str) -> None:
+            if progress_callback is not None:
+                try:
+                    await progress_callback(percent, stage, message)
+                except Exception:
+                    pass
 
         # --- 阶段1：生成脚本 ---
+        await _report(5, "script", "生成视频脚本")
         script = await self._generate_script(topic, video_config)
 
         if script:
             # --- 阶段1.5：批量生成 TTS 音频（失败则降级 Web Speech）---
             if tts_client.is_enabled():
+                await _report(15, "audio", "合成语音")
                 try:
                     cache_key = _compute_cache_key(topic, video_config)
-                    await self._generate_audio_batch(script, video_config["voice_id"], cache_key)
+                    await self._generate_audio_batch(script, video_config["voice_id"], cache_key, progress_callback)
                     self.logger.info(f"[TTS] 音频生成成功，{len(script.steps)}段")
                 except Exception as e:
                     self.logger.warning(f"[TTS] 音频生成失败，降级到 Web Speech：{e}")
+                    await _report(60, "render", "音频降级，准备渲染")
             else:
                 self.logger.info("[TTS] 未启用，使用 Web Speech 配音")
+                await _report(60, "render", "准备渲染视频")
 
             # --- 阶段2：注入固定模板（零 LLM 调用） ---
+            await _report(75, "render", "渲染视频")
             try:
                 html = self._render_from_script(script, video_config)
                 if html and len(html.strip()) > 200:
-                    self.logger.info(f"[模板] 脚本→模板注入成功，{len(html)}字符")
+                    self.logger.info(f"[模板] 脚本->模板注入成功，{len(html)}字符")
+                    await _report(100, "done", "完成")
                     return html
                 self.logger.warning("[模板] 生成结果过短，降级到直接生成")
             except Exception as e:
@@ -440,13 +459,17 @@ class VideoAgent(BaseAgent):
             self.logger.warning("[阶段1] 脚本生成失败，降级到直接 HTML 生成")
 
         # --- 降级：LLM 直接生成 HTML ---
-        return await self._generate_html_direct(topic, video_config)
+        await _report(80, "render", "降级直接生成")
+        html = await self._generate_html_direct(topic, video_config)
+        await _report(100, "done", "完成")
+        return html
 
     async def _generate_audio_batch(
         self,
         script: AnimationScript,
         voice_id: str,
         cache_key: str,
+        progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
     ) -> None:
         """
         阶段1.5：批量生成 TTS 音频并回填到 script.steps
@@ -459,6 +482,7 @@ class VideoAgent(BaseAgent):
         """
         _ensure_audio_cache_dir()
         semaphore = asyncio.Semaphore(VIDEO_TTS_MAX_CONCURRENCY)
+        total = len(script.steps)
 
         async def synthesize_one(idx: int, text: str):
             async with semaphore:
@@ -472,7 +496,7 @@ class VideoAgent(BaseAgent):
             if isinstance(result, Exception):
                 raise result
 
-        # 回填到 script.steps
+        # 回填到 script.steps + 按段报告进度（15% -> 75%，区间 60%）
         for idx, tts_result in results:
             step = script.steps[idx]
             step.audio_duration_ms = tts_result.duration_ms
@@ -485,6 +509,13 @@ class VideoAgent(BaseAgent):
                 audio_file = _AUDIO_CACHE_DIR / f"{cache_key}_{idx}.mp3"
                 audio_file.write_bytes(base64.b64decode(tts_result.audio_b64))
                 step.audio_url = f"/{VIDEO_OUTPUT_DIR}/cache/audio/{cache_key}_{idx}.mp3"
+
+            if progress_callback is not None and total > 0:
+                percent = 15 + int(60 * (idx + 1) / total)
+                try:
+                    await progress_callback(percent, "audio", f"合成语音 {idx + 1}/{total}")
+                except Exception:
+                    pass
 
     async def _generate_html_direct(self, topic: str, video_config: Dict[str, Any]) -> str:
         """降级方案：直接生成 HTML（绕过脚本阶段）"""
@@ -767,7 +798,7 @@ class VideoAgent(BaseAgent):
             extra_metadata={
                 "video_format": "html_animation",
                 "has_voice": True,
-                "voice_source": "volcengine_tts" if tts_client.is_enabled() else "browser_web_speech",
+                "voice_source": tts_client.get_provider_name(),
                 "voice_id": video_config.get("voice_id"),
                 "auto_play": True,
                 "duration": video_config.get("duration"),

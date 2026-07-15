@@ -16,7 +16,7 @@ from agents.base_agent import BaseAgent
 from graph.state import ResourceItem
 from config.model_config import PYTHON_KNOWLEDGE_POINTS
 from config.constants import CODE_RAG_TOP_K, RESOURCE_PROGRESS_COMPLETE, DEFAULT_TOPIC, RESOURCE_STATUS_COMPLETED
-from utils.agent_helpers import match_knowledge_point, get_profile_from_context
+from utils.agent_helpers import match_knowledge_point, get_profile_from_context, build_profile_text
 
 
 # ============================================================
@@ -255,8 +255,9 @@ class CodeAgent(BaseAgent):
             return self._build_result(new_resources)
 
         # 3. 根据模式生成
+        profile = get_profile_from_context(context)
         if self.use_llm:
-            code_content = await self._llm_generate(target_kp, target_type)
+            code_content = await self._llm_generate(target_kp, target_type, profile)
         else:
             code_content = self._rule_generate(target_kp, target_type)
 
@@ -277,15 +278,19 @@ class CodeAgent(BaseAgent):
         func_name = _sanitize_func_name(kp)
         return template.format(kp=kp, func_name=func_name)
 
-    async def _llm_generate(self, kp: str, ctype: str) -> str:
+    async def _llm_generate(self, kp: str, ctype: str, profile: Optional[Dict[str, Any]] = None) -> str:
         """LLM 模式：RAG + LLM 生成，失败降级规则模式"""
         rag_context = await self._get_rag_context(kp, top_k=CODE_RAG_TOP_K)
         type_desc = self.TYPE_DESCRIPTIONS.get(ctype, "基础示例")
+        profile_text = build_profile_text(
+            profile, ["knowledge_level", "weak_points", "error_preferences"]
+        )
 
         system_prompt = self._load_prompt(
             "code_generation_system",
             kp=kp, type_desc=type_desc,
             rag_context=rag_context if rag_context else "无参考资料",
+            profile_text=profile_text,
         )
 
         try:

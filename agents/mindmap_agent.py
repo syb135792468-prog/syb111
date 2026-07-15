@@ -20,6 +20,7 @@ from config.constants import (
     MINDMAP_EXPAND_TIMEOUT_SEC, RESOURCE_GENERATE_TIMEOUT_SEC,
 )
 from utils.sql_parser import parse_sql_tables, generate_ddl_doc_markdown
+from utils.agent_helpers import get_profile_from_context, build_profile_text
 
 
 class MindmapAgent(BaseAgent):
@@ -67,7 +68,8 @@ class MindmapAgent(BaseAgent):
         fmt = self._resolve_format()
         self.logger.info(f"📋 最终格式：{fmt}")
 
-        content = await self._llm_generate(target_kp, fmt)
+        profile = get_profile_from_context(context)
+        content = await self._llm_generate(target_kp, fmt, profile)
 
         if fmt == self.FORMAT_JSON:
             content = self._ensure_depth(content)
@@ -448,9 +450,13 @@ class MindmapAgent(BaseAgent):
         # 2. 构造 Prompt
         examples_text = "\n".join(f"  - {ex}" for ex in (node_examples or [])) or "无"
         pitfalls_text = "\n".join(f"  - {p}" for p in (node_pitfalls or [])) or "无"
+        profile_text = build_profile_text(
+            get_profile_from_context(context),
+            ["knowledge_level", "learning_style", "weak_points"],
+        )
 
         if node_type:
-            # ER 节点使用专用 prompt
+            # ER 节点使用专用 prompt（数据库结构展开，与学习画像无关，不注入 profile_text）
             system_prompt = self._load_prompt(
                 "mindmap_er_expand_system",
                 node_topic=node_topic,
@@ -466,7 +472,7 @@ class MindmapAgent(BaseAgent):
                 f"要求：返回纯JSON数组，每个元素包含topic、definition、syntax、examples、pitfalls、advice、children（空数组）。"
             )
         else:
-            system_prompt = self._load_prompt("mindmap_expand_node_system")
+            system_prompt = self._load_prompt("mindmap_expand_node_system", profile_text=profile_text)
             user_msg = (
             f"请对以下知识点节点进行详细展开，生成2-3个第四级子节点。\n\n"
             f"当前节点主题：{node_topic}\n"
@@ -709,7 +715,7 @@ class MindmapAgent(BaseAgent):
     # ============================================================
     # LLM 生成（主力模式）
     # ============================================================
-    async def _llm_generate(self, kp: str, fmt: str) -> str:
+    async def _llm_generate(self, kp: str, fmt: str, profile: Optional[Dict[str, Any]] = None) -> str:
         """
         增强版 LLM 模式思维导图生成：
         1. 获取 RAG 上下文（防幻觉）
@@ -722,15 +728,18 @@ class MindmapAgent(BaseAgent):
 
         # 2. 根据格式定制 Prompt
         rag_text = rag_context if rag_context else "无参考资料"
+        profile_text = build_profile_text(
+            profile, ["knowledge_level", "learning_style", "weak_points"]
+        )
         if fmt == self.FORMAT_JSON:
-            system_prompt = self._build_json_prompt(kp, rag_context)
-            user_msg = self._load_prompt("mindmap_generation_json_user", kp=kp)
+            system_prompt = self._build_json_prompt(kp, rag_context, profile_text)
+            user_msg = self._load_prompt("mindmap_generation_json_user", kp=kp, profile_text=profile_text)
         elif fmt == self.FORMAT_MERMAID:
-            system_prompt = self._load_prompt("mindmap_generation_mermaid_system", kp=kp, rag_context=rag_text)
-            user_msg = self._load_prompt("mindmap_generation_mermaid_user", kp=kp)
+            system_prompt = self._load_prompt("mindmap_generation_mermaid_system", kp=kp, rag_context=rag_text, profile_text=profile_text)
+            user_msg = self._load_prompt("mindmap_generation_mermaid_user", kp=kp, profile_text=profile_text)
         else:
-            system_prompt = self._load_prompt("mindmap_generation_markdown_system", kp=kp, rag_context=rag_text)
-            user_msg = self._load_prompt("mindmap_generation_markdown_user", kp=kp)
+            system_prompt = self._load_prompt("mindmap_generation_markdown_system", kp=kp, rag_context=rag_text, profile_text=profile_text)
+            user_msg = self._load_prompt("mindmap_generation_markdown_user", kp=kp, profile_text=profile_text)
 
         try:
             # 3. 调用 LLM（带超时保护）；JSON 格式启用 JSON mode 保证输出合法
@@ -768,9 +777,9 @@ class MindmapAgent(BaseAgent):
             # Markdown
             return f"# {kp}\n\n## 基本概念\n{kp}的核心概念和基本定义。\n\n## 语法格式\n{kp}的语法格式和使用方式。\n\n## 常见应用\n{kp}在实际开发中的应用场景。\n\n## 注意事项\n学习{kp}时需要注意的常见问题。"
 
-    def _build_json_prompt(self, kp: str, rag_context: str) -> str:
+    def _build_json_prompt(self, kp: str, rag_context: str, profile_text: str = "（暂无画像信息）") -> str:
         rag_text = rag_context if rag_context else "无参考资料"
-        return self._load_prompt("mindmap_generation_json_system", kp=kp, rag_context=rag_text)
+        return self._load_prompt("mindmap_generation_json_system", kp=kp, rag_context=rag_text, profile_text=profile_text)
 
     @staticmethod
     def _validate_json(text: str) -> str:

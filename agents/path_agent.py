@@ -8,7 +8,10 @@ from typing import Dict, Any, Optional, List
 
 from agents.base_agent import BaseAgent
 from config.model_config import PYTHON_KNOWLEDGE_POINTS
-from config.constants import DEFAULT_ESTIMATED_TIME_MIN, MAX_LEARNING_PATH_STEPS
+from config.constants import (
+    DEFAULT_ESTIMATED_TIME_MIN, MAX_LEARNING_PATH_STEPS,
+    QUIZ_TYPE_CHOICE, DIFFICULTY_MEDIUM,
+)
 from utils.agent_helpers import get_profile_from_context
 
 
@@ -212,3 +215,53 @@ class PathAgent(BaseAgent):
             })
 
         return learning_path
+
+    async def generate_pre_test(
+        self,
+        knowledge_point: str,
+        difficulty: str = DIFFICULTY_MEDIUM,
+    ) -> Dict[str, Any]:
+        """Agent 间协作入口：为路径节点生成前置测试题（内部调 QuizAgent）。
+
+        这是真正的 Agent 间调用，不是统一路由分发。PathAgent 作为路径规划者，
+        在用户需要前置测试时调用 QuizAgent 生成题目，体现多智能体协作。
+
+        Args:
+            knowledge_point: 节点对应的知识点名称
+            difficulty: 题目难度（easy/medium/hard），默认 medium
+
+        Returns:
+            {question, answer, explanation, common_mistakes, difficulty, resource_item}
+        """
+        from agents.quiz_agent import QuizAgent
+
+        self.logger.info(
+            f"🤝 Agent 协作: PathAgent -> QuizAgent | kp={knowledge_point} | difficulty={difficulty}"
+        )
+        quiz_agent = QuizAgent(user_id=self.user_id)
+        result = await quiz_agent.process(
+            user_input=knowledge_point,
+            quiz_type=QUIZ_TYPE_CHOICE,
+            difficulty=difficulty,
+            force_knowledge_point=knowledge_point,
+        )
+        resources = result.get("resources", [])
+        if not resources:
+            raise ValueError("QuizAgent 未生成题目")
+
+        item = resources[0]
+        return {
+            "question": item.content,
+            "answer": item.extra_metadata.get("answer", ""),
+            "explanation": item.extra_metadata.get("explanation", ""),
+            "common_mistakes": item.extra_metadata.get("common_mistakes", []),
+            "difficulty": item.extra_metadata.get("difficulty", difficulty),
+            "resource_item": item,
+            "collaboration_info": {
+                "agents": [
+                    {"name": "PathAgent", "role": "路径规划", "action": "发起前置测试请求"},
+                    {"name": "QuizAgent", "role": "测验生成", "action": f"生成{difficulty}难度选择题"},
+                ],
+                "description": "PathAgent 协同 QuizAgent 生成前置测试",
+            },
+        }

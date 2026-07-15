@@ -14,6 +14,7 @@ import hashlib
 import json as _json
 import time
 import re
+import ast
 from pathlib import Path
 
 from agents.base_agent import BaseAgent
@@ -24,6 +25,7 @@ from config.constants import (
     LLM_CIRCUIT_BREAKER_THRESHOLD, LLM_CIRCUIT_BREAKER_COOLDOWN_SEC,
     QUESTION_HASH_TRUNCATE_LENGTH, QUIZ_TYPE_CHOICE, QUIZ_TYPE_FILL, QUIZ_TYPE_CODE,
     DEFAULT_TOPIC, RESOURCE_STATUS_COMPLETED, DIFFICULTY_MEDIUM, DIFFICULTY_AUTO,
+    ALL_ERROR_TYPES, ERROR_TYPE_OTHER,
 )
 from utils.agent_helpers import match_knowledge_point, get_profile_from_context
 
@@ -230,9 +232,94 @@ class QuizAgent(BaseAgent):
             )
 
         data.setdefault("difficulty", difficulty)
+        data["common_mistakes"] = self._validate_common_mistakes(
+            data.get("common_mistakes"), qtype, data.get("answer")
+        )
+        # 编程题：用参考答案校验 test_cases，过滤执行失败或输出不符的用例
+        if qtype == QUIZ_TYPE_CODE:
+            data["test_cases"] = await self._validate_test_cases(
+                data.get("answer", ""), data.get("test_cases", [])
+            )
         self._llm_fail_count = 0
         self.logger.info(f"🤖 LLM 生成成功：{data.get('title', '')}")
         return data
+
+    async def _validate_test_cases(
+        self, reference_answer: str, test_cases: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """用参考答案校验 test_cases，过滤执行失败或输出不符的用例。
+
+        全失败时返回空 list（降级到对比执行+LLM 判分），不抛错。
+        """
+        if not test_cases or not reference_answer:
+            return []
+
+        from utils.code_executor import execute_python_code
+
+        valid: List[Dict[str, Any]] = []
+        for tc in test_cases[:8]:  # 最多校验8个
+            tc_input = str(tc.get("input", "")).strip()
+            tc_expected = str(tc.get("output", "")).strip()
+            if not tc_input or not tc_expected:
+                continue
+            # 拦截非表达式（防注入：语句如 import os 会被 ast.parse 拒绝）
+            try:
+                ast.parse(tc_input, mode='eval')
+            except SyntaxError:
+                self.logger.warning(f"⚠️ test_case input 非表达式，跳过: {tc_input[:50]}")
+                continue
+            # 用参考答案执行校验
+            wrapper = f"{reference_answer}\n\nresult = {tc_input}\nprint(result)"
+            try:
+                r = await execute_python_code(wrapper, timeout=2)
+                if r.get("success") and r.get("stdout", "").strip() == tc_expected:
+                    valid.append({"input": tc_input, "output": tc_expected})
+                else:
+                    self.logger.debug(
+                        f"test_case 过滤: input={tc_input[:30]} "
+                        f"expected={tc_expected[:30]} got={r.get('stdout', '')[:30]}"
+                    )
+            except Exception as e:
+                self.logger.debug(f"test_case 执行异常: {e}")
+
+        self.logger.info(f"📋 test_cases 校验: {len(test_cases)} -> {len(valid)}")
+        return valid
+
+    @staticmethod
+    def _validate_common_mistakes(
+        raw: Any, qtype: str, correct_answer: Any
+    ) -> List[Dict[str, str]]:
+        """校验并归一化 LLM 输出的 common_mistakes。
+        - 缺失或格式错返回空数组（不抛错，兼容旧 prompt）
+        - error_type 非法值降级为 other
+        - 选择题 wrong 字段归一化为大写字母
+        - 剔除与正确答案相同的项（防 LLM 把正确选项标成错因）
+        """
+        if not isinstance(raw, list):
+            return []
+        correct_norm = str(correct_answer).strip().upper() if qtype == QUIZ_TYPE_CHOICE else str(correct_answer).strip()
+        result: List[Dict[str, str]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            wrong = str(item.get("wrong", "")).strip()
+            if not wrong:
+                continue
+            if qtype == QUIZ_TYPE_CHOICE:
+                wrong_norm = wrong.upper()
+                if wrong_norm == correct_norm:
+                    continue
+            else:
+                wrong_norm = wrong
+            et = item.get("error_type", ERROR_TYPE_OTHER)
+            if et not in ALL_ERROR_TYPES:
+                et = ERROR_TYPE_OTHER
+            result.append({
+                "wrong": wrong_norm,
+                "error_type": et,
+                "reason": str(item.get("reason", ""))[:50],
+            })
+        return result
 
     def _check_circuit_breaker(self):
         """检查是否需要触发 LLM 熔断"""
@@ -461,6 +548,8 @@ class QuizAgent(BaseAgent):
                 "difficulty": quiz_data.get('difficulty', DIFFICULTY_MEDIUM),
                 "knowledge_point": kp,  # 记录知识点，防止漂移
                 "question_hash": self._generate_hash(quiz_data),
+                "common_mistakes": quiz_data.get("common_mistakes", []),
+                "test_cases": quiz_data.get("test_cases", []) if qtype == QUIZ_TYPE_CODE else [],
             }
         )
 

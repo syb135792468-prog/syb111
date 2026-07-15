@@ -284,7 +284,7 @@ async def get_effective_state(
 
     prereq_mastery = (
         await session.execute(
-            select(UserKnowledgeMastery.state).where(
+            select(UserKnowledgeMastery.node_code, UserKnowledgeMastery.state).where(
                 and_(
                     UserKnowledgeMastery.user_id == user_id,
                     UserKnowledgeMastery.node_code.in_(prereq_codes),
@@ -292,9 +292,10 @@ async def get_effective_state(
             )
         )
     ).scalars().all()
-    # 任一前置未 mastered -> locked
-    mastered_set = {s for s in prereq_mastery if s == STATE_MASTERED}
-    if len(mastered_set) == len(prereq_codes):
+    # Every prerequisite needs its own mastered record. Counting states in a set
+    # collapses multiple "mastered" values and leaves multi-prerequisite nodes locked.
+    prereq_states = {code: state for code, state in prereq_mastery}
+    if all(prereq_states.get(code) == STATE_MASTERED for code in prereq_codes):
         return STATE_AVAILABLE
     return STATE_LOCKED
 

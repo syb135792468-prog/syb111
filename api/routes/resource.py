@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-from typing import Optional, Dict, Any, AsyncGenerator
+from typing import Optional, Dict, Any, AsyncGenerator, Callable, Awaitable
 import uuid
 import os
 import contextvars
@@ -21,7 +21,6 @@ import random
 import re
 from collections import Counter
 from datetime import datetime
-import requests as http_requests
 
 from api.schemas import (
     BaseResponse,
@@ -29,7 +28,10 @@ from api.schemas import (
     ResourceRequest,
     ResourceMetadata,
     ExpandNodeRequest,
-    SaveExternalVideoRequest,
+)
+from api.task_store import (
+    register_task, update_progress, complete_task, fail_task,
+    ensure_cleanup_task,
 )
 from models.database import AsyncSessionLocal
 from models.resource import Resource
@@ -211,8 +213,11 @@ async def load_profile_context(session: AsyncSession, user_id: int) -> dict:
         "knowledge_level": profile.knowledge_level,
         "learning_goal": profile.learning_goal,
         "learning_style": profile.learning_style,
+        "duration_preference": profile.duration_preference,
+        "motivation_level": profile.motivation_level,
         "weak_points": profile.weak_points,
         "mastered_points": profile.mastered_points,
+        "error_preferences": profile.error_preferences or [],
     }
 
 async def _recommend_difficulty(session: AsyncSession, user_id: int, topic: str) -> str:
@@ -245,6 +250,97 @@ async def _recommend_difficulty(session: AsyncSession, user_id: int, topic: str)
         except Exception:
             return DIFFICULTY_MEDIUM
 
+
+# 学习风格 -> 资源类型映射（visual 偏视频/思维导图，auditory 偏视频含语音，kinesthetic 偏代码实操）
+_STYLE_TYPE_MAP: Dict[str, list[str]] = {
+    "visual": ["video", "mindmap"],
+    "auditory": ["video"],
+    "kinesthetic": ["code"],
+    "mixed": ["doc", "quiz"],
+}
+# 学习动力 -> 难度映射（low 给 easy 正反馈，high 给 hard 拉伸挑战）
+_MOTIVATION_DIFF_MAP: Dict[str, str] = {
+    "high": DIFFICULTY_HARD,
+    "medium": DIFFICULTY_MEDIUM,
+    "low": DIFFICULTY_EASY,
+}
+# 单次学习时长 -> 资源类型倾向（short 碎片化文档/题，long 长视频/讲义）
+_DURATION_TYPE_MAP: Dict[str, list[str]] = {
+    "short": ["doc", "quiz"],
+    "medium": ["mindmap", "code"],
+    "long": ["video", "slides"],
+}
+
+
+def _build_recommendation_strategy(profile: dict) -> list[dict]:
+    """基于画像 8 维度生成 3 条推荐策略。
+
+    策略优先级：
+    1. 薄弱点[0] + 学习风格对应资源类型（精准补救）
+    2. 薄弱点[1] + 时长偏好对应资源类型（继续巩固）
+    3. 已掌握点的下一个知识点 + 测验（横向扩展）
+    不足 3 条时用 PYTHON_KNOWLEDGE_POINTS 兜底。
+
+    返回: [{knowledge_point, resource_type, difficulty, reason}, ...]
+    """
+    style = profile.get("learning_style", "mixed") or "mixed"
+    motivation = profile.get("motivation_level", "medium") or "medium"
+    duration = profile.get("duration_preference", "medium") or "medium"
+    weak = profile.get("weak_points", []) or []
+    mastered = profile.get("mastered_points", []) or []
+
+    diff = _MOTIVATION_DIFF_MAP.get(motivation, DIFFICULTY_MEDIUM)
+    strategies: list[dict] = []
+
+    # 策略1: 薄弱点 + 学习风格对应资源类型
+    if weak:
+        kp = weak[0]
+        rtype = _STYLE_TYPE_MAP.get(style, ["doc"])[0]
+        strategies.append({
+            "knowledge_point": kp,
+            "resource_type": rtype,
+            "difficulty": diff,
+            "reason": f"针对薄弱点「{kp}」，匹配你的{style}学习风格",
+        })
+
+    # 策略2: 薄弱点(第二个) + 时长偏好对应资源类型
+    if len(weak) > 1:
+        kp = weak[1]
+        rtype = _DURATION_TYPE_MAP.get(duration, ["doc"])[0]
+        strategies.append({
+            "knowledge_point": kp,
+            "resource_type": rtype,
+            "difficulty": diff,
+            "reason": f"巩固薄弱点「{kp}」，适合{duration}时长学习",
+        })
+
+    # 策略3: 已掌握点的下一个知识点(扩展)
+    if mastered:
+        last_mastered = mastered[-1]
+        if last_mastered in PYTHON_KNOWLEDGE_POINTS:
+            idx = PYTHON_KNOWLEDGE_POINTS.index(last_mastered)
+            next_kp = PYTHON_KNOWLEDGE_POINTS[min(idx + 1, len(PYTHON_KNOWLEDGE_POINTS) - 1)]
+        else:
+            next_kp = PYTHON_KNOWLEDGE_POINTS[0]
+        strategies.append({
+            "knowledge_point": next_kp,
+            "resource_type": "quiz",
+            "difficulty": diff,
+            "reason": f"从已掌握的「{last_mastered}」扩展到下一知识点",
+        })
+
+    # 兜底：不足 3 条时补随机知识点
+    while len(strategies) < 3:
+        kp = random.choice(PYTHON_KNOWLEDGE_POINTS[:10])
+        strategies.append({
+            "knowledge_point": kp,
+            "resource_type": "doc",
+            "difficulty": DIFFICULTY_MEDIUM,
+            "reason": f"推荐学习「{kp}」",
+        })
+
+    return strategies[:3]
+
 # ====================== 接口 ======================
 @router.get("/health", response_model=BaseResponse)
 async def health(request_id: str = Depends(get_request_id)):
@@ -259,138 +355,109 @@ async def health(request_id: str = Depends(get_request_id)):
         request_id=request_id,
     )
 
-@router.get("/search-video", response_model=BaseResponse)
-async def search_video(
-    keyword: str = Query(..., min_length=1, max_length=200, description="搜索关键词"),
-    page: int = Query(1, ge=1, le=10, description="页码"),
-    request_id: str = Depends(get_request_id)
+
+@router.get("/recommend", response_model=BaseResponse)
+async def recommend_resources(
+    user_id: int = Query(..., description="用户ID"),
+    session: AsyncSession = Depends(get_db),
+    request_id: str = Depends(get_request_id),
 ):
-    """搜索B站视频，返回视频列表"""
+    """基于画像 8 维度生成 3 条精准推荐资源（按需生成，不预存推送记录）。
+
+    赛题对齐：A3 要求"基于画像实现学习资源的精准推送，涵盖文档、视频、题库、实操案例等"。
+    本接口由前端 ChatView 顶部入口调用，作为系统主动推荐机制。
+    策略：薄弱点 + 学习风格对应资源类型；动力水平决定难度；时长偏好决定资源形态。
+    """
     try:
-        bilibili_results = []
-        douyin_search_url = f"https://www.douyin.com/search/{keyword}?type=video"
+        uid = user_id
 
-        # 调用B站搜索API（Session + buvid cookie，避免 412 反爬）
-        def _fetch_bilibili():
-            sess = http_requests.Session()
-            sess.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://search.bilibili.com/",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            })
-            # 获取 buvid 指纹 cookie（B站要求携带，否则返回 412）
+        # 用户存在性 + 画像加载（load_profile_context 返回完整 8 维度）
+        await get_user_or_404(session, uid)
+        profile_ctx = await load_profile_context(session, uid)
+
+        strategies = _build_recommendation_strategy(profile_ctx)
+        recommendations: list[dict] = []
+
+        for s in strategies:
             try:
-                spi = sess.get("https://api.bilibili.com/x/frontend/finger/spi", timeout=5).json()
-                spi_data = spi.get("data", {})
-                if spi_data.get("b_3"):
-                    sess.cookies.set("buvid3", spi_data["b_3"], domain=".bilibili.com")
-                if spi_data.get("b_4"):
-                    sess.cookies.set("buvid4", spi_data["b_4"], domain=".bilibili.com")
-            except Exception:
-                pass
-            resp = sess.get(
-                "https://api.bilibili.com/x/web-interface/search/type",
-                params={"search_type": "video", "keyword": keyword, "page": page, "pagesize": 12, "order": "totalrank"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return resp.json()
-
-        try:
-            data = await asyncio.to_thread(_fetch_bilibili)
-            if data.get("code") == 0 and data.get("data", {}).get("result"):
-                for item in data["data"]["result"]:
-                    # 清除HTML标签
-                    title = re.sub(r"<.*?>", "", item.get("title", ""))
-                    pic = item.get("pic", "")
-                    if pic and pic.startswith("//"):
-                        pic = "https:" + pic
-                    bvid = item.get("bvid", "")
-                    aid = item.get("aid", "")
-                    video_url = f"https://www.bilibili.com/video/{bvid}" if bvid else f"https://www.bilibili.com/video/av{aid}" if aid else ""
-                    if not video_url:
-                        continue
-                    bilibili_results.append({
-                        "title": title,
-                        "url": video_url,
-                        "thumbnail": pic,
-                        "author": item.get("author", ""),
-                        "duration": item.get("duration", ""),
-                        "play": item.get("play", 0),
-                        "description": item.get("description", "")[:100],
-                        "pubdate": item.get("pubdate", 0),
-                    })
-        except Exception as e:
-            logger.warning(f"B站搜索失败: {e}")
+                agent = await get_agent(s["resource_type"])
+                context = {
+                    "user_id": str(uid),
+                    "profile_data": profile_ctx,
+                    "topic": s["knowledge_point"],
+                    "resource_list": [],
+                }
+                process_kwargs: Dict[str, Any] = {}
+                if s["resource_type"] == RESOURCE_TYPE_QUIZ:
+                    process_kwargs = {
+                        "difficulty": s["difficulty"],
+                        "include_explanation": True,
+                        "force_knowledge_point": s["knowledge_point"],
+                    }
+                result = await asyncio.wait_for(
+                    agent.process(
+                        user_input=s["knowledge_point"],
+                        context=context,
+                        **process_kwargs,
+                    ),
+                    timeout=30,
+                )
+                items = result.get("resource_list", [])
+                if not items:
+                    continue
+                item = items[0]
+                content_str = getattr(item, "content", "") or ""
+                recommendations.append({
+                    "resource_type": s["resource_type"],
+                    "knowledge_point": s["knowledge_point"],
+                    "title": getattr(item, "title", "") or f"{s['knowledge_point']} 资源",
+                    "content_preview": content_str[:120],
+                    "difficulty": s["difficulty"],
+                    "reason": s["reason"],
+                    "resource_data": {
+                        "title": getattr(item, "title", ""),
+                        "content": content_str,
+                        "knowledge_points": getattr(item, "knowledge_points", []),
+                        "extra_metadata": getattr(item, "extra_metadata", {}),
+                    },
+                })
+            except asyncio.TimeoutError:
+                logger.warning(f"推荐生成超时 kp={s['knowledge_point']} type={s['resource_type']}")
+                continue
+            except Exception as e:
+                logger.warning(f"推荐生成失败 kp={s['knowledge_point']}: {e}")
+                continue
 
         return BaseResponse(
             code=HTTP_OK,
             message=MSG_SUCCESS,
             data={
-                "bilibili": bilibili_results,
-                "douyin_search_url": douyin_search_url,
-                "keyword": keyword,
+                "recommendations": recommendations,
+                "profile_summary": {
+                    "learning_style": profile_ctx.get("learning_style"),
+                    "motivation_level": profile_ctx.get("motivation_level"),
+                    "weak_points_count": len(profile_ctx.get("weak_points", [])),
+                },
             },
             request_id=request_id,
         )
+
+    except ValueError as e:
+        return BaseResponse(
+            code=HTTP_BAD_REQUEST,
+            message=str(e),
+            data=None,
+            request_id=request_id,
+        )
     except Exception as e:
-        logger.error(f"视频搜索失败: {e}", exc_info=True, extra={"request_id": request_id})
+        logger.error(f"推荐接口失败: {e}", exc_info=True, extra={"request_id": request_id})
         return BaseResponse(
             code=HTTP_SERVER_ERROR,
-            message=f"搜索失败: {e}",
+            message=f"推荐生成失败: {e}",
             data=None,
             request_id=request_id,
         )
 
-@router.post("/save-external-video", response_model=BaseResponse)
-async def save_external_video(
-    req: SaveExternalVideoRequest,
-    session: AsyncSession = Depends(get_db),
-    request_id: str = Depends(get_request_id)
-):
-    """收藏外部视频（B站搜索结果）到学习资源库"""
-    try:
-        new_resource = Resource(
-            user_id=req.user_id,
-            resource_type="video",
-            title=req.title,
-            content=req.url,
-            status="completed",
-            in_library=True,
-            extra_metadata={
-                "source": "bilibili",
-                "thumbnail": req.thumbnail,
-                "author": req.author,
-                "external_url": req.url,
-            },
-        )
-        session.add(new_resource)
-        await session.commit()
-        await session.refresh(new_resource)
-        return BaseResponse(
-            code=HTTP_OK,
-            message="已收藏到学习资源库",
-            data={"id": new_resource.id, "title": new_resource.title},
-            request_id=request_id,
-        )
-    except IntegrityError:
-        await session.rollback()
-        return BaseResponse(
-            code=HTTP_OK,
-            message="该视频已在资源库中",
-            data=None,
-            request_id=request_id,
-        )
-    except Exception as e:
-        await session.rollback()
-        logger.error(f"收藏外部视频失败: {e}", exc_info=True, extra={"request_id": request_id})
-        return BaseResponse(
-            code=HTTP_SERVER_ERROR,
-            message=f"收藏失败: {e}",
-            data=None,
-            request_id=request_id,
-        )
 
 @router.get("/{resource_id}", response_model=BaseResponse)
 async def get_resource(
@@ -479,6 +546,208 @@ async def list_resources(
             request_id=request_id
         )
 
+async def _generate_multi_question_quiz(
+    req: ResourceRequest,
+    profile_ctx: dict,
+    session: AsyncSession,
+    uid: int,
+    agent: BaseAgent,
+    cfg: dict,
+    progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
+) -> Optional[Resource]:
+    """多题测验生成，4 阶段：parallel gen -> dedup -> 补生成 -> assemble。返回未提交的 Resource 或 None。"""
+    question_count = max(1, min(cfg.get("questionCount", 1), MAX_QUIZ_QUESTION_COUNT))
+    allowed_types = cfg.get("questionTypes", None)
+    difficulty = cfg.get("difficulty", DIFFICULTY_MEDIUM)
+    include_explanation = cfg.get("includeExplanation", True)
+    custom_prompt = cfg.get("customPrompt", "")
+
+    async def _report(percent: int, stage: str, message: str) -> None:
+        if progress_callback is not None:
+            try:
+                await progress_callback(percent, stage, message)
+            except Exception:
+                pass
+
+    if req.resource_type == RESOURCE_TYPE_QUIZ and question_count > 1:
+        # 多题模式：预计算知识点 + 并行生成 + 去重
+        questions_meta = []
+        content_parts = [f"# {req.topic} 练习题（共 {question_count} 题）"]
+        knowledge_points = []
+        generation_failures: list[str] = []
+
+        # 直接用用户原始输入，由 Agent 的 LLM 自行理解
+        raw_topic = req.topic.strip()
+        target_kp = raw_topic or DEFAULT_TOPIC
+        logger.info(f"多题生成目标知识点: {target_kp} (输入: {req.topic})")
+        logger.info(f"🔵 Agent LLM模式: {agent.use_llm}, 熔断状态: disabled_until={agent._llm_disabled_until}")
+
+        # 题型轮转：确保三种题型均匀分布
+        if allowed_types:
+            type_cycle = []
+            while len(type_cycle) < question_count:
+                type_cycle.extend(allowed_types)
+            type_cycle = type_cycle[:question_count]
+            random.shuffle(type_cycle)
+        else:
+            type_cycle = [None] * question_count
+
+        sem = asyncio.Semaphore(QUIZ_PARALLEL_CONCURRENCY)
+
+        async def gen_one(idx: int, q_type):
+            """并行生成单题（带信号量限流 + 内部重试 + 知识点验证）"""
+            async with sem:
+                ctx = {
+                    "user_id": req.user_id,
+                    "profile_data": profile_ctx,
+                    "topic": target_kp,  # 使用预计算的知识点
+                    "resource_list": [],
+                }
+                failure_code = "unknown"
+                last_error = ""
+                for attempt in range(QUIZ_GEN_RETRY_COUNT):
+                    try:
+                        result = await asyncio.wait_for(
+                            agent.process(
+                                user_input=target_kp, context=ctx, quiz_type=q_type,
+                                difficulty=difficulty, include_explanation=include_explanation,
+                                custom_prompt=custom_prompt,
+                                force_knowledge_point=target_kp,  # 强制使用目标知识点
+                            ),
+                            timeout=getattr(settings, "RESOURCE_GENERATE_TIMEOUT", RESOURCE_GENERATE_TIMEOUT_SEC)
+                        )
+                        items = result.get("resource_list", [])
+                        if items:
+                            item = items[0]
+                            # 验证题目知识点是否匹配
+                            item_meta = item.extra_metadata or {}
+                            item_kp = item_meta.get("knowledge_point", "")
+                            if item_kp and item_kp != target_kp:
+                                failure_code = "kp_mismatch"
+                                last_error = f"知识点不匹配: 预期={target_kp}, 实际={item_kp}"
+                                logger.warning(f"[{failure_code}] 第 {idx+1} 题{last_error}，直接丢弃")
+                                break
+                            return item
+                        failure_code = "no_item"
+                        last_error = "agent 未返回有效题目"
+                        logger.warning(f"[{failure_code}] 第 {idx+1} 题未返回资源 (attempt {attempt+1})")
+                    except asyncio.TimeoutError:
+                        failure_code = "timeout"
+                        last_error = "生成超时"
+                        logger.warning(f"[{failure_code}] 第 {idx+1} 题超时 (attempt {attempt+1})")
+                    except Exception as e:
+                        failure_code = "agent_exception"
+                        last_error = str(e) or "未知异常"
+                        logger.warning(f"[{failure_code}] 第 {idx+1} 题异常 (attempt {attempt+1}): {e}")
+                        if not _is_retryable_quiz_generation_error(e):
+                            failure_code = "non_retryable"
+                            logger.warning(f"第 {idx+1} 题命中不可重试错误，提前结束重试")
+                            break
+                if last_error:
+                    generation_failures.append(_build_quiz_failure_entry(idx + 1, failure_code, last_error))
+                return None
+
+        # 第一轮：并行生成所有题目
+        tasks = [gen_one(i, type_cycle[i]) for i in range(question_count)]
+        raw_items = await asyncio.gather(*tasks)
+
+        # 去重（用 question_hash，fallback 到 content[:100]）
+        seen_hashes = set()
+        valid_items = []
+        for item in raw_items:
+            if item is None:
+                continue
+            meta = item.extra_metadata or {}
+            dedup_key = meta.get("question_hash") or item.content[:DEDUP_CONTENT_TRUNCATE_LENGTH]
+            if dedup_key not in seen_hashes:
+                seen_hashes.add(dedup_key)
+                valid_items.append(item)
+
+        # 补生成：去重后不足则再补几轮
+        for round_i in range(QUIZ_DEDUP_MAX_ROUNDS):
+            if len(valid_items) >= question_count:
+                break
+            missing = question_count - len(valid_items)
+            logger.info(f"去重后不足，补生成 {missing} 题（第 {round_i+1} 轮）")
+            fill_types = [random.choice(allowed_types) if allowed_types else None for _ in range(missing)]
+            fill_tasks = [gen_one(question_count + j, fill_types[j]) for j in range(missing)]
+            fill_results = await asyncio.gather(*fill_tasks)
+            before_count = len(valid_items)
+            for item in fill_results:
+                if item is None:
+                    continue
+                meta = item.extra_metadata or {}
+                dedup_key = meta.get("question_hash") or item.content[:DEDUP_CONTENT_TRUNCATE_LENGTH]
+                if dedup_key not in seen_hashes:
+                    seen_hashes.add(dedup_key)
+                    valid_items.append(item)
+            if len(valid_items) == before_count:
+                logger.warning(f"补生成第 {round_i+1} 轮没有新增有效题目，提前停止后续补生成")
+                break
+
+        if generation_failures:
+            logger.warning(f"练习题生成失败摘要: {_summarize_quiz_failures(generation_failures)}")
+
+        # 组装最终内容
+        for idx, item in enumerate(valid_items[:question_count]):
+            meta = item.extra_metadata or {}
+            questions_meta.append({
+                "index": len(questions_meta) + 1,
+                "quiz_type": meta.get("quiz_type", QUIZ_TYPE_CHOICE),
+                "answer": meta.get("answer", ""),
+                "explanation": meta.get("explanation", ""),
+            })
+            raw = item.content
+            lines = raw.split("\n")
+            body_lines = []
+            skip_first = True
+            for line in lines:
+                if skip_first and line.startswith("# "):
+                    skip_first = False
+                    continue
+                body_lines.append(line)
+            body = "\n".join(body_lines).strip()
+
+            content_parts.append(f"\n---\n\n## 第 {len(questions_meta)} 题")
+            content_parts.append(body)
+
+            if item.knowledge_points:
+                knowledge_points.extend(item.knowledge_points)
+
+        if not content_parts or len(questions_meta) == 0:
+            failure_msg = generation_failures[0] if generation_failures else MSG_GENERATE_NO_DATA
+            return BaseResponse(
+                code=HTTP_SERVER_ERROR,
+                message=failure_msg,
+                data=None,
+                request_id=request_id
+            )
+
+        combined_content = "\n".join(content_parts)
+        unique_kp = list(dict.fromkeys(knowledge_points))  # 去重保序
+        combined_meta = {
+            "quiz_type": QUIZ_TYPE_MULTI,
+            "question_count": len(questions_meta),
+            "questions": questions_meta,
+        }
+
+        ts = datetime.now().strftime("%m%d%H%M")
+        db_resource = Resource(
+            user_id=uid,
+            task_id=str(uuid.uuid4()),
+            resource_type=req.resource_type,
+            title=f"{req.topic} 练习题（{len(questions_meta)}道）{ts}",
+            content=combined_content,
+            knowledge_points=unique_kp,
+            status="completed",
+            progress_percent=RESOURCE_PROGRESS_COMPLETE,
+            extra_metadata=combined_meta,
+            in_library=False,
+        )
+        session.add(db_resource)
+
+
+
 @router.post("/generate", response_model=BaseResponse)
 async def generate_resource(
     req: ResourceRequest,
@@ -518,182 +787,17 @@ async def generate_resource(
         agent = await get_agent(req.resource_type)
 
         if req.resource_type == RESOURCE_TYPE_QUIZ and question_count > 1:
-            # 多题模式：预计算知识点 + 并行生成 + 去重
-            questions_meta = []
-            content_parts = [f"# {req.topic} 练习题（共 {question_count} 题）"]
-            knowledge_points = []
-            generation_failures: list[str] = []
-
-            # 直接用用户原始输入，由 Agent 的 LLM 自行理解
-            raw_topic = req.topic.strip()
-            target_kp = raw_topic or DEFAULT_TOPIC
-            logger.info(f"多题生成目标知识点: {target_kp} (输入: {req.topic})")
-            logger.info(f"🔵 Agent LLM模式: {agent.use_llm}, 熔断状态: disabled_until={agent._llm_disabled_until}")
-
-            # 题型轮转：确保三种题型均匀分布
-            if allowed_types:
-                type_cycle = []
-                while len(type_cycle) < question_count:
-                    type_cycle.extend(allowed_types)
-                type_cycle = type_cycle[:question_count]
-                random.shuffle(type_cycle)
-            else:
-                type_cycle = [None] * question_count
-
-            sem = asyncio.Semaphore(QUIZ_PARALLEL_CONCURRENCY)
-
-            async def gen_one(idx: int, q_type):
-                """并行生成单题（带信号量限流 + 内部重试 + 知识点验证）"""
-                async with sem:
-                    ctx = {
-                        "user_id": req.user_id,
-                        "profile_data": profile_ctx,
-                        "topic": target_kp,  # 使用预计算的知识点
-                        "resource_list": [],
-                    }
-                    failure_code = "unknown"
-                    last_error = ""
-                    for attempt in range(QUIZ_GEN_RETRY_COUNT):
-                        try:
-                            result = await asyncio.wait_for(
-                                agent.process(
-                                    user_input=target_kp, context=ctx, quiz_type=q_type,
-                                    difficulty=difficulty, include_explanation=include_explanation,
-                                    custom_prompt=custom_prompt,
-                                    force_knowledge_point=target_kp,  # 强制使用目标知识点
-                                ),
-                                timeout=getattr(settings, "RESOURCE_GENERATE_TIMEOUT", RESOURCE_GENERATE_TIMEOUT_SEC)
-                            )
-                            items = result.get("resource_list", [])
-                            if items:
-                                item = items[0]
-                                # 验证题目知识点是否匹配
-                                item_meta = item.extra_metadata or {}
-                                item_kp = item_meta.get("knowledge_point", "")
-                                if item_kp and item_kp != target_kp:
-                                    failure_code = "kp_mismatch"
-                                    last_error = f"知识点不匹配: 预期={target_kp}, 实际={item_kp}"
-                                    logger.warning(f"[{failure_code}] 第 {idx+1} 题{last_error}，直接丢弃")
-                                    break
-                                return item
-                            failure_code = "no_item"
-                            last_error = "agent 未返回有效题目"
-                            logger.warning(f"[{failure_code}] 第 {idx+1} 题未返回资源 (attempt {attempt+1})")
-                        except asyncio.TimeoutError:
-                            failure_code = "timeout"
-                            last_error = "生成超时"
-                            logger.warning(f"[{failure_code}] 第 {idx+1} 题超时 (attempt {attempt+1})")
-                        except Exception as e:
-                            failure_code = "agent_exception"
-                            last_error = str(e) or "未知异常"
-                            logger.warning(f"[{failure_code}] 第 {idx+1} 题异常 (attempt {attempt+1}): {e}")
-                            if not _is_retryable_quiz_generation_error(e):
-                                failure_code = "non_retryable"
-                                logger.warning(f"第 {idx+1} 题命中不可重试错误，提前结束重试")
-                                break
-                    if last_error:
-                        generation_failures.append(_build_quiz_failure_entry(idx + 1, failure_code, last_error))
-                    return None
-
-            # 第一轮：并行生成所有题目
-            tasks = [gen_one(i, type_cycle[i]) for i in range(question_count)]
-            raw_items = await asyncio.gather(*tasks)
-
-            # 去重（用 question_hash，fallback 到 content[:100]）
-            seen_hashes = set()
-            valid_items = []
-            for item in raw_items:
-                if item is None:
-                    continue
-                meta = item.extra_metadata or {}
-                dedup_key = meta.get("question_hash") or item.content[:DEDUP_CONTENT_TRUNCATE_LENGTH]
-                if dedup_key not in seen_hashes:
-                    seen_hashes.add(dedup_key)
-                    valid_items.append(item)
-
-            # 补生成：去重后不足则再补几轮
-            for round_i in range(QUIZ_DEDUP_MAX_ROUNDS):
-                if len(valid_items) >= question_count:
-                    break
-                missing = question_count - len(valid_items)
-                logger.info(f"去重后不足，补生成 {missing} 题（第 {round_i+1} 轮）")
-                fill_types = [random.choice(allowed_types) if allowed_types else None for _ in range(missing)]
-                fill_tasks = [gen_one(question_count + j, fill_types[j]) for j in range(missing)]
-                fill_results = await asyncio.gather(*fill_tasks)
-                before_count = len(valid_items)
-                for item in fill_results:
-                    if item is None:
-                        continue
-                    meta = item.extra_metadata or {}
-                    dedup_key = meta.get("question_hash") or item.content[:DEDUP_CONTENT_TRUNCATE_LENGTH]
-                    if dedup_key not in seen_hashes:
-                        seen_hashes.add(dedup_key)
-                        valid_items.append(item)
-                if len(valid_items) == before_count:
-                    logger.warning(f"补生成第 {round_i+1} 轮没有新增有效题目，提前停止后续补生成")
-                    break
-
-            if generation_failures:
-                logger.warning(f"练习题生成失败摘要: {_summarize_quiz_failures(generation_failures)}")
-
-            # 组装最终内容
-            for idx, item in enumerate(valid_items[:question_count]):
-                meta = item.extra_metadata or {}
-                questions_meta.append({
-                    "index": len(questions_meta) + 1,
-                    "quiz_type": meta.get("quiz_type", QUIZ_TYPE_CHOICE),
-                    "answer": meta.get("answer", ""),
-                    "explanation": meta.get("explanation", ""),
-                })
-                raw = item.content
-                lines = raw.split("\n")
-                body_lines = []
-                skip_first = True
-                for line in lines:
-                    if skip_first and line.startswith("# "):
-                        skip_first = False
-                        continue
-                    body_lines.append(line)
-                body = "\n".join(body_lines).strip()
-
-                content_parts.append(f"\n---\n\n## 第 {len(questions_meta)} 题")
-                content_parts.append(body)
-
-                if item.knowledge_points:
-                    knowledge_points.extend(item.knowledge_points)
-
-            if not content_parts or len(questions_meta) == 0:
-                failure_msg = generation_failures[0] if generation_failures else MSG_GENERATE_NO_DATA
+            db_resource = await _generate_multi_question_quiz(
+                req, profile_ctx, session, uid, agent, cfg,
+                progress_callback=None,
+            )
+            if db_resource is None:
                 return BaseResponse(
                     code=HTTP_SERVER_ERROR,
-                    message=failure_msg,
+                    message=MSG_GENERATE_NO_DATA,
                     data=None,
                     request_id=request_id
                 )
-
-            combined_content = "\n".join(content_parts)
-            unique_kp = list(dict.fromkeys(knowledge_points))  # 去重保序
-            combined_meta = {
-                "quiz_type": QUIZ_TYPE_MULTI,
-                "question_count": len(questions_meta),
-                "questions": questions_meta,
-            }
-
-            ts = datetime.now().strftime("%m%d%H%M")
-            db_resource = Resource(
-                user_id=uid,
-                task_id=str(uuid.uuid4()),
-                resource_type=req.resource_type,
-                title=f"{req.topic} 练习题（{len(questions_meta)}道）{ts}",
-                content=combined_content,
-                knowledge_points=unique_kp,
-                status="completed",
-                progress_percent=RESOURCE_PROGRESS_COMPLETE,
-                extra_metadata=combined_meta,
-                in_library=False,
-            )
-            session.add(db_resource)
-
         else:
             # 单题模式 - 直接用用户原始输入，由各 Agent 的 LLM 自行理解
             raw_topic = req.topic.strip()
@@ -806,6 +910,171 @@ async def generate_resource(
             data=None,
             request_id=request_id
         )
+
+@router.post("/generate-async", response_model=BaseResponse)
+async def generate_resource_async(
+    req: ResourceRequest,
+    request_id: str = Depends(get_request_id)
+):
+    """异步资源生成，立即返回 task_id，前端轮询 /tasks/{task_id} 拿进度。
+    支持 video（3 阶段进度）+ 多题测验（4 阶段进度）+ 其他类型（简单 0->100）。"""
+    ensure_cleanup_task()
+    task_id = str(uuid.uuid4())
+    register_task(task_id, req.resource_type, req.topic)
+    asyncio.create_task(_run_async_generation(task_id, req, request_id))
+    return BaseResponse(
+        code=HTTP_OK,
+        message=MSG_SUCCESS,
+        data={"task_id": task_id},
+        request_id=request_id,
+    )
+
+
+async def _run_async_generation(task_id: str, req: ResourceRequest, request_id: str) -> None:
+    """后台执行异步生成，更新进度，完成时写入 task_store。"""
+    from models.database import AsyncSessionLocal
+    from config.constants import RESOURCE_GENERATE_TIMEOUT_SEC
+
+    async def progress_cb(percent: int, stage: str, message: str) -> None:
+        update_progress(task_id, percent, stage, message)
+
+    try:
+        if not req.user_id.isdigit():
+            fail_task(task_id, MSG_INVALID_USER_ID)
+            return
+        uid = int(req.user_id)
+
+        async with AsyncSessionLocal() as session:
+            await get_user_or_404(session, uid)
+            profile_ctx = await load_profile_context(session, uid)
+
+            cfg = req.config or {}
+            question_count = cfg.get("questionCount", 1) if req.resource_type == RESOURCE_TYPE_QUIZ else 1
+            question_count = max(1, min(question_count, MAX_QUIZ_QUESTION_COUNT))
+            difficulty = cfg.get("difficulty", DIFFICULTY_MEDIUM)
+            if difficulty == DIFFICULTY_AUTO:
+                difficulty = await _recommend_difficulty(session, uid, req.topic)
+
+            agent = await get_agent(req.resource_type)
+
+            if req.resource_type == RESOURCE_TYPE_QUIZ and question_count > 1:
+                # 多题测验 - 4 阶段进度
+                db_resource = await _generate_multi_question_quiz(
+                    req, profile_ctx, session, uid, agent, cfg,
+                    progress_callback=progress_cb,
+                )
+                if db_resource is None:
+                    fail_task(task_id, MSG_GENERATE_NO_DATA)
+                    return
+                session.add(db_resource)
+            elif req.resource_type == "video":
+                # 视频 - 3 阶段进度（VideoAgent 内部回调）
+                update_progress(task_id, 5, "script", "生成视频脚本")
+                raw_topic = req.topic.strip()
+                single_kp = raw_topic or DEFAULT_TOPIC
+                context = {
+                    "user_id": req.user_id,
+                    "profile_data": profile_ctx,
+                    "topic": single_kp,
+                    "resource_list": [],
+                    "config": cfg,
+                }
+                result = await asyncio.wait_for(
+                    agent.process(
+                        user_input=single_kp or req.topic,
+                        context=context,
+                        progress_callback=progress_cb,
+                    ),
+                    timeout=getattr(settings, "RESOURCE_GENERATE_TIMEOUT", RESOURCE_GENERATE_TIMEOUT_SEC),
+                )
+                new_items = result.get("resource_list", [])
+                if not new_items:
+                    fail_task(task_id, MSG_GENERATE_NO_DATA)
+                    return
+                item = new_items[0]
+                ts = datetime.now().strftime("%m%d%H%M%S")
+                db_resource = Resource(
+                    user_id=uid,
+                    task_id=str(uuid.uuid4()),
+                    resource_type=req.resource_type,
+                    title=f"{item.title} {ts}",
+                    content=item.content,
+                    knowledge_points=item.knowledge_points,
+                    status="completed",
+                    progress_percent=RESOURCE_PROGRESS_COMPLETE,
+                    extra_metadata=item.extra_metadata,
+                    in_library=False,
+                )
+                session.add(db_resource)
+            else:
+                # 其他类型 - 简单 30% -> 100%
+                update_progress(task_id, 30, "gen", "生成中")
+                raw_topic = req.topic.strip()
+                single_kp = raw_topic or DEFAULT_TOPIC
+                context = {
+                    "user_id": req.user_id,
+                    "profile_data": profile_ctx,
+                    "topic": single_kp,
+                    "resource_list": [],
+                    "config": cfg,
+                }
+                process_kwargs: Dict[str, Any] = {}
+                if req.resource_type == RESOURCE_TYPE_QUIZ:
+                    process_kwargs = {
+                        "difficulty": difficulty,
+                        "include_explanation": cfg.get("includeExplanation", True),
+                        "custom_prompt": cfg.get("customPrompt", ""),
+                        "force_knowledge_point": single_kp,
+                    }
+                result = await asyncio.wait_for(
+                    agent.process(
+                        user_input=single_kp or req.topic,
+                        context=context,
+                        **process_kwargs,
+                    ),
+                    timeout=getattr(settings, "RESOURCE_GENERATE_TIMEOUT", RESOURCE_GENERATE_TIMEOUT_SEC),
+                )
+                new_items = result.get("resource_list", [])
+                if not new_items:
+                    fail_task(task_id, MSG_GENERATE_NO_DATA)
+                    return
+                item = new_items[0]
+                ts = datetime.now().strftime("%m%d%H%M%S")
+                db_resource = Resource(
+                    user_id=uid,
+                    task_id=str(uuid.uuid4()),
+                    resource_type=req.resource_type,
+                    title=f"{item.title} {ts}",
+                    content=item.content,
+                    knowledge_points=item.knowledge_points,
+                    status="completed",
+                    progress_percent=RESOURCE_PROGRESS_COMPLETE,
+                    extra_metadata=item.extra_metadata,
+                    in_library=False,
+                )
+                session.add(db_resource)
+
+            # 持久化
+            try:
+                await session.commit()
+                await session.refresh(db_resource)
+            except IntegrityError:
+                await session.rollback()
+                db_resource.title = f"{db_resource.title} {uuid.uuid4().hex[:RESOURCE_ID_TRUNCATE_LENGTH]}"
+                session.add(db_resource)
+                await session.commit()
+                await session.refresh(db_resource)
+
+            update_progress(task_id, 100, "done", "完成")
+            complete_task(task_id, resource_to_response(db_resource))
+
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ [ASYNC-GEN] 生成超时, task_id={task_id[:8]}", extra={"request_id": request_id})
+        fail_task(task_id, MSG_GENERATE_TIMEOUT)
+    except Exception as e:
+        logger.error(f"❌ [ASYNC-GEN] 生成失败: {e}, task_id={task_id[:8]}", exc_info=True, extra={"request_id": request_id})
+        fail_task(task_id, str(e))
+
 
 @router.patch("/{resource_id}/add-to-library", response_model=BaseResponse)
 async def add_to_library(

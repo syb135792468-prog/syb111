@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request, Depends, Query
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator, Optional, Any, Tuple
 import asyncio
+import re
 import uuid
 import contextvars
 from datetime import datetime, UTC
@@ -41,6 +42,10 @@ from utils.content_blocks import (
     legacy_to_content_blocks,
 )
 from api.routes.auth import get_current_user
+from api.task_store import (
+    register_task, update_progress, complete_task, fail_task,
+    get_task, pop_task, ensure_cleanup_task, _task_results,
+)
 from models.user import User
 from models.chat_message import ChatMessage
 from models.conversation import Conversation
@@ -55,6 +60,7 @@ from config.constants import (
     SYNC_CHAT_TIMEOUT_SEC, HTTP_OK, HTTP_NOT_FOUND, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE, HTTP_GATEWAY_TIMEOUT,
     CHAT_HISTORY_LOAD_LIMIT, CONVERSATION_TITLE_MAX_LENGTH, DEFAULT_CONVERSATION_TITLE, DEFAULT_CURRENT_STEP,
     TUTOR_HISTORY_WINDOW,
+    MISCONCEPTION_SUSPECTED_CONFIDENCE,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_REQUEST_TIMEOUT,
@@ -94,6 +100,119 @@ def _build_augmented_message(message: str, images: Optional[list] = None) -> str
         return message
     ocr_section = "\n".join(ocr_texts)
     return f"{message}\n\n[用户上传了图片，OCR识别内容如下：\n{ocr_section}]"
+
+
+# ---------- 对话判题信号检测 ----------
+_CODE_BLOCK_RE = re.compile(r"```(?:python)?\s+[\s\S]*?```")
+_ANSWER_PREFIX_RE = re.compile(r"^\s*(答案是|我选|选|我认为|应该选|答案)\s*[:：]?\s*\S")
+_SHORT_CHOICE_RE = re.compile(r"^\s*[A-Da-d]\s*[.。]?\s*$")
+
+
+def _detect_judge_signal(message: str) -> Optional[str]:
+    """
+    判断用户消息是否可能构成可评估的学习证据。
+    返回 "code" / "answer" / None。仅作粗筛，最终判题由 ChatJudgeAgent 决定。
+    """
+    if not message or not message.strip():
+        return None
+    if _CODE_BLOCK_RE.search(message):
+        return "code"
+    if _ANSWER_PREFIX_RE.match(message):
+        return "answer"
+    if len(message) <= 20 and _SHORT_CHOICE_RE.match(message):
+        return "answer"
+    return None
+
+
+async def _build_node_catalog_brief(db: AsyncSession, limit: int = 200) -> str:
+    """构建知识点目录摘要（code + name），供 ChatJudgeAgent 选题。"""
+    try:
+        from models.knowledge_graph import KnowledgeNode
+        result = await db.execute(
+            select(KnowledgeNode.code, KnowledgeNode.name)
+            .order_by(KnowledgeNode.code)
+            .limit(limit)
+        )
+        lines = [f"{code}: {name}" for code, name in result.all()]
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning(f"⚠️ 构建知识点目录摘要失败: {e}")
+        return ""
+
+
+async def _background_chat_judge(
+    user_id: str,
+    message: str,
+    recent_history: list,
+    judge_signal: str,
+    request_id: str,
+) -> None:
+    """
+    后台对话判题任务：ChatJudgeAgent 判定 -> 写证据 + 记录误解。
+    仅当 _detect_judge_signal 命中时触发，不阻塞主对话流。
+    """
+    try:
+        from models.database import AsyncSessionLocal
+        from agents.chat_judge_agent import ChatJudgeAgent
+        from services.mastery_service import (
+            record_chat_judge_evidence,
+            record_misconception,
+            _resolve_node_by_name,
+        )
+
+        # 构建上下文：知识点目录 + 近期对话摘要
+        async with AsyncSessionLocal() as jdb:
+            node_catalog = await _build_node_catalog_brief(jdb)
+
+        chat_history_text = "\n".join(
+            f"{'学生' if m.get('role') == 'user' else '老师'}: {m.get('content', '')[:200]}"
+            for m in (recent_history or [])[-6:]
+        )
+
+        judge = ChatJudgeAgent(user_id=user_id, task_id=request_id)
+        result = await judge.process(
+            message,
+            {"node_catalog": node_catalog, "chat_history": chat_history_text},
+        )
+        if not result.get("is_evaluable"):
+            logger.debug(f"[CHAT-JUDGE] 不可评估，跳过 | user={user_id}", extra={"request_id": request_id})
+            return
+
+        node_code = result.get("node_code")
+        node_name = result.get("node_name")
+
+        # node_code 缺失时按 node_name 回退匹配
+        if not node_code and node_name:
+            async with AsyncSessionLocal() as jdb:
+                node = await _resolve_node_by_name(jdb, node_name)
+                if node:
+                    node_code = node.code
+
+        if not node_code:
+            logger.debug(
+                f"[CHAT-JUDGE] 未能对应知识点，跳过 | node_name={node_name}",
+                extra={"request_id": request_id},
+            )
+            return
+
+        misconception = result.get("misconception")
+        confidence = float(result.get("confidence", 0.5))
+
+        async with AsyncSessionLocal() as jdb:
+            async with jdb.begin():
+                await record_chat_judge_evidence(jdb, user_id, node_code, result, judge_signal)
+                if misconception:
+                    await record_misconception(
+                        jdb, user_id, node_code, misconception,
+                        confidence=MISCONCEPTION_SUSPECTED_CONFIDENCE,
+                    )
+        logger.info(
+            f"✅ [CHAT-JUDGE] 判题证据已写入 | node={node_code} result={result.get('result')} "
+            f"misconception={'有' if misconception else '无'}",
+            extra={"request_id": request_id},
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ [CHAT-JUDGE] 后台判题失败: {e}", extra={"request_id": request_id})
 
 # ---------- 工作流单例 ----------
 _workflow: Optional[Any] = None
@@ -285,7 +404,8 @@ async def _sync_profile_to_progress(bg_db: AsyncSession, user_id: int, profile_u
             if record is None:
                 record = LearningProgress(user_id=uid, topic=std)
                 bg_db.add(record)
-            record.update_progress(status="completed", score=100.0, duration=0)
+            # A profile classification is supporting evidence, not proof of perfect mastery.
+            record.update_progress(status="completed", score=80.0, duration=0)
 
         for point in weak_points:
             std = normalize_to_backend(point)
@@ -302,7 +422,12 @@ async def _sync_profile_to_progress(bg_db: AsyncSession, user_id: int, profile_u
             if record is None:
                 record = LearningProgress(user_id=uid, topic=std)
                 bg_db.add(record)
-            record.update_progress(status="in_progress", score=20.0, duration=0)
+                record.update_progress(status="in_progress", score=20.0, duration=0)
+                continue
+
+            # Only seed weak-point progress for cold-start records.
+            if record.score is None and record.status == "not_started":
+                record.update_progress(status="in_progress", score=20.0, duration=0)
 
         logger.info(f"✅ 画像->进度同步完成 | user_id={uid}", extra={"request_id": request_id})
     except Exception as e:
@@ -411,8 +536,19 @@ async def _fast_chat_handler(
     t0 = _time.monotonic()
     logger.info(f"[FAST-PERF] 快速模式开始: {message[:30]}...", extra={"request_id": request_id})
 
+    # 对话判题信号触发：仅当消息含代码块/明确作答时，后台调 ChatJudgeAgent
+    judge_signal = _detect_judge_signal(message)
+    if judge_signal:
+        asyncio.create_task(_background_chat_judge(
+            user_id=user_id,
+            message=message,
+            recent_history=recent_history,
+            judge_signal=judge_signal,
+            request_id=request_id,
+        ))
+
     # ========== 阶段1：仅 RAG 检索（跳过 Router，节省 7-8s） ==========
-    yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='📚 正在检索相关知识...', current_step='tutor').model_dump_json()}\n\n"
+    yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='📚 正在检索相关知识...', current_step='tutor', agent_name='TutorAgent', agent_role='教学').model_dump_json()}\n\n"
     rag_context = ""
     try:
         tutor_agent = agents["tutor"]
@@ -548,7 +684,7 @@ async def _fast_chat_handler(
         t2 = _time.monotonic()
         logger.info(f"[FAST-PERF] Prompt构建完成: {(t2-t1)*1000:.0f}ms", extra={"request_id": request_id})
 
-        yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='🤖 正在生成回答...', current_step='tutor').model_dump_json()}\n\n"
+        yield f"event: thinking\ndata: {StreamEvent(event='thinking', data='🤖 正在生成回答...', current_step='tutor', agent_name='TutorAgent', agent_role='教学').model_dump_json()}\n\n"
 
         # 流式调用 LLM
         tutor = agents["tutor"]
@@ -636,10 +772,25 @@ async def _fast_chat_handler(
             res_topic = bg_result_ref.get("topic", topic)
             logger.info(f"🎯 [FAST-RESOURCE] 检测到资源生成意图: {res_type} - {res_topic}，启动后台任务", extra={"request_id": request_id})
 
-            _ensure_cleanup_task()
+            # 推送协作可见性 thinking：路由 Agent 识别意图 + 资源 Agent 启动
+            _RESOURCE_AGENT_MAP = {
+                "doc": ("ContentAgent", "文档"),
+                "reading": ("ContentAgent", "拓展阅读"),
+                "slides": ("ContentAgent", "幻灯片"),
+                "mindmap": ("MindmapAgent", "思维导图"),
+                "code": ("CodeAgent", "代码"),
+                "quiz": ("QuizAgent", "测验"),
+                "video": ("VideoAgent", "视频"),
+            }
+            _agent_name, _agent_role = _RESOURCE_AGENT_MAP.get(res_type, ("ResourceAgent", "资源"))
+            _res_label = _agent_role
+            yield f"event: thinking\ndata: {StreamEvent(event='thinking', data=f'🧭 路由 Agent 识别到资源生成意图：{_res_label}', current_step='router', agent_name='UnifiedRouter', agent_role='路由').model_dump_json()}\n\n"
+            yield f"event: thinking\ndata: {StreamEvent(event='thinking', data=f'📦 正在生成{_res_label}资源...', current_step='resource', agent_name=_agent_name, agent_role=_agent_role).model_dump_json()}\n\n"
+
+            ensure_cleanup_task()
             task_id = str(uuid.uuid4())
             # 立即注册 task_id 为 pending，防止轮询端点返回误导性状态
-            _task_results[task_id] = {"status": "pending", "created_at": _time.monotonic()}
+            register_task(task_id, res_type, res_topic)
             asyncio.create_task(_run_background_resource_task(
                 task_id=task_id,
                 res_type=res_type,
@@ -714,37 +865,8 @@ def filter_node_output(node: str, output: dict) -> dict:
 
 # ============================================================
 # 后台任务队列（资源生成不阻塞聊天）
+# 任务存储 + 进度追踪 + TTL 清理统一抽到 api.task_store
 # ============================================================
-_task_results: dict = {}  # task_id -> {"status": "pending"|"completed"|"failed", "data": ..., "error": ..., "created_at": float}
-_TASK_RESULT_TTL_SEC = 600  # 10 分钟后自动清理
-
-
-async def _cleanup_stale_tasks():
-    """定时清理过期的已完成/失败任务，防止内存泄漏。"""
-    import time as _time
-    while True:
-        await asyncio.sleep(60)
-        now = _time.monotonic()
-        stale_ids = [
-            tid for tid, info in _task_results.items()
-            if info.get("status") != "pending" and now - info.get("created_at", now) > _TASK_RESULT_TTL_SEC
-        ]
-        for tid in stale_ids:
-            _task_results.pop(tid, None)
-        if stale_ids:
-            logger.info(f"🧹 [BG-TASK] 清理 {len(stale_ids)} 个过期任务")
-
-# 启动清理任务（在 chat 模块加载时启动，生命周期跟随进程）
-_cleanup_task_ref: asyncio.Task | None = None
-
-
-def _ensure_cleanup_task():
-    global _cleanup_task_ref
-    if _cleanup_task_ref is None or _cleanup_task_ref.done():
-        try:
-            _cleanup_task_ref = asyncio.create_task(_cleanup_stale_tasks())
-        except RuntimeError:
-            pass  # 没有运行中的事件循环（如测试环境）
 
 
 async def _run_background_resource_task(
@@ -763,7 +885,7 @@ async def _run_background_resource_task(
     agents = get_or_create_agents()
     agent = agents.get(res_type)
     if not agent:
-        _task_results[task_id] = {"status": "failed", "error": f"未知资源类型: {res_type}", "created_at": _time.monotonic()}
+        fail_task(task_id, f"未知资源类型: {res_type}")
         return
 
     t0 = _time.monotonic()
@@ -778,7 +900,7 @@ async def _run_background_resource_task(
         )
         res_list = result.get("resource_list", [])
         if not res_list:
-            _task_results[task_id] = {"status": "failed", "error": "资源生成结果为空", "created_at": _time.monotonic()}
+            fail_task(task_id, "资源生成结果为空")
             return
 
         persisted_items = []
@@ -798,14 +920,14 @@ async def _run_background_resource_task(
 
         elapsed = (_time.monotonic() - t0) * 1000
         logger.info(f"✅ [BG-TASK] {res_type} 生成完成: {elapsed:.0f}ms, task_id={task_id[:8]}")
-        _task_results[task_id] = {"status": "completed", "data": persisted_items, "created_at": _time.monotonic()}
+        complete_task(task_id, persisted_items)
 
     except asyncio.TimeoutError:
         logger.error(f"⏱️ [BG-TASK] {res_type} 生成超时, task_id={task_id[:8]}")
-        _task_results[task_id] = {"status": "failed", "error": "资源生成超时，请重试", "created_at": _time.monotonic()}
+        fail_task(task_id, "资源生成超时，请重试")
     except Exception as e:
         logger.error(f"❌ [BG-TASK] {res_type} 生成失败: {e}, task_id={task_id[:8]}", exc_info=True)
-        _task_results[task_id] = {"status": "failed", "error": str(e), "created_at": _time.monotonic()}
+        fail_task(task_id, str(e))
 
 
 async def _persist_and_build_resource_event(
@@ -910,6 +1032,7 @@ async def chat_stream(
     _user_id = current_user.id
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        saved_message_id = None
         try:
             logger.info(f"🚀 开始快速模式流式对话 | {user_id}", extra={"request_id": request_id})
 
@@ -922,16 +1045,7 @@ async def chat_stream(
             ):
                 yield event_str
 
-            end_event = StreamEvent(event="end", data={"request_id": request_id, "conversation_id": _conversation_id, "content_blocks": content_blocks_ref}, current_step="completed")
-            yield f"event: end\ndata: {end_event.model_dump_json()}\n\n"
-            logger.info(f"✅ 快速模式流式对话完成", extra={"request_id": request_id})
-
-        except Exception as e:
-            logger.error(f"❌ 流式异常: {e}", exc_info=True, extra={"request_id": request_id})
-            err = StreamEvent(event="error", data={"error": str(e)}, current_step="error")
-            yield f"event: error\ndata: {err.model_dump_json()}\n\n"
-        finally:
-            # 保存AI回复（画像已由后台任务处理）
+            # 保存AI回复（在 end 事件之前，让前端拿到 message_id 用于解释等功能）
             try:
                 import json as _json
                 from models.database import AsyncSessionLocal
@@ -947,9 +1061,20 @@ async def chat_stream(
                         )
                         save_db.add(ai_msg)
                         await save_db.commit()
+                        await save_db.refresh(ai_msg)
+                        saved_message_id = ai_msg.id
                         logger.info(f"✅ AI回复已保存到对话 {_conversation_id}")
             except Exception as save_err:
                 logger.error(f"保存记录失败: {save_err}", extra={"request_id": request_id})
+
+            end_event = StreamEvent(event="end", data={"request_id": request_id, "conversation_id": _conversation_id, "content_blocks": content_blocks_ref, "message_id": saved_message_id}, current_step="completed")
+            yield f"event: end\ndata: {end_event.model_dump_json()}\n\n"
+            logger.info(f"✅ 快速模式流式对话完成", extra={"request_id": request_id})
+
+        except Exception as e:
+            logger.error(f"❌ 流式异常: {e}", exc_info=True, extra={"request_id": request_id})
+            err = StreamEvent(event="error", data={"error": str(e)}, current_step="error")
+            yield f"event: error\ndata: {err.model_dump_json()}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -1039,8 +1164,18 @@ async def deep_chat_stream(
         try:
             deep_workflow = await get_deep_workflow()
 
+            # 路由 Agent 协作可见性：推送主题识别结果
+            router_event = StreamEvent(
+                event="thinking",
+                data={"text": f"🧭 路由 Agent 识别主题：{topic}", "conversation_id": _conversation_id},
+                current_step="router",
+                agent_name="UnifiedRouter",
+                agent_role="路由",
+            )
+            yield f"event: thinking\ndata: {router_event.model_dump_json()}\n\n"
+
             # 初始思考事件（附带 conversation_id，防止 abort/断网丢失）
-            thinking_event = StreamEvent(event="thinking", data={"text": "🧠 正在分析你的学习需求...", "conversation_id": _conversation_id}, current_step="thinking")
+            thinking_event = StreamEvent(event="thinking", data={"text": "🧠 正在调度 5 个专业 Agent 协作...", "conversation_id": _conversation_id}, current_step="thinking")
             yield f"event: thinking\ndata: {thinking_event.model_dump_json()}\n\n"
 
             # 共享思维队列（Agent 节点 → 此处 SSE 输出）
@@ -1085,7 +1220,13 @@ async def deep_chat_stream(
                         item = await _aio.wait_for(thinking_queue.get(), timeout=0.3)
                         text = item.get("text", "")
                         if text:
-                            te = StreamEvent(event="thinking", data=text, current_step="thinking")
+                            te = StreamEvent(
+                                event="thinking",
+                                data=text,
+                                current_step="thinking",
+                                agent_name=item.get("agent_name"),
+                                agent_role=item.get("agent_role"),
+                            )
                             yield f"event: thinking\ndata: {te.model_dump_json()}\n\n"
                     except _aio.TimeoutError:
                         continue
@@ -1096,7 +1237,13 @@ async def deep_chat_stream(
                         item = thinking_queue.get_nowait()
                         text = item.get("text", "")
                         if text:
-                            te = StreamEvent(event="thinking", data=text, current_step="thinking")
+                            te = StreamEvent(
+                                event="thinking",
+                                data=text,
+                                current_step="thinking",
+                                agent_name=item.get("agent_name"),
+                                agent_role=item.get("agent_role"),
+                            )
                             yield f"event: thinking\ndata: {te.model_dump_json()}\n\n"
                     except _aio.QueueEmpty:
                         break
@@ -1211,22 +1358,13 @@ async def deep_chat_stream(
                 except Exception as path_err:
                     logger.warning(f"⚠️ 学习路径保存失败: {path_err}", extra={"request_id": request_id})
 
-            end_event = StreamEvent(event="end", data={"request_id": request_id, "conversation_id": _conversation_id, "content_blocks": content_blocks if final_response else []}, current_step="completed")
-            yield f"event: end\ndata: {end_event.model_dump_json()}\n\n"
-            logger.info(f"✅ 深度思考模式完成", extra={"request_id": request_id})
-
-        except Exception as e:
-            logger.error(f"❌ 深度思考异常: {e}", exc_info=True, extra={"request_id": request_id})
-            err = StreamEvent(event="error", data={"error": str(e)}, current_step="error")
-            yield f"event: error\ndata: {err.model_dump_json()}\n\n"
-        finally:
-            # 保存AI回复 + 画像更新
+            # 保存AI回复（在 end 事件之前，让前端拿到 message_id）
+            saved_message_id = None
             try:
                 import json as _json
                 from models.database import AsyncSessionLocal
                 async with AsyncSessionLocal() as save_db:
                     if collected_reply:
-                        # 构建 content_blocks 用于持久化
                         _cb = content_blocks if final_response else legacy_to_content_blocks(collected_reply, [])
                         ai_msg = ChatMessage(
                             user_id=_user_id,
@@ -1237,15 +1375,31 @@ async def deep_chat_stream(
                         )
                         save_db.add(ai_msg)
                         await save_db.commit()
+                        await save_db.refresh(ai_msg)
+                        saved_message_id = ai_msg.id
+            except Exception as save_err:
+                logger.error(f"保存AI回复失败: {save_err}", extra={"request_id": request_id})
 
-                    # 持久化画像更新 + 同步到进度表
+            end_event = StreamEvent(event="end", data={"request_id": request_id, "conversation_id": _conversation_id, "content_blocks": content_blocks if final_response else [], "message_id": saved_message_id}, current_step="completed")
+            yield f"event: end\ndata: {end_event.model_dump_json()}\n\n"
+            logger.info(f"✅ 深度思考模式完成", extra={"request_id": request_id})
+
+        except Exception as e:
+            logger.error(f"❌ 深度思考异常: {e}", exc_info=True, extra={"request_id": request_id})
+            err = StreamEvent(event="error", data={"error": str(e)}, current_step="error")
+            yield f"event: error\ndata: {err.model_dump_json()}\n\n"
+        finally:
+            # 画像更新 + 主题进度同步（AI 回复已在 end 之前保存）
+            try:
+                from models.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as save_db:
                     if profile_update and isinstance(profile_update, dict) and len(profile_update) > 0:
                         await _persist_profile(save_db, _user_id, profile_update, request_id)
                         await _sync_profile_to_progress(save_db, _user_id, profile_update, request_id)
                     if topic:
                         await _sync_topic_to_progress(save_db, _user_id, topic, request_id)
             except Exception as save_err:
-                logger.error(f"保存记录失败: {save_err}", extra={"request_id": request_id})
+                logger.error(f"画像更新失败: {save_err}", extra={"request_id": request_id})
 
     return StreamingResponse(
         deep_event_generator(),
@@ -1474,6 +1628,28 @@ async def socratic_chat_stream(
                 question_text = interrupt_info.get("content", interrupt_info.get("question", ""))
                 collected_reply = question_text
 
+                # 保存 AI 回复（在发送事件之前，让前端拿到 message_id）
+                saved_message_id = None
+                try:
+                    import json as _json
+                    from models.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as save_db:
+                        if collected_reply:
+                            _cb = [{"type": "text", "text": collected_reply}]
+                            ai_msg = ChatMessage(
+                                user_id=_user_id,
+                                conversation_id=_conversation_id,
+                                role="assistant",
+                                content=collected_reply,
+                                content_blocks_json=_json.dumps(_cb, ensure_ascii=False),
+                            )
+                            save_db.add(ai_msg)
+                            await save_db.commit()
+                            await save_db.refresh(ai_msg)
+                            saved_message_id = ai_msg.id
+                except Exception as save_err:
+                    logger.error(f"保存苏格拉底记录失败: {save_err}", extra={"request_id": request_id})
+
                 interrupt_type = interrupt_info.get("type", "question")
                 interrupt_event_map = {
                     "question": "socratic_question",
@@ -1496,6 +1672,7 @@ async def socratic_chat_stream(
                         "consecutive_errors": interrupt_info.get("consecutive_errors", accumulated_state.get("consecutive_errors", 0)),
                         "learning_state": interrupt_info.get("learning_state", accumulated_state.get("learning_state", "normal")),
                         "ended": False,
+                        "message_id": saved_message_id,
                     },
                     current_step="socratic",
                 )
@@ -1505,6 +1682,28 @@ async def socratic_chat_stream(
                 response_text = accumulated_state.get("current_response", "")
                 response_type = accumulated_state.get("current_response_type", "summary")
                 collected_reply = response_text
+
+                # 保存 AI 回复（在发送事件之前，让前端拿到 message_id）
+                saved_message_id = None
+                try:
+                    import json as _json
+                    from models.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as save_db:
+                        if collected_reply:
+                            _cb = [{"type": "text", "text": collected_reply}]
+                            ai_msg = ChatMessage(
+                                user_id=_user_id,
+                                conversation_id=_conversation_id,
+                                role="assistant",
+                                content=collected_reply,
+                                content_blocks_json=_json.dumps(_cb, ensure_ascii=False),
+                            )
+                            save_db.add(ai_msg)
+                            await save_db.commit()
+                            await save_db.refresh(ai_msg)
+                            saved_message_id = ai_msg.id
+                except Exception as save_err:
+                    logger.error(f"保存苏格拉底记录失败: {save_err}", extra={"request_id": request_id})
 
                 event_name = {
                     "question": "socratic_question",
@@ -1527,6 +1726,7 @@ async def socratic_chat_stream(
                         "current_stage": accumulated_state.get("current_stage", ""),
                         "consecutive_errors": accumulated_state.get("consecutive_errors", 0),
                         "ended": True,
+                        "message_id": saved_message_id,
                     },
                     current_step="socratic",
                 )
@@ -1534,7 +1734,7 @@ async def socratic_chat_stream(
 
                 end_event = StreamEvent(
                     event="socratic_end",
-                    data={"request_id": request_id, "conversation_id": _conversation_id, "thread_id": thread_id},
+                    data={"request_id": request_id, "conversation_id": _conversation_id, "thread_id": thread_id, "message_id": saved_message_id},
                     current_step="completed",
                 )
                 yield f"event: socratic_end\ndata: {end_event.model_dump_json()}\n\n"
@@ -1544,25 +1744,7 @@ async def socratic_chat_stream(
             logger.error(f"❌ 苏格拉底导学异常: {e}", exc_info=True, extra={"request_id": request_id})
             err = StreamEvent(event="error", data={"error": str(e)}, current_step="error")
             yield f"event: error\ndata: {err.model_dump_json()}\n\n"
-        finally:
-            # 保存 AI 回复
-            try:
-                import json as _json
-                from models.database import AsyncSessionLocal
-                async with AsyncSessionLocal() as save_db:
-                    if collected_reply:
-                        _cb = [{"type": "text", "text": collected_reply}]
-                        ai_msg = ChatMessage(
-                            user_id=_user_id,
-                            conversation_id=_conversation_id,
-                            role="assistant",
-                            content=collected_reply,
-                            content_blocks_json=_json.dumps(_cb, ensure_ascii=False),
-                        )
-                        save_db.add(ai_msg)
-                        await save_db.commit()
-            except Exception as save_err:
-                logger.error(f"保存苏格拉底记录失败: {save_err}", extra={"request_id": request_id})
+        # AI 回复已在事件发送前保存（见上方 has_interrupt / else 分支）
 
     return StreamingResponse(
         socratic_event_generator(),

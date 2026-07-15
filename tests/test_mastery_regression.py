@@ -221,6 +221,29 @@ async def test_get_effective_state_available_no_prereq(db_session, test_user):
     assert state == STATE_AVAILABLE, f"无前置根节点应 available，实际 {state}"
 
 
+async def test_get_effective_state_available_when_all_multiple_prerequisites_mastered(
+    db_session, test_user
+):
+    """多个前置都已掌握时，节点应解锁。"""
+    # py_fstring 同时依赖 py_print 和 py_variable。
+    db_session.add_all([
+        UserKnowledgeMastery(
+            user_id=test_user.id,
+            node_code="py_print",
+            state=STATE_MASTERED,
+        ),
+        UserKnowledgeMastery(
+            user_id=test_user.id,
+            node_code="py_variable",
+            state=STATE_MASTERED,
+        ),
+    ])
+    await db_session.flush()
+
+    state = await get_effective_state(db_session, test_user.id, "py_fstring")
+    assert state == STATE_AVAILABLE, f"全部前置已掌握应 available，实际 {state}"
+
+
 # ============================================================
 # 测试 4：mastery_threshold 生效
 # ============================================================

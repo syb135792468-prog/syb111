@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from datetime import datetime, UTC
 
 # ============================================================
@@ -316,6 +316,7 @@ class BaseAgent(ABC):
         self,
         user_input: str,
         context: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         """
         核心处理逻辑，子类必须实现。
@@ -325,6 +326,9 @@ class BaseAgent(ABC):
         Args:
             user_input: 用户最新输入
             context: 上下文字典，包含 profile_data, resource_list, user_intent 等
+            progress_callback: 可选进度回调 (percent, stage, message)，
+                慢速 Agent（如 VideoAgent）在阶段边界调用以报告进度。
+                快速 Agent 可忽略此参数。
 
         Returns:
             更新的状态字典（会自动补充 updated_at 和 current_step）

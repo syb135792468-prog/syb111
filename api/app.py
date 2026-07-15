@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.schemas import BaseResponse
-from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path, images, task, multimodal, daily
+from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path, images, task, multimodal, daily, graph, playground, course
 from config.constants import (
     DEFAULT_PORT, SLOW_REQUEST_THRESHOLD_SEC, CORS_MAX_AGE,
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE,
@@ -40,6 +40,7 @@ from config.messages import (
     MSG_SUCCESS, MSG_REQUEST_PARAM_ERROR, MSG_SERVER_INTERNAL_ERROR,
     MSG_SERVICE_UNAVAILABLE,
 )
+from config.settings import settings
 from models.database import init_db, engine
 from utils.logger import get_logger
 
@@ -197,9 +198,14 @@ async def request_id_middleware(request: Request, call_next: Callable):
 
 
 # CORS 跨域中间件
+cors_allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in settings.CORS_ALLOWED_ORIGINS.split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -281,6 +287,9 @@ app.include_router(images.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(multimodal.router, prefix="/api")
 app.include_router(daily.router, prefix="/api")
+app.include_router(graph.router, prefix="/api")
+app.include_router(playground.router, prefix="/api")
+app.include_router(course.router, prefix="/api")
 
 
 # ============================================================

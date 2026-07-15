@@ -6,8 +6,11 @@ api/routes/code_execute.py - 代码执行接口（加固版）
 from __future__ import annotations
 
 import time
+import asyncio
+
 from collections import defaultdict
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from api.schemas import BaseResponse
 from config.constants import (
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE,
@@ -17,6 +20,9 @@ from config.constants import (
 from config.messages import MSG_SUCCESS, MSG_CODE_EMPTY, MSG_CODE_EXEC_FAILED
 from utils.code_executor import execute_python_code, get_executor_metrics
 from utils.logger import get_logger
+from models.database import get_db, AsyncSessionLocal
+from models.user import User
+from api.routes.auth import get_current_user
 
 router = APIRouter(prefix="/code", tags=["代码执行"])
 logger = get_logger(__name__, task_id="code_execute_api")
@@ -53,7 +59,11 @@ def _get_client_ip(request: Request) -> str:
 # 接口
 # ============================================================
 @router.post("/execute", response_model=BaseResponse)
-async def run_code(body: dict, request: Request):
+async def run_code(
+    body: dict,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
     try:
         code = body.get("code", "")
         if not code.strip():
@@ -73,6 +83,31 @@ async def run_code(body: dict, request: Request):
         timeout = max(CODE_EXEC_MIN_TIMEOUT, min(timeout, CODE_EXEC_MAX_TIMEOUT))
 
         result = await execute_python_code(code, timeout=timeout)
+
+        # 仅当带 knowledge_point 时异步回写 code_run 证据
+        # playground 不传 knowledge_point，自然不写；测验代码题由 quiz.py 单独走 record_code_evidence
+        # 失败时走 weak_signal 机制：首次同类异常不降 posterior，累计达阈值才降
+        knowledge_point = body.get("knowledge_point")
+        if knowledge_point:
+            success = bool(result.get("success", False))
+
+            async def _write_code_evidence():
+                try:
+                    async with AsyncSessionLocal() as graph_db:
+                        async with graph_db.begin():
+                            from services.mastery_service import _resolve_node_by_name, record_playground_code_evidence
+                            node = await _resolve_node_by_name(graph_db, knowledge_point)
+                            if not node:
+                                return
+                            await record_playground_code_evidence(
+                                graph_db, current_user.id, node.code,
+                                success=success,
+                                stderr=result.get("stderr", "") or "",
+                            )
+                except Exception as e:
+                    logger.warning(f"⚠️ code_run 证据回写失败: {e}")
+
+            asyncio.create_task(_write_code_evidence())
 
         return BaseResponse(
             code=HTTP_OK,

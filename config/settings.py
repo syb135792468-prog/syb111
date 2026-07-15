@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO")
     DEBUG: bool = Field(default=True)
     DEMO_MODE: bool = Field(default=False, description="演示模式：跳过LLM冷却期，比赛演示时开启")
+    CORS_ALLOWED_ORIGINS: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        description="允许携带认证信息访问 API 的前端来源，以逗号分隔",
+    )
 
     # --- 数据库配置 ---
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./data/app.db")

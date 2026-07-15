@@ -492,11 +492,16 @@ def route_to_all_agents(state: DeepThinkingState) -> list:
     ]
 
 
-async def _emit_thinking(state: DeepThinkingState, text: str):
-    """向共享队列发送思维过程事件"""
+async def _emit_thinking(state: DeepThinkingState, text: str, agent_name: str = None, agent_role: str = None):
+    """向共享队列发送思维过程事件（支持协作可见性的 agent_name/agent_role）"""
     queue = state.get("thinking_queue")
     if queue:
-        await queue.put({"type": "thinking", "text": text})
+        item: Dict[str, Any] = {"type": "thinking", "text": text}
+        if agent_name:
+            item["agent_name"] = agent_name
+        if agent_role:
+            item["agent_role"] = agent_role
+        await queue.put(item)
 
 
 async def deep_doc_node(state: DeepThinkingState) -> Dict[str, Any]:
@@ -510,13 +515,13 @@ async def deep_doc_node(state: DeepThinkingState) -> Dict[str, Any]:
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"📄 ContentAgent 正在为「{topic}」检索知识库...")
+        await _emit_thinking(state, f"📄 ContentAgent 正在为「{topic}」检索知识库...", agent_name="ContentAgent", agent_role="文档")
         result = await agents["doc"].process(state["message"], ctx)
-        await _emit_thinking(state, f"📄 ContentAgent 已生成概念讲解文档")
+        await _emit_thinking(state, f"📄 ContentAgent 已生成概念讲解文档", agent_name="ContentAgent", agent_role="文档")
         return {"doc_result": result}
     except Exception as e:
         logger.error(f"❌ 深度模式 ContentAgent 失败: {e}")
-        await _emit_thinking(state, f"📄 ContentAgent 遇到问题: {str(e)[:50]}")
+        await _emit_thinking(state, f"📄 ContentAgent 遇到问题: {str(e)[:50]}", agent_name="ContentAgent", agent_role="文档")
         return {"doc_result": {"resource_list": [], "error": str(e)}}
 
 
@@ -531,13 +536,13 @@ async def deep_code_node(state: DeepThinkingState) -> Dict[str, Any]:
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"💻 CodeAgent 正在为「{topic}」编写代码示例...")
+        await _emit_thinking(state, f"💻 CodeAgent 正在为「{topic}」编写代码示例...", agent_name="CodeAgent", agent_role="代码")
         result = await agents["code"].process(state["message"], ctx)
-        await _emit_thinking(state, f"💻 CodeAgent 已生成代码示例")
+        await _emit_thinking(state, f"💻 CodeAgent 已生成代码示例", agent_name="CodeAgent", agent_role="代码")
         return {"code_result": result}
     except Exception as e:
         logger.error(f"❌ 深度模式 CodeAgent 失败: {e}")
-        await _emit_thinking(state, f"💻 CodeAgent 遇到问题: {str(e)[:50]}")
+        await _emit_thinking(state, f"💻 CodeAgent 遇到问题: {str(e)[:50]}", agent_name="CodeAgent", agent_role="代码")
         return {"code_result": {"resource_list": [], "error": str(e)}}
 
 
@@ -552,13 +557,13 @@ async def deep_quiz_node(state: DeepThinkingState) -> Dict[str, Any]:
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"✏️ QuizAgent 正在设计配套练习题...")
+        await _emit_thinking(state, f"✏️ QuizAgent 正在设计配套练习题...", agent_name="QuizAgent", agent_role="测验")
         result = await agents["quiz"].process("", ctx)
-        await _emit_thinking(state, f"✏️ QuizAgent 已生成练习题")
+        await _emit_thinking(state, f"✏️ QuizAgent 已生成练习题", agent_name="QuizAgent", agent_role="测验")
         return {"quiz_result": result}
     except Exception as e:
         logger.error(f"❌ 深度模式 QuizAgent 失败: {e}")
-        await _emit_thinking(state, f"✏️ QuizAgent 遇到问题: {str(e)[:50]}")
+        await _emit_thinking(state, f"✏️ QuizAgent 遇到问题: {str(e)[:50]}", agent_name="QuizAgent", agent_role="测验")
         return {"quiz_result": {"resource_list": [], "error": str(e)}}
 
 
@@ -571,13 +576,13 @@ async def deep_eval_node(state: DeepThinkingState) -> Dict[str, Any]:
         "resource_list": [],
     }
     try:
-        await _emit_thinking(state, f"🧐 ProfileAgent 正在分析常见误区...")
+        await _emit_thinking(state, f"🧐 ProfileAgent 正在分析常见误区...", agent_name="ProfileAgent", agent_role="画像")
         result = await agents["evaluation"].generate_evaluation_report("", ctx)
-        await _emit_thinking(state, f"🧐 ProfileAgent 已完成误区分析")
+        await _emit_thinking(state, f"🧐 ProfileAgent 已完成误区分析", agent_name="ProfileAgent", agent_role="画像")
         return {"eval_result": result}
     except Exception as e:
         logger.error(f"❌ 深度模式 ProfileAgent 评估失败: {e}")
-        await _emit_thinking(state, f"🧐 ProfileAgent 遇到问题: {str(e)[:50]}")
+        await _emit_thinking(state, f"🧐 ProfileAgent 遇到问题: {str(e)[:50]}", agent_name="ProfileAgent", agent_role="画像")
         return {"eval_result": {"error": str(e)}}
 
 
@@ -589,13 +594,13 @@ async def deep_path_node(state: DeepThinkingState) -> Dict[str, Any]:
         "chat_history": state.get("chat_history", []),
     }
     try:
-        await _emit_thinking(state, f"🛤️ PathAgent 正在规划学习路径...")
+        await _emit_thinking(state, f"🛤️ PathAgent 正在规划学习路径...", agent_name="PathAgent", agent_role="路径")
         result = await agents["path"].process("", ctx)
-        await _emit_thinking(state, f"🛤️ PathAgent 已规划学习路径")
+        await _emit_thinking(state, f"🛤️ PathAgent 已规划学习路径", agent_name="PathAgent", agent_role="路径")
         return {"path_result": result}
     except Exception as e:
         logger.error(f"❌ 深度模式 PathAgent 失败: {e}")
-        await _emit_thinking(state, f"🛤️ PathAgent 遇到问题: {str(e)[:50]}")
+        await _emit_thinking(state, f"🛤️ PathAgent 遇到问题: {str(e)[:50]}", agent_name="PathAgent", agent_role="路径")
         return {"path_result": {"learning_path": [], "error": str(e)}}
 
 
@@ -634,6 +639,9 @@ async def deep_aggregator_node(state: DeepThinkingState) -> Dict[str, Any]:
     """结果整合节点：调用AggregatorAgent将多Agent输出整合为连贯学习包"""
     agents = get_or_create_agents()
     topic = state.get("topic", "Python")
+
+    # 推送聚合 Agent 启动事件（协作可见性）
+    await _emit_thinking(state, f"🔗 AggregatorAgent 正在整合 5 个 Agent 的输出...", agent_name="AggregatorAgent", agent_role="聚合")
 
     # 收集所有 Agent 产生的资源，用于前端内联卡片渲染
     resource_list: List[Dict[str, Any]] = []

@@ -12,7 +12,7 @@ import asyncio
 from typing import Optional, AsyncGenerator
 from datetime import datetime, UTC
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas import BaseResponse
@@ -22,9 +22,12 @@ from models.quiz_attempt import QuizAttempt
 from models.error_book import ErrorBook
 from config.constants import (
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_SERVER_ERROR,
-    QUIZ_CORRECT_SCORE, MAX_ANSWER_STORE_LENGTH, QUIZ_TYPE_CHOICE, QUIZ_TYPE_FILL,
+    QUIZ_CORRECT_SCORE, MAX_ANSWER_STORE_LENGTH, QUIZ_TYPE_CHOICE, QUIZ_TYPE_FILL, QUIZ_TYPE_CODE,
     QUIZ_TYPE_MULTI, RESOURCE_TYPE_QUIZ,
     CODE_EXEC_DEFAULT_TIMEOUT, QUIZ_FILL_CORRECT_THRESHOLD,
+    ALL_ERROR_TYPES, ERROR_TYPE_OTHER,
+    ERROR_PREFERENCES_TOP_N, ERROR_PREFERENCES_MIN_SAMPLES,
+    DIFFICULTY_EVIDENCE_WEIGHT,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_QUIZ_NOT_FOUND,
@@ -38,6 +41,129 @@ from utils.logger import get_logger
 
 router = APIRouter(prefix="/quiz", tags=["练习题"])
 logger = get_logger(__name__, task_id="quiz_api")
+
+
+def _match_error_type(
+    common_mistakes: list, user_answer: str, q_type: str
+) -> Optional[str]:
+    """比对用户答案与题目标注的 common_mistakes，返回错因类型。
+    匹配失败返回 ERROR_TYPE_OTHER；common_mistakes 为空返回 None（不写错因）。
+    """
+    if not common_mistakes:
+        return None
+    if q_type == QUIZ_TYPE_CHOICE:
+        user_norm = (user_answer or "").strip().upper()
+    else:
+        user_norm = (user_answer or "").strip()
+    for m in common_mistakes:
+        if not isinstance(m, dict):
+            continue
+        wrong = str(m.get("wrong", "")).strip()
+        wrong_norm = wrong.upper() if q_type == QUIZ_TYPE_CHOICE else wrong
+        if wrong_norm and wrong_norm == user_norm:
+            et = m.get("error_type", ERROR_TYPE_OTHER)
+            return et if et in ALL_ERROR_TYPES else ERROR_TYPE_OTHER
+    return ERROR_TYPE_OTHER
+
+
+# code_error_analyzer 的 error_type -> ALL_ERROR_TYPES 映射
+_ANALYZER_TYPE_MAP = {
+    "SyntaxError": ERROR_TYPE_SYNTAX,
+    "IndentationError": ERROR_TYPE_SYNTAX,
+    "TypeError": ERROR_TYPE_TYPE_CONFUSION,
+    "NameError": ERROR_TYPE_SCOPE_CONFUSION,
+    "IndexError": ERROR_TYPE_BOUNDARY,
+    "KeyError": ERROR_TYPE_BOUNDARY,
+    "ValueError": ERROR_TYPE_API_MISUSE,
+    "AttributeError": ERROR_TYPE_API_MISUSE,
+    "ZeroDivisionError": ERROR_TYPE_LOGIC,
+}
+
+
+def _classify_code_error_type(user_answer: str, feedback: str = "") -> str:
+    """代码题错因分类：先分析 feedback（可能含 traceback），再静态分析代码。
+    无法确定具体类型时返回 ERROR_TYPE_LOGIC（代码能跑但逻辑错）。
+    """
+    try:
+        from utils.code_error_analyzer import code_error_analyzer
+
+        # 1. 优先从 feedback（含执行错误输出）提取
+        if feedback:
+            analysis = code_error_analyzer.analyze_error_output(feedback)
+            et = analysis.get("error_type", "unknown")
+            if et and et != "unknown":
+                return _ANALYZER_TYPE_MAP.get(et, ERROR_TYPE_LOGIC)
+
+        # 2. 静态分析用户代码（语法错误等）
+        if user_answer:
+            code_analysis = code_error_analyzer.analyze_code(user_answer)
+            errors = code_analysis.get("errors", [])
+            if errors:
+                first_type = errors[0].get("type", "")
+                return _ANALYZER_TYPE_MAP.get(first_type, ERROR_TYPE_SYNTAX)
+    except Exception:
+        pass
+
+    return ERROR_TYPE_LOGIC
+
+
+async def _aggregate_error_preferences_for_user(user_id: int) -> None:
+    """聚合该用户 error_book 的错因频次，取 top-3 更新 user_profiles.error_preferences。
+    错题总数 < ERROR_PREFERENCES_MIN_SAMPLES 时不更新（保留旧值，避免样本不足误导）。
+    """
+    try:
+        from models.profile import UserProfile
+        from utils.api_helpers import get_current_utc_time
+        async with AsyncSessionLocal() as ep_db:
+            # 错题总数检查
+            total_result = await ep_db.execute(
+                select(func.count()).select_from(ErrorBook)
+                .where(ErrorBook.user_id == user_id)
+            )
+            total = total_result.scalar() or 0
+            if total < ERROR_PREFERENCES_MIN_SAMPLES:
+                return
+
+            # 聚合 top-3 错因（排除 null 和 other）
+            result = await ep_db.execute(
+                select(ErrorBook.error_type, func.count().label("cnt"))
+                .where(
+                    ErrorBook.user_id == user_id,
+                    ErrorBook.error_type.isnot(None),
+                    ErrorBook.error_type != ERROR_TYPE_OTHER,
+                )
+                .group_by(ErrorBook.error_type)
+                .order_by(func.count().desc())
+                .limit(ERROR_PREFERENCES_TOP_N)
+            )
+            top_types = [row[0] for row in result.all() if row[0]]
+            if not top_types:
+                return
+
+            profile = await ep_db.get(UserProfile, user_id)
+            if profile and list(profile.error_preferences or []) != top_types:
+                profile.error_preferences = top_types
+                profile.updated_at = get_current_utc_time()
+                await ep_db.commit()
+                logger.info(f"✅ 易错点偏好更新: user={user_id}, top={top_types}")
+    except Exception as ep_err:
+        logger.warning(f"⚠️ 易错点偏好聚合失败: {ep_err}")
+
+
+def _calculate_evidence_mastery(attempts: list[QuizAttempt]) -> float:
+    """Estimate mastery conservatively from all quiz evidence for one topic."""
+    prior_score = 40.0
+    prior_weight = 2.0
+    weighted_score = prior_score * prior_weight
+    total_weight = prior_weight
+
+    for attempt in attempts:
+        weight = DIFFICULTY_EVIDENCE_WEIGHT.get(attempt.difficulty, 1.0)
+        score_percent = max(0.0, min(100.0, attempt.score * 10.0))
+        weighted_score += score_percent * weight
+        total_weight += weight
+
+    return round(weighted_score / total_weight, 1)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -340,6 +466,21 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
             try:
                 from ai.spaced_repetition import get_next_review_time, INITIAL_INTERVAL_DAYS, DEFAULT_EASINESS_FACTOR
 
+                # 取题目标注的 common_mistakes（用于错因识别）
+                if meta.get("quiz_type") == QUIZ_TYPE_MULTI:
+                    q_list = meta.get("questions", [])
+                    common_mistakes_val = (
+                        q_list[question_index].get("common_mistakes", [])
+                        if question_index < len(q_list) else []
+                    )
+                else:
+                    common_mistakes_val = meta.get("common_mistakes", [])
+                matched_error_type = _match_error_type(common_mistakes_val, user_answer, q_type)
+
+                # 代码题：_match_error_type 只做字符串匹配无法识别错因，用 code_error_analyzer 分类
+                if q_type == QUIZ_TYPE_CODE and not matched_error_type:
+                    matched_error_type = _classify_code_error_type(user_answer, feedback)
+
                 existing = await session.execute(
                     select(ErrorBook).where(
                         ErrorBook.user_id == r.user_id,
@@ -352,6 +493,8 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
                     eb_item.error_count += 1
                     eb_item.last_wrong_at = datetime.now(UTC).replace(tzinfo=None)
                     eb_item.user_answer = user_answer[:MAX_ANSWER_STORE_LENGTH]
+                    if not eb_item.error_type and matched_error_type:
+                        eb_item.error_type = matched_error_type
                     # 再次答错 → 重置间隔重复状态，从头开始
                     eb_item.repetition_count = 0
                     eb_item.review_interval_days = INITIAL_INTERVAL_DAYS
@@ -389,6 +532,7 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
                         explanation=explanation[:MAX_ANSWER_STORE_LENGTH],
                         knowledge_point=kp,
                         difficulty=difficulty_val,
+                        error_type=matched_error_type,
                         next_review_at=next_at,
                         review_interval_days=INITIAL_INTERVAL_DAYS,
                         easiness_factor=DEFAULT_EASINESS_FACTOR,
@@ -396,6 +540,8 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
                     )
                     session.add(eb_item)
                 await session.commit()
+                # 错题写入成功后，后台聚合易错点偏好（赛题"易错点偏好"画像维度）
+                asyncio.create_task(_aggregate_error_preferences_for_user(r.user_id))
             except Exception as eb_err:
                 logger.warning(f"错题本收录失败: {eb_err}")
 
@@ -422,40 +568,73 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
             async def _update_profile_from_quiz():
                 try:
                     async with AsyncSessionLocal() as bg_db:
-                        from models.profile import UserProfile
-                        from utils.api_helpers import get_current_utc_time
+                        from models.progress import LearningProgress
                         from utils.knowledge_base import normalize_to_backend
 
                         std_kp = normalize_to_backend(kp) or kp
-                        result = await bg_db.execute(
-                            select(UserProfile).where(UserProfile.user_id == r.user_id)
+                        attempts_result = await bg_db.execute(
+                            select(QuizAttempt)
+                            .where(
+                                QuizAttempt.user_id == r.user_id,
+                                QuizAttempt.knowledge_point == kp,
+                            )
+                            .order_by(QuizAttempt.created_at.asc())
                         )
-                        profile = result.scalar_one_or_none()
-                        if not profile:
-                            return
+                        attempts = list(attempts_result.scalars().all())
+                        mastery = _calculate_evidence_mastery(attempts)
 
-                        mastered = list(profile.mastered_points or [])
-                        weak = list(profile.weak_points or [])
-
-                        if score >= 80 and std_kp not in mastered:
-                            mastered.append(std_kp)
-                            if std_kp in weak:
-                                weak.remove(std_kp)
-                        elif score < 40 and std_kp not in weak and std_kp not in mastered:
-                            weak.append(std_kp)
-
-                        profile.mastered_points = mastered
-                        profile.weak_points = weak
-                        profile.updated_at = get_current_utc_time()
+                        progress_result = await bg_db.execute(
+                            select(LearningProgress).where(
+                                LearningProgress.user_id == r.user_id,
+                                LearningProgress.topic == std_kp,
+                                LearningProgress.is_active == True,
+                            )
+                        )
+                        progress = progress_result.scalar_one_or_none()
+                        if progress is None:
+                            progress = LearningProgress(user_id=r.user_id, topic=std_kp)
+                            bg_db.add(progress)
+                        progress_status = "completed" if mastery >= 80 else "in_progress"
+                        progress.update_progress(status=progress_status, score=mastery, duration=0)
                         await bg_db.commit()
-                        logger.info(f"✅ 测验画像更新: topic={std_kp}, score={score}, mastered={mastered}, weak={weak}")
+                        logger.info(f"✅ 测验进度更新: topic={std_kp}, mastery={mastery}, attempts={len(attempts)}")
 
                         # 闭环：同步路径节点状态
-                        await _sync_learning_path_nodes(r.user_id, std_kp, score)
+                        # UserProfile.weak/mastered_points 由 _write_graph_evidence -> record_quiz_evidence -> project_to_profile 统一投影
+                        await _sync_learning_path_nodes(r.user_id, std_kp, round(mastery))
                 except Exception as e:
                     logger.warning(f"⚠️ 测验画像更新失败: {e}")
 
             asyncio.create_task(_update_profile_from_quiz())
+
+        # 图谱回写：独立于 resource.knowledge_points，按 question_knowledge_map 多节点写证据
+        # 代码题只写 code_run 证据（不写 quiz_attempt），避免同 attempt_id 双重计分
+        async def _write_graph_evidence():
+            try:
+                async with AsyncSessionLocal() as graph_db:
+                    async with graph_db.begin():
+                        if q_type == QUIZ_TYPE_CODE:
+                            from services.mastery_service import record_code_evidence
+                            node_count = await record_code_evidence(
+                                graph_db, r.user_id, r.id, question_index, attempt.id,
+                                success=is_correct,
+                                question_type=q_type, difficulty=difficulty_val,
+                            )
+                            evidence_kind = "code_run"
+                        else:
+                            from services.mastery_service import record_quiz_evidence
+                            node_count = await record_quiz_evidence(
+                                graph_db, r.user_id, r.id, question_index, score,
+                                question_type=q_type, difficulty=difficulty_val,
+                                attempt_id=attempt.id,
+                            )
+                            evidence_kind = "quiz_attempt"
+                    if node_count > 0:
+                        logger.info(f"✅ 图谱证据写入: user={r.user_id}, resource={r.id}, qidx={question_index}, attempt={attempt.id}, kind={evidence_kind}, nodes={node_count}")
+            except Exception as graph_err:
+                logger.warning(f"⚠️ 图谱证据回写失败: {graph_err}")
+
+        asyncio.create_task(_write_graph_evidence())
 
         return BaseResponse(
             code=HTTP_OK, message=MSG_SUCCESS,

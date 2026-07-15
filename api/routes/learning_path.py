@@ -40,10 +40,11 @@ from config.constants import (
     DEFAULT_ESTIMATED_TIME_MIN, EXTENDED_ESTIMATED_TIME_MIN,
     LP_MASTERY_THRESHOLD,
     LP_NODE_STATUS_NOT_STARTED, LP_NODE_STATUS_IN_PROGRESS,
-    LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_NEEDS_REVIEW,
+    LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_NEEDS_REVIEW, LP_NODE_STATUS_SKIPPED,
     LEARNING_PATH_STATUS_ACTIVE, LP_RESOURCE_STATUS_PENDING,
     LP_RESOURCE_STATUS_GENERATING, LP_RESOURCE_STATUS_COMPLETED,
     LP_MAX_NODES_PER_PATH, LP_DEFAULT_RESOURCE_TYPES,
+    QUIZ_TYPE_CHOICE, DIFFICULTY_MEDIUM, ERROR_TYPE_OTHER,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_LEARNING_PATH_NOT_FOUND,
@@ -66,6 +67,20 @@ def _path_to_response(path: LearningPath) -> Dict[str, Any]:
 def _node_to_response(node: LearningPathNode) -> Dict[str, Any]:
     """将节点ORM对象转换为响应字典"""
     return node.to_dict()
+
+
+def _recalc_path_progress(path: LearningPath) -> None:
+    """重算路径 completed_nodes 和 progress_percent。
+    completed + skipped 都算已完成。
+    """
+    completed = sum(
+        1 for n in path.nodes
+        if n.status in (LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_SKIPPED)
+    )
+    path.completed_nodes = completed
+    path.progress_percent = (
+        round(completed / path.total_nodes * 100) if path.total_nodes else 0
+    )
 
 
 async def _get_user_profile(session: AsyncSession, user_id: int) -> Dict[str, Any]:
@@ -370,6 +385,20 @@ async def complete_node(
 
         await session.flush()
 
+        # 图谱回写：通过知识点名匹配图谱节点，写 path_node 证据
+        try:
+            from services.mastery_service import record_path_node_evidence
+            matched_code = await record_path_node_evidence(
+                session, current_user.id,
+                knowledge_point_name=node.knowledge_point,
+                mastery=mastery,
+                node_id=node.id,
+            )
+            if matched_code:
+                logger.info(f"✅ 路径节点图谱回写: user={current_user.id}, kp={node.knowledge_point}, node_code={matched_code}, mastery={mastery}")
+        except Exception as graph_err:
+            logger.warning(f"⚠️ 路径节点图谱回写失败: {graph_err}")
+
         # 重新加载路径
         stmt = (
             select(LearningPath)
@@ -555,6 +584,20 @@ async def submit_quiz_result(
         path.update_progress()
         await session.flush()
 
+        # 图谱回写：通过知识点名匹配图谱节点，写 path_node 证据
+        try:
+            from services.mastery_service import record_path_node_evidence
+            matched_code = await record_path_node_evidence(
+                session, current_user.id,
+                knowledge_point_name=node.knowledge_point,
+                mastery=mastery,
+                node_id=node.id,
+            )
+            if matched_code:
+                logger.info(f"✅ 路径测验图谱回写: user={current_user.id}, kp={node.knowledge_point}, node_code={matched_code}, mastery={mastery:.2f}")
+        except Exception as graph_err:
+            logger.warning(f"⚠️ 路径测验图谱回写失败: {graph_err}")
+
         # 重新加载
         stmt = (
             select(LearningPath)
@@ -584,6 +627,276 @@ async def submit_quiz_result(
         )
     except Exception as e:
         logger.error(f"提交测验结果失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+# ==================== 节点前置测试（PathAgent ↔ QuizAgent 协作链）====================
+
+@router.post("/nodes/{node_id}/pre-test", response_model=BaseResponse)
+async def generate_node_pre_test(
+    node_id: int = PathParam(..., description="节点ID"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """为节点生成前置测试题（PathAgent 调 QuizAgent，Agent 间协作）。
+    若已有前置测试资源则命中缓存直接返回。
+    """
+    try:
+        # 取节点并验证归属
+        stmt = (
+            select(LearningPathNode)
+            .where(LearningPathNode.id == node_id)
+            .options(selectinload(LearningPathNode.resources))
+        )
+        result = await session.execute(stmt)
+        node = result.scalar_one_or_none()
+        if not node or node.learning_path.user_id != current_user.id:
+            return BaseResponse(
+                code=HTTP_NOT_FOUND, message=MSG_LEARNING_PATH_NODE_NOT_FOUND, data=None
+            )
+
+        # 命中缓存：已有前置测试资源直接返回
+        cached = next(
+            (r for r in (node.resources or [])
+             if r.resource_type == "quiz" and (r.extra_metadata or {}).get("is_pre_test")),
+            None,
+        )
+        if cached:
+            meta = cached.extra_metadata or {}
+            return BaseResponse(
+                code=HTTP_OK,
+                message=MSG_LEARNING_PATH_RESOURCE_CACHED,
+                data={
+                    "question": cached.content,
+                    "answer": meta.get("answer", ""),
+                    "explanation": meta.get("explanation", ""),
+                    "common_mistakes": meta.get("common_mistakes", []),
+                    "difficulty": meta.get("difficulty", DIFFICULTY_MEDIUM),
+                    "resource_id": cached.id,
+                    "cached": True,
+                    "collaboration_info": {
+                        "agents": [
+                            {"name": "PathAgent", "role": "路径规划", "action": "发起前置测试请求"},
+                            {"name": "QuizAgent", "role": "测验生成", "action": "生成选择题（已缓存）"},
+                        ],
+                        "description": "PathAgent 协同 QuizAgent 生成前置测试（命中缓存）",
+                    },
+                },
+            )
+
+        # 调 PathAgent.generate_pre_test（内部调 QuizAgent，Agent 间协作）
+        from agents.path_agent import PathAgent
+        from models.learning_path import LearningPath as LPModel
+
+        # 取节点 difficulty 字符串映射
+        diff_val = node.difficulty or 0.5
+        if diff_val <= 0.3:
+            difficulty = "easy"
+        elif diff_val >= 0.65:
+            difficulty = "hard"
+        else:
+            difficulty = DIFFICULTY_MEDIUM
+
+        path_agent = PathAgent(user_id=str(current_user.id))
+        pre_test = await path_agent.generate_pre_test(
+            knowledge_point=node.knowledge_point, difficulty=difficulty
+        )
+
+        # 存为 LearningPathNodeResource
+        resource_item = pre_test.get("resource_item")
+        resource = LearningPathNodeResource(
+            node_id=node.id,
+            resource_type="quiz",
+            title=f"{node.knowledge_point} 前置测试",
+            content=pre_test["question"],
+            extra_metadata={
+                "is_pre_test": True,
+                "answer": pre_test["answer"],
+                "explanation": pre_test["explanation"],
+                "common_mistakes": pre_test["common_mistakes"],
+                "difficulty": pre_test["difficulty"],
+                "knowledge_point": node.knowledge_point,
+            },
+            status=LP_RESOURCE_STATUS_COMPLETED,
+            is_cached=True,
+        )
+        session.add(resource)
+        await session.commit()
+        await session.refresh(resource)
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={
+                "question": pre_test["question"],
+                "answer": pre_test["answer"],
+                "explanation": pre_test["explanation"],
+                "common_mistakes": pre_test["common_mistakes"],
+                "difficulty": pre_test["difficulty"],
+                "resource_id": resource.id,
+                "cached": False,
+                "collaboration_info": pre_test.get("collaboration_info"),
+            },
+        )
+    except Exception as e:
+        logger.error(f"生成前置测试失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/nodes/{node_id}/pre-test/submit", response_model=BaseResponse)
+async def submit_node_pre_test(
+    node_id: int = PathParam(..., description="节点ID"),
+    body: dict = None,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """提交前置测试答案。答对则节点跳过(SKIPPED)并推进路径进度，答错则保留节点。"""
+    try:
+        body = body or {}
+        resource_id = body.get("resource_id")
+        user_answer = str(body.get("user_answer", "")).strip()
+
+        if not resource_id or not user_answer:
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST, message="缺少 resource_id 或 user_answer", data=None
+            )
+
+        # 取资源 + 节点 + 路径
+        stmt = (
+            select(LearningPathNodeResource)
+            .where(LearningPathNodeResource.id == resource_id)
+            .options(
+                selectinload(LearningPathNodeResource.node)
+                .selectinload(LearningPathNode.learning_path)
+                .selectinload(LearningPath.nodes)
+            )
+        )
+        result = await session.execute(stmt)
+        resource = result.scalar_one_or_none()
+        if not resource or not resource.extra_metadata or not resource.extra_metadata.get("is_pre_test"):
+            return BaseResponse(code=HTTP_NOT_FOUND, message="前置测试题不存在", data=None)
+
+        node = resource.node
+        path = node.learning_path
+        if path.user_id != current_user.id:
+            return BaseResponse(
+                code=HTTP_NOT_FOUND, message=MSG_LEARNING_PATH_NODE_NOT_FOUND, data=None
+            )
+
+        meta = resource.extra_metadata
+        correct_answer = meta.get("answer", "")
+        common_mistakes = meta.get("common_mistakes", [])
+
+        # 判分（复用 grading_service.grade_choice）
+        from services.grading_service import grade_choice
+        is_correct = grade_choice(user_answer, correct_answer)
+
+        # 错因比对（复用 _match_error_type 逻辑）
+        matched_error_type = ERROR_TYPE_OTHER
+        if not is_correct and common_mistakes:
+            user_norm = user_answer.upper()
+            for m in common_mistakes:
+                if isinstance(m, dict) and str(m.get("wrong", "")).strip().upper() == user_norm:
+                    matched_error_type = m.get("error_type", ERROR_TYPE_OTHER)
+                    break
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        if is_correct:
+            # 答对 -> 节点跳过 + 推进路径进度
+            was_completed = node.status in (LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_SKIPPED)
+            node.status = LP_NODE_STATUS_SKIPPED
+            node.mastery = 1.0
+            node.completed_at = now
+            node.last_study_at = now
+            if not was_completed:
+                _recalc_path_progress(path)
+            await session.flush()
+
+            # 重新加载完整路径（含 nodes + resources）
+            stmt = (
+                select(LearningPath)
+                .where(LearningPath.id == path.id)
+                .options(selectinload(LearningPath.nodes).selectinload(LearningPathNode.resources))
+            )
+            result = await session.execute(stmt)
+            path = result.scalar_one()
+            logger.info(
+                f"✅ 前置测试答对: node={node_id} 跳过, path={path.id} 进度={path.progress_percent}%"
+            )
+        else:
+            # 答错 -> 节点保留 NOT_STARTED，返回错题解析
+            logger.info(
+                f"📝 前置测试答错: node={node_id}, user={user_answer}, correct={correct_answer}, "
+                f"error_type={matched_error_type}"
+            )
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={
+                "is_correct": is_correct,
+                "correct_answer": correct_answer,
+                "explanation": meta.get("explanation", ""),
+                "matched_error_type": matched_error_type if not is_correct else None,
+                "path": _path_to_response(path) if is_correct else None,
+            },
+        )
+    except Exception as e:
+        logger.error(f"提交前置测试失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/nodes/{node_id}/unskip", response_model=BaseResponse)
+async def unskip_node(
+    node_id: int = PathParam(..., description="节点ID"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """取消跳过：节点恢复 NOT_STARTED，路径进度回退。"""
+    try:
+        stmt = (
+            select(LearningPathNode)
+            .where(LearningPathNode.id == node_id)
+            .options(
+                selectinload(LearningPathNode.learning_path).selectinload(LearningPath.nodes)
+            )
+        )
+        result = await session.execute(stmt)
+        node = result.scalar_one_or_none()
+        if not node or node.learning_path.user_id != current_user.id:
+            return BaseResponse(
+                code=HTTP_NOT_FOUND, message=MSG_LEARNING_PATH_NODE_NOT_FOUND, data=None
+            )
+
+        if node.status != LP_NODE_STATUS_SKIPPED:
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST, message="节点非跳过状态，无需取消", data=None
+            )
+
+        path = node.learning_path
+        node.status = LP_NODE_STATUS_NOT_STARTED
+        node.mastery = 0.0
+        node.completed_at = None
+        _recalc_path_progress(path)
+        await session.flush()
+
+        # 重新加载完整路径
+        stmt = (
+            select(LearningPath)
+            .where(LearningPath.id == path.id)
+            .options(selectinload(LearningPath.nodes).selectinload(LearningPathNode.resources))
+        )
+        result = await session.execute(stmt)
+        path = result.scalar_one()
+
+        logger.info(f"✅ 节点{node_id}取消跳过, path={path.id} 进度={path.progress_percent}%")
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data=_path_to_response(path),
+        )
+    except Exception as e:
+        logger.error(f"取消跳过失败: {e}", exc_info=True)
         return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
 
 
