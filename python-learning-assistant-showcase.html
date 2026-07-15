@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Python 学习助手 — AI 驱动的全链路智能学习系统</title>
+<style>
+  /* ========== Reset & Base ========== */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; font-size: 16px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0a0e1a;
+    color: #e0e6f0;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+
+  /* ========== Animated Background ========== */
+  .bg-grid {
+    position: fixed; inset: 0; z-index: -2;
+    background-image:
+      linear-gradient(rgba(99,102,241,0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(99,102,241,0.06) 1px, transparent 1px);
+    background-size: 60px 60px;
+    animation: gridMove 20s linear infinite;
+  }
+  @keyframes gridMove {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(60px, 60px); }
+  }
+  .bg-glow {
+    position: fixed; z-index: -1;
+    width: 600px; height: 600px;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.15;
+    pointer-events: none;
+  }
+  .bg-glow--purple { top: -200px; left: -100px; background: #7c3aed; }
+  .bg-glow--blue   { bottom: -200px; right: -100px; background: #2563eb; }
+  .bg-glow--teal   { top: 50%; left: 50%; transform: translate(-50%, -50%); background: #0d9488; opacity: 0.08; }
+
+  /* ========== Utility ========== */
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  .section { padding: 100px 0; }
+  .section-label {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase;
+    color: #818cf8; margin-bottom: 16px;
+  }
+  .section-label::before {
+    content: ''; display: block; width: 24px; height: 2px;
+    background: linear-gradient(90deg, #818cf8, transparent);
+    border-radius: 2px;
+  }
+  .section-title {
+    font-size: clamp(28px, 4vw, 42px); font-weight: 800;
+    background: linear-gradient(135deg, #e0e6f0 0%, #a5b4fc 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 20px; line-height: 1.3;
+  }
+  .section-desc { font-size: 17px; color: #94a3b8; max-width: 720px; }
+
+  /* ========== Navbar ========== */
+  .navbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    padding: 16px 0;
+    background: rgba(10, 14, 26, 0.8);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+    transition: all 0.3s;
+  }
+  .navbar.scrolled { padding: 10px 0; background: rgba(10, 14, 26, 0.95); }
+  .navbar .container { display: flex; align-items: center; justify-content: space-between; }
+  .nav-logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }
+  .nav-logo svg { width: 32px; height: 32px; }
+  .nav-links { display: flex; gap: 32px; list-style: none; }
+  .nav-links a {
+    font-size: 14px; color: #94a3b8; transition: color 0.2s;
+    position: relative;
+  }
+  .nav-links a::after {
+    content: ''; position: absolute; bottom: -4px; left: 0; width: 0; height: 2px;
+    background: #818cf8; transition: width 0.3s; border-radius: 2px;
+  }
+  .nav-links a:hover { color: #e0e6f0; }
+  .nav-links a:hover::after { width: 100%; }
+
+  /* ========== Hero ========== */
+  .hero {
+    min-height: 100vh; display: flex; align-items: center;
+    padding-top: 80px; position: relative;
+  }
+  .hero-content { max-width: 680px; }
+  .hero-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 16px; border-radius: 100px;
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    font-size: 13px; color: #a5b4fc; margin-bottom: 28px;
+    animation: fadeInUp 0.6s ease;
+  }
+  .hero-badge .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #34d399; animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .hero h1 {
+    font-size: clamp(40px, 6vw, 68px); font-weight: 900;
+    line-height: 1.15; margin-bottom: 24px;
+    background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 50%, #818cf8 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: fadeInUp 0.6s ease 0.1s backwards;
+  }
+  .hero p {
+    font-size: 19px; color: #94a3b8; margin-bottom: 40px; max-width: 560px;
+    animation: fadeInUp 0.6s ease 0.2s backwards;
+  }
+  .hero-actions {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    animation: fadeInUp 0.6s ease 0.3s backwards;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 14px 32px; border-radius: 12px; font-size: 15px; font-weight: 600;
+    cursor: pointer; border: none; transition: all 0.3s;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff; box-shadow: 0 4px 24px rgba(99, 102, 241, 0.3);
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(99, 102, 241, 0.4); }
+  .btn-ghost {
+    background: rgba(255,255,255,0.05); color: #e0e6f0;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.1); }
+
+  /* Hero Mockup */
+  .hero-visual {
+    position: absolute; right: -40px; top: 50%; transform: translateY(-50%);
+    width: 560px; animation: fadeInRight 0.8s ease 0.4s backwards;
+  }
+  .mockup-window {
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 16px; overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 60px rgba(99,102,241,0.1);
+  }
+  .mockup-titlebar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px;
+    background: rgba(30, 41, 59, 0.8);
+    border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  }
+  .mockup-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .mockup-dot--r { background: #ef4444; }
+  .mockup-dot--y { background: #eab308; }
+  .mockup-dot--g { background: #22c55e; }
+  .mockup-body { padding: 20px; font-size: 13px; }
+  .mockup-chat { display: flex; flex-direction: column; gap: 12px; }
+  .chat-bubble {
+    padding: 10px 14px; border-radius: 12px; max-width: 85%;
+    animation: typeIn 0.4s ease backwards;
+  }
+  .chat-bubble--user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff; border-bottom-right-radius: 4px;
+  }
+  .chat-bubble--ai {
+    align-self: flex-start;
+    background: rgba(30, 41, 59, 0.8);
+    border: 1px solid rgba(99, 102, 241, 0.15);
+    color: #cbd5e1; border-bottom-left-radius: 4px;
+  }
+  .chat-bubble--ai strong { color: #a5b4fc; }
+  .chat-bubble .typing-dots span {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #818cf8; margin: 0 2px;
+    animation: bounce 1.4s infinite;
+  }
+  .chat-bubble .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .chat-bubble .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); }
+    30% { transform: translateY(-6px); }
+  }
+  @keyframes typeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeInRight {
+    from { opacity: 0; transform: translate(40px, -50%); }
+    to { opacity: 1; transform: translate(0, -50%); }
+  }
+
+  /* ========== Stats ========== */
+  .stats-bar {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px;
+    padding: 48px 0; border-top: 1px solid rgba(99,102,241,0.1);
+    border-bottom: 1px solid rgba(99,102,241,0.1);
+  }
+  .stat-item { text-align: center; }
+  .stat-num {
+    font-size: 36px; font-weight: 800;
+    background: linear-gradient(135deg, #818cf8, #c084fc);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .stat-label { font-size: 14px; color: #64748b; margin-top: 4px; }
+
+  /* ========== Pain Points ========== */
+  .pain-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 48px; }
+  .pain-card {
+    padding: 32px; border-radius: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(239, 68, 68, 0.15);
+    transition: all 0.3s;
+    position: relative; overflow: hidden;
+  }
+  .pain-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, #ef4444, #f97316);
+    opacity: 0; transition: opacity 0.3s;
+  }
+  .pain-card:hover { border-color: rgba(239, 68, 68, 0.3); transform: translateY(-4px); }
+  .pain-card:hover::before { opacity: 1; }
+  .pain-icon {
+    width: 48px; height: 48px; border-radius: 12px;
+    background: rgba(239, 68, 68, 0.1);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; margin-bottom: 16px;
+  }
+  .pain-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; color: #fca5a5; }
+  .pain-card p { font-size: 14px; color: #94a3b8; }
+
+  /* ========== Features ========== */
+  .features-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 48px;
+  }
+  .feature-card {
+    padding: 32px; border-radius: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(99, 102, 241, 0.1);
+    transition: all 0.4s; cursor: default;
+    position: relative; overflow: hidden;
+  }
+  .feature-card::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(99,102,241,0.08), transparent 60%);
+    opacity: 0; transition: opacity 0.3s;
+  }
+  .feature-card:hover { border-color: rgba(99,102,241,0.3); transform: translateY(-6px); }
+  .feature-card:hover::before { opacity: 1; }
+  .feature-icon {
+    width: 52px; height: 52px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; margin-bottom: 20px;
+  }
+  .fi-purple { background: rgba(139, 92, 246, 0.15); }
+  .fi-blue   { background: rgba(59, 130, 246, 0.15); }
+  .fi-teal   { background: rgba(20, 184, 166, 0.15); }
+  .fi-amber  { background: rgba(245, 158, 11, 0.15); }
+  .fi-rose   { background: rgba(244, 63, 94, 0.15); }
+  .fi-green  { background: rgba(34, 197, 94, 0.15); }
+  .feature-card h3 { font-size: 17px; font-weight: 700; margin-bottom: 10px; color: #e0e6f0; }
+  .feature-card p { font-size: 14px; color: #94a3b8; line-height: 1.7; }
+  .feature-tag {
+    display: inline-block; margin-top: 14px; padding: 4px 12px;
+    border-radius: 6px; font-size: 12px; font-weight: 600;
+    background: rgba(99, 102, 241, 0.1); color: #a5b4fc;
+  }
+
+  /* ========== Architecture ========== */
+  .arch-wrapper {
+    margin-top: 48px; padding: 40px; border-radius: 20px;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(99, 102, 241, 0.12);
+  }
+  .arch-layers { display: flex; flex-direction: column; gap: 20px; }
+  .arch-layer {
+    padding: 24px; border-radius: 14px;
+    background: rgba(30, 41, 59, 0.5);
+    border: 1px solid rgba(99, 102, 241, 0.08);
+  }
+  .arch-layer-title {
+    font-size: 13px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1.5px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .arch-layer-title .layer-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .arch-modules { display: flex; flex-wrap: wrap; gap: 10px; }
+  .arch-mod {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.12);
+    transition: all 0.2s;
+  }
+  .arch-mod:hover { background: rgba(99, 102, 241, 0.15); transform: translateY(-2px); }
+  .arch-arrow {
+    text-align: center; color: #475569; font-size: 20px;
+    padding: 4px 0;
+  }
+
+  /* ========== Users ========== */
+  .users-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-top: 48px; }
+  .user-card {
+    text-align: center; padding: 32px 20px; border-radius: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(99, 102, 241, 0.1);
+    transition: all 0.3s;
+  }
+  .user-card:hover { border-color: rgba(99, 102, 241, 0.3); transform: translateY(-4px); }
+  .user-avatar {
+    width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 16px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+  }
+  .ua-1 { background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.2)); }
+  .ua-2 { background: linear-gradient(135deg, rgba(59,130,246,0.2), rgba(99,102,241,0.2)); }
+  .ua-3 { background: linear-gradient(135deg, rgba(20,184,166,0.2), rgba(34,197,94,0.2)); }
+  .ua-4 { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(249,115,22,0.2)); }
+  .user-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+  .user-card p { font-size: 13px; color: #94a3b8; }
+
+  /* ========== Scenarios ========== */
+  .scenarios-timeline {
+    margin-top: 48px; position: relative;
+    padding-left: 40px;
+  }
+  .scenarios-timeline::before {
+    content: ''; position: absolute; left: 15px; top: 0; bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, #6366f1, #8b5cf6, #a78bfa, transparent);
+  }
+  .scenario-item {
+    position: relative; padding: 20px 0 20px 32px;
+  }
+  .scenario-item::before {
+    content: ''; position: absolute; left: -32px; top: 26px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #6366f1; border: 3px solid #0a0e1a;
+    box-shadow: 0 0 12px rgba(99,102,241,0.4);
+  }
+  .scenario-item h3 {
+    font-size: 16px; font-weight: 700; color: #a5b4fc; margin-bottom: 6px;
+  }
+  .scenario-item p { font-size: 14px; color: #94a3b8; }
+
+  /* ========== Value ========== */
+  .value-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 48px; }
+  .value-card {
+    padding: 36px; border-radius: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(34, 197, 94, 0.12);
+    transition: all 0.3s;
+  }
+  .value-card:hover { border-color: rgba(34, 197, 94, 0.3); transform: translateY(-4px); }
+  .value-card h3 {
+    font-size: 20px; font-weight: 700; margin-bottom: 16px;
+    color: #86efac;
+  }
+  .value-card p { font-size: 15px; color: #94a3b8; line-height: 1.8; }
+  .value-highlights {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px;
+  }
+  .vh-tag {
+    padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    background: rgba(34, 197, 94, 0.1); color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.15);
+  }
+
+  /* ========== Flowchart ========== */
+  .flow-wrapper {
+    margin-top: 48px; padding: 48px 32px; border-radius: 20px;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(99, 102, 241, 0.1);
+    overflow-x: auto;
+  }
+  .flow-row {
+    display: flex; align-items: center; justify-content: center;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .flow-node {
+    padding: 14px 24px; border-radius: 12px; font-size: 14px; font-weight: 600;
+    text-align: center; min-width: 120px;
+    transition: all 0.3s;
+  }
+  .flow-node:hover { transform: translateY(-3px); }
+  .fn-input   { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.3); color: #a5b4fc; }
+  .fn-process { background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.3); color: #c4b5fd; }
+  .fn-output  { background: rgba(20,184,166,0.15); border: 1px solid rgba(20,184,166,0.3); color: #5eead4; }
+  .fn-result  { background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); color: #86efac; }
+  .flow-arrow { color: #475569; font-size: 20px; }
+  .flow-sub { margin-top: 16px; font-size: 13px; color: #64748b; text-align: center; }
+
+  /* ========== CTA ========== */
+  .cta-section {
+    text-align: center; padding: 120px 0;
+    position: relative;
+  }
+  .cta-section::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(99,102,241,0.1), transparent 70%);
+  }
+  .cta-section h2 {
+    font-size: clamp(32px, 5vw, 48px); font-weight: 900;
+    background: linear-gradient(135deg, #fff, #a5b4fc);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 20px;
+  }
+  .cta-section p { font-size: 18px; color: #94a3b8; margin-bottom: 36px; }
+
+  /* ========== Footer ========== */
+  .footer {
+    padding: 32px 0; text-align: center;
+    border-top: 1px solid rgba(99,102,241,0.08);
+    font-size: 13px; color: #475569;
+  }
+
+  /* ========== Scroll Animation ========== */
+  .reveal {
+    opacity: 0; transform: translateY(32px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .reveal.visible { opacity: 1; transform: translateY(0); }
+
+  /* ========== Responsive ========== */
+  @media (max-width: 1024px) {
+    .hero-visual { display: none; }
+    .hero-content { max-width: 100%; }
+    .features-grid { grid-template-columns: repeat(2, 1fr); }
+    .users-grid { grid-template-columns: repeat(2, 1fr); }
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .pain-grid, .features-grid, .value-grid { grid-template-columns: 1fr; }
+    .users-grid { grid-template-columns: 1fr; }
+    .stats-bar { grid-template-columns: 1fr; }
+    .nav-links { display: none; }
+    .section { padding: 64px 0; }
+  }
+
+  /* ========== Floating Particles ========== */
+  .particles { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  .particle {
+    position: absolute; width: 3px; height: 3px; border-radius: 50%;
+    background: rgba(129, 140, 248, 0.4);
+    animation: float linear infinite;
+  }
+  @keyframes float {
+    0% { transform: translateY(100vh) scale(0); opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="bg-glow bg-glow--purple"></div>
+<div class="bg-glow bg-glow--blue"></div>
+<div class="bg-glow bg-glow--teal"></div>
+<div class="particles" id="particles"></div>
+
+<!-- Navbar -->
+<nav class="navbar" id="navbar">
+  <div class="container">
+    <div class="nav-logo">
+      <svg viewBox="0 0 32 32" fill="none">
+        <rect width="32" height="32" rx="8" fill="url(#lg)"/>
+        <path d="M10 22V10l6 6 6-6v12" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="32" y2="32">
+          <stop stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/>
+        </linearGradient></defs>
+      </svg>
+      Python 学习助手
+    </div>
+    <ul class="nav-links">
+      <li><a href="#pain">痛点</a></li>
+      <li><a href="#features">功能</a></li>
+      <li><a href="#arch">架构</a></li>
+      <li><a href="#users">用户</a></li>
+      <li><a href="#value">价值</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container" style="display:flex;align-items:center;position:relative;">
+    <div class="hero-content">
+      <div class="hero-badge">
+        <span class="dot"></span>
+        AI 驱动 &middot; 全链路学习
+      </div>
+      <h1>Python 学习助手</h1>
+      <p>基于大语言模型与可视化工作流引擎的 Web 端智能学习系统，集资源检索、智能答疑、个性化规划、效果评估于一体，让 Python 自学从此不再迷茫。</p>
+      <div class="hero-actions">
+        <a href="#features" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          探索功能
+        </a>
+        <a href="#arch" class="btn btn-ghost">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          技术架构
+        </a>
+      </div>
+    </div>
+
+    <!-- Hero Mockup -->
+    <div class="hero-visual">
+      <div class="mockup-window">
+        <div class="mockup-titlebar">
+          <span class="mockup-dot mockup-dot--r"></span>
+          <span class="mockup-dot mockup-dot--y"></span>
+          <span class="mockup-dot mockup-dot--g"></span>
+          <span style="margin-left:12px;font-size:12px;color:#64748b;">Python 学习助手</span>
+        </div>
+        <div class="mockup-body">
+          <div class="mockup-chat">
+            <div class="chat-bubble chat-bubble--user" style="animation-delay:0.5s">
+              我想学 Python，完全零基础，该从哪里开始？
+            </div>
+            <div class="chat-bubble chat-bubble--ai" style="animation-delay:1s">
+              <strong>[ 意图识别 ]</strong> 检测到「零基础入门」需求，已为您生成专属学习路径 ↓
+            </div>
+            <div class="chat-bubble chat-bubble--ai" style="animation-delay:1.5s">
+              <strong>Week 1-2</strong> 环境搭建 + 基础语法<br>
+              <strong>Week 3-4</strong> 流程控制 + 函数<br>
+              <strong>Week 5-6</strong> 数据结构 + 文件操作<br>
+              <strong>Week 7-8</strong> 面向对象 + 实战项目
+            </div>
+            <div class="chat-bubble chat-bubble--user" style="animation-delay:2s">
+              给我找几个讲解 for 循环的视频
+            </div>
+            <div class="chat-bubble chat-bubble--ai" style="animation-delay:2.5s">
+              <strong>[ 视频检索 ]</strong> 为您找到 3 个优质视频资源，已按匹配度排序
+            </div>
+            <div class="chat-bubble chat-bubble--ai" style="animation-delay:3s">
+              学完了 for 循环，来做道练习题巩固一下？
+              <div style="margin-top:8px;padding:8px 12px;background:rgba(99,102,241,0.1);border-radius:8px;font-size:12px;">
+                <strong>练习：</strong>编写程序，输出 1-100 中所有能被 7 整除的数
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Stats -->
+<section class="container">
+  <div class="stats-bar reveal">
+    <div class="stat-item">
+      <div class="stat-num" data-target="6">0</div>
+      <div class="stat-label">智能 Agent 模块</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-num" data-target="15">0</div>
+      <div class="stat-label">覆盖学习场景</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-num" data-target="100">0</div>
+      <div class="stat-label">% 个性化适配</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-num" data-target="1">0</div>
+      <div class="stat-label">对话即学习</div>
+    </div>
+  </div>
+</section>
+
+<!-- Pain Points -->
+<section class="section" id="pain">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Pain Points</div>
+      <div class="section-title">自学者的真实困境</div>
+      <div class="section-desc">当前 Python 自学者普遍面临以下四大痛点，导致学习效率低下、容易中途放弃。</div>
+    </div>
+    <div class="pain-grid">
+      <div class="pain-card reveal">
+        <div class="pain-icon">&#128269;</div>
+        <h3>资源零散</h3>
+        <p>学习 Python 需要在 B 站、菜鸟教程、官方文档、LeetCode 等多个平台间反复跳转，信息碎片化严重，大量时间浪费在"找资料"而非"学知识"上。</p>
+      </div>
+      <div class="pain-card reveal">
+        <div class="pain-icon">&#128172;</div>
+        <h3>答疑不及时</h3>
+        <p>遇到代码报错或概念疑惑时，身边无人指导，在论坛发帖等待回复耗时长，卡壳问题得不到及时解决，极易打击学习信心。</p>
+      </div>
+      <div class="pain-card reveal">
+        <div class="pain-icon">&#128200;</div>
+        <h3>路径盲目</h3>
+        <p>缺乏系统的学习规划，不知道先学什么后学什么，容易出现知识点遗漏或难度跳跃，导致基础不牢、越学越迷茫。</p>
+      </div>
+      <div class="pain-card reveal">
+        <div class="pain-icon">&#128170;</div>
+        <h3>练习适配差</h3>
+        <p>刷题难度与自身水平不匹配——太简单无聊、太难受挫，且无法量化评估学习效果，难以发现薄弱环节进行针对性提升。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Core Features</div>
+      <div class="section-title">一个对话框，搞定所有学习需求</div>
+      <div class="section-desc">通过 AI 意图识别自动匹配学习服务，将「找资源 - 学知识 - 练实操 - 做评估」多步操作简化为一次对话。</div>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-purple">&#129302;</div>
+        <h3>智能意图路由</h3>
+        <p>统一路由 Agent 自动识别用户意图，精准分发到对应的服务模块，无需手动切换功能，一句话触发完整学习链路。</p>
+        <span class="feature-tag">UnifiedRouterAgent</span>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-blue">&#127909;</div>
+        <h3>视频资源检索</h3>
+        <p>智能检索匹配教学视频，根据当前学习知识点精准推荐，支持一键跳转观看，告别在视频平台盲目搜索。</p>
+        <span class="feature-tag">VideoAgent</span>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-teal">&#128221;</div>
+        <h3>文档与笔记生成</h3>
+        <p>AI 自动生成结构化知识点文档、代码示例和学习笔记，支持思维导图可视化，帮助构建完整知识体系。</p>
+        <span class="feature-tag">DocAgent &middot; MindmapAgent</span>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-amber">&#128220;</div>
+        <h3>智能题库练习</h3>
+        <p>基于学习进度和掌握程度动态生成练习题，难度自适应匹配，做完即评即讲，精准定位薄弱知识点。</p>
+        <span class="feature-tag">QuizAgent</span>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-rose">&#128200;</div>
+        <h3>个性化学习路径</h3>
+        <p>通过问卷评估基础水平，结合学习目标动态生成专属学习计划，知识点排列遵循认知规律，循序渐进不脱节。</p>
+        <span class="feature-tag">PathAgent</span>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-green">&#128100;</div>
+        <h3>学习画像追踪</h3>
+        <p>持续记录学习进度、知识掌握度、常见错误，构建动态用户画像，让每次交互都更贴合你的当前状态。</p>
+        <span class="feature-tag">ProfileAgent</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section class="section" id="arch">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Tech Architecture</div>
+      <div class="section-title">系统架构设计</div>
+      <div class="section-desc">前端 React + 后端 FastAPI + LangGraph 工作流引擎，模块化 Agent 设计，各司其职协同工作。</div>
+    </div>
+    <div class="arch-wrapper reveal">
+      <div class="arch-layers">
+        <div class="arch-layer">
+          <div class="arch-layer-title">
+            <span class="layer-dot" style="background:#818cf8;"></span>
+            <span style="color:#a5b4fc;">前端展示层</span>
+            <span style="color:#64748b;font-weight:400;font-size:12px;margin-left:8px;">React 18 + TypeScript + TailwindCSS</span>
+          </div>
+          <div class="arch-modules">
+            <span class="arch-mod">聊天界面</span>
+            <span class="arch-mod">代码编辑器</span>
+            <span class="arch-mod">思维导图</span>
+            <span class="arch-mod">学习路径</span>
+            <span class="arch-mod">题库练习</span>
+            <span class="arch-mod">用户画像</span>
+            <span class="arch-mod">资源卡片</span>
+            <span class="arch-mod">SSE 流式渲染</span>
+          </div>
+        </div>
+        <div class="arch-arrow">&#8595; REST API + SSE &#8595;</div>
+        <div class="arch-layer">
+          <div class="arch-layer-title">
+            <span class="layer-dot" style="background:#a78bfa;"></span>
+            <span style="color:#c4b5fd;">API 网关层</span>
+            <span style="color:#64748b;font-weight:400;font-size:12px;margin-left:8px;">FastAPI + Pydantic</span>
+          </div>
+          <div class="arch-modules">
+            <span class="arch-mod">/chat</span>
+            <span class="arch-mod">/quiz</span>
+            <span class="arch-mod">/path</span>
+            <span class="arch-mod">/profile</span>
+            <span class="arch-mod">/resource</span>
+            <span class="arch-mod">/conversation</span>
+          </div>
+        </div>
+        <div class="arch-arrow">&#8595; 路由分发 &#8595;</div>
+        <div class="arch-layer">
+          <div class="arch-layer-title">
+            <span class="layer-dot" style="background:#c084fc;"></span>
+            <span style="color:#d8b4fe;">智能 Agent 层</span>
+            <span style="color:#64748b;font-weight:400;font-size:12px;margin-left:8px;">LangGraph 状态机 + DeepSeek / GPT</span>
+          </div>
+          <div class="arch-modules">
+            <span class="arch-mod">UnifiedRouterAgent</span>
+            <span class="arch-mod">TutorAgent</span>
+            <span class="arch-mod">QuizAgent</span>
+            <span class="arch-mod">PathAgent</span>
+            <span class="arch-mod">VideoAgent</span>
+            <span class="arch-mod">DocAgent</span>
+            <span class="arch-mod">MindmapAgent</span>
+            <span class="arch-mod">ProfileAgent</span>
+            <span class="arch-mod">CodeAgent</span>
+          </div>
+        </div>
+        <div class="arch-arrow">&#8595; ORM &#8595;</div>
+        <div class="arch-layer">
+          <div class="arch-layer-title">
+            <span class="layer-dot" style="background:#5eead4;"></span>
+            <span style="color:#99f6e4;">数据持久层</span>
+            <span style="color:#64748b;font-weight:400;font-size:12px;margin-left:8px;">SQLite + SQLAlchemy + 自动迁移</span>
+          </div>
+          <div class="arch-modules">
+            <span class="arch-mod">用户表</span>
+            <span class="arch-mod">对话历史</span>
+            <span class="arch-mod">学习路径</span>
+            <span class="arch-mod">知识画像</span>
+            <span class="arch-mod">题目记录</span>
+            <span class="arch-mod">资源收藏</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- User Flow -->
+<section class="section">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">User Flow</div>
+      <div class="section-title">一次对话的学习旅程</div>
+    </div>
+    <div class="flow-wrapper reveal">
+      <div class="flow-row">
+        <div class="flow-node fn-input">&#128172; 用户提问</div>
+        <span class="flow-arrow">&#10132;</span>
+        <div class="flow-node fn-process">&#129302; 意图识别</div>
+        <span class="flow-arrow">&#10132;</span>
+        <div class="flow-node fn-process">&#9881;&#65039; 路由分发</div>
+        <span class="flow-arrow">&#10132;</span>
+        <div class="flow-node fn-process">&#129504; Agent 处理</div>
+        <span class="flow-arrow">&#10132;</span>
+        <div class="flow-node fn-output">&#128221; 生成结果</div>
+        <span class="flow-arrow">&#10132;</span>
+        <div class="flow-node fn-result">&#127891; 学习反馈</div>
+      </div>
+      <div class="flow-sub">用户只需自然语言提问，系统自动完成意图理解、模块调度、结果生成、反馈收集全流程</div>
+    </div>
+  </div>
+</section>
+
+<!-- Target Users -->
+<section class="section" id="users">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Target Users</div>
+      <div class="section-title">谁在使用 Python 学习助手</div>
+      <div class="section-desc">覆盖从零基础入门到进阶备考的全阶段 Python 学习者。</div>
+    </div>
+    <div class="users-grid">
+      <div class="user-card reveal">
+        <div class="user-avatar ua-1">&#127891;</div>
+        <h3>零基础入门者</h3>
+        <p>从未接触编程，想系统学习 Python 的初学者，需要从最基础的概念讲起。</p>
+      </div>
+      <div class="user-card reveal">
+        <div class="user-avatar ua-2">&#127890;</div>
+        <h3>高校学生</h3>
+        <p>计算机相关专业学生，需要辅助课内学习、完成作业、准备考试。</p>
+      </div>
+      <div class="user-card reveal">
+        <div class="user-avatar ua-3">&#128188;</div>
+        <h3>职场新人</h3>
+        <p>需要提升编程能力以提高工作效率的职场人士，如数据分析、自动化办公。</p>
+      </div>
+      <div class="user-card reveal">
+        <div class="user-avatar ua-4">&#128187;</div>
+        <h3>算法备考者</h3>
+        <p>准备面试刷题、算法竞赛的学习者，需要针对性练习和错题分析。</p>
+      </div>
+    </div>
+
+    <!-- Scenarios -->
+    <div style="margin-top:64px;">
+      <div class="reveal" style="margin-bottom:16px;">
+        <div class="section-label">Use Scenarios</div>
+        <div class="section-title" style="font-size:clamp(22px,3vw,30px);">五大典型使用场景</div>
+      </div>
+      <div class="scenarios-timeline">
+        <div class="scenario-item reveal">
+          <h3>概念疑惑时</h3>
+          <p>学到「装饰器」「生成器」等抽象概念，直接提问获取通俗解释 + 代码示例 + 可视化图解。</p>
+        </div>
+        <div class="scenario-item reveal">
+          <h3>查找视频时</h3>
+          <p>想看某个知识点的视频讲解，一句话触发视频检索，直接跳转 B 站观看，无需手动搜索。</p>
+        </div>
+        <div class="scenario-item reveal">
+          <h3>定制计划时</h3>
+          <p>通过基础评估问卷，自动生成个性化学习路径，按周拆分目标，循序渐进不遗漏。</p>
+        </div>
+        <div class="scenario-item reveal">
+          <h3>刷题巩固时</h3>
+          <p>学完知识点后即时生成配套练习题，难度匹配当前水平，做完即评即讲解。</p>
+        </div>
+        <div class="scenario-item reveal">
+          <h3>复盘评估时</h3>
+          <p>查看知识掌握度雷达图、常见错误汇总、学习进度统计，量化学习效果，精准查漏补缺。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Value -->
+<section class="section" id="value">
+  <div class="container">
+    <div class="reveal">
+      <div class="section-label">Value & Impact</div>
+      <div class="section-title">产品价值与社会意义</div>
+    </div>
+    <div class="value-grid">
+      <div class="value-card reveal">
+        <h3>&#9889; 效率提升</h3>
+        <p>将「找资源 → 学知识 → 练实操 → 做评估」的多步操作简化为<strong>一次对话</strong>。AI 意图识别自动匹配服务，整合视频检索、文档生成、知识库答疑、题库练习、路径规划等全链路能力，大幅降低信息检索成本。</p>
+        <div class="value-highlights">
+          <span class="vh-tag">信息检索成本降低 80%</span>
+          <span class="vh-tag">学习路径自动规划</span>
+          <span class="vh-tag">练习难度动态适配</span>
+        </div>
+      </div>
+      <div class="value-card reveal">
+        <h3>&#127760; 社会价值</h3>
+        <p>降低 Python 编程的学习门槛，为缺乏专业指导的自学者提供<strong>系统化、个性化</strong>的学习辅助，让不同基础的用户都能获得适配的学习方案，助力编程技能普惠，适配数字化人才培养的社会需求。</p>
+        <div class="value-highlights">
+          <span class="vh-tag">编程教育普惠</span>
+          <span class="vh-tag">个性化因材施教</span>
+          <span class="vh-tag">数字化人才培养</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="container reveal">
+    <h2>让 AI 成为你的 Python 私教</h2>
+    <p>一次对话，全链路学习。从零基础到独立编程，Python 学习助手全程陪伴。</p>
+    <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+      <a href="#features" class="btn btn-primary">开始探索</a>
+      <a href="#arch" class="btn btn-ghost">了解技术</a>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <div class="container">
+    <p>Python 学习助手 &copy; 2026 &mdash; AI 驱动的全链路智能学习系统</p>
+  </div>
+</footer>
+
+<script>
+// Navbar scroll
+const navbar = document.getElementById('navbar');
+window.addEventListener('scroll', () => {
+  navbar.classList.toggle('scrolled', window.scrollY > 40);
+});
+
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry, i) => {
+    if (entry.isIntersecting) {
+      setTimeout(() => entry.target.classList.add('visible'), i * 80);
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.12 });
+reveals.forEach(el => observer.observe(el));
+
+// Counter animation
+const counters = document.querySelectorAll('.stat-num');
+const counterObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const el = entry.target;
+      const target = +el.dataset.target;
+      let current = 0;
+      const step = Math.ceil(target / 40);
+      const timer = setInterval(() => {
+        current += step;
+        if (current >= target) { current = target; clearInterval(timer); }
+        el.textContent = current;
+      }, 30);
+      counterObserver.unobserve(el);
+    }
+  });
+}, { threshold: 0.5 });
+counters.forEach(el => counterObserver.observe(el));
+
+// Feature card spotlight
+document.querySelectorAll('.feature-card').forEach(card => {
+  card.addEventListener('mousemove', e => {
+    const r = card.getBoundingClientRect();
+    card.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
+    card.style.setProperty('--my', ((e.clientY - r.top) / r.height * 100) + '%');
+  });
+});
+
+// Floating particles
+const particlesEl = document.getElementById('particles');
+for (let i = 0; i < 30; i++) {
+  const p = document.createElement('div');
+  p.className = 'particle';
+  p.style.left = Math.random() * 100 + '%';
+  p.style.animationDuration = (8 + Math.random() * 12) + 's';
+  p.style.animationDelay = Math.random() * 10 + 's';
+  p.style.width = p.style.height = (2 + Math.random() * 3) + 'px';
+  particlesEl.appendChild(p);
+}
+</script>
+
+</body>
+</html>
