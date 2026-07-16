@@ -145,7 +145,9 @@ export function useSSE() {
     setError(null)
     const store = useChatStore.getState()
     const conversationId = store.currentConversationId
-    const streamConvId = conversationId  // 捕获当前对话 ID，后续用于守卫
+    // A new conversation receives its ID from the first SSE event. Keep this
+    // request's guard in sync so later reply events are not treated as stale.
+    let streamConvId = conversationId
 
     // 如果只有图片没有文字，使用默认提示词
     const effectiveMessage = message.trim() || (images && images.length > 0 ? '请分析这张图片' : message)
@@ -351,7 +353,8 @@ export function useSSE() {
                 }
                 // 提前保存 conversation_id（后端在首个 thinking 事件中附带）
                 if (data.data?.conversation_id) {
-                  useChatStore.setState({ currentConversationId: data.data.conversation_id })
+                  streamConvId = data.data.conversation_id
+                  useChatStore.setState({ currentConversationId: streamConvId })
                 }
                 break
               }
@@ -523,7 +526,7 @@ export function useSSE() {
     const store = useChatStore.getState()
     const threadId = store.socraticThreadId
     const conversationId = store.currentConversationId
-    const streamConvId = conversationId
+    let streamConvId = conversationId
 
     if (!threadId) {
       setError('没有活跃的苏格拉底会话')
@@ -659,6 +662,7 @@ export function useSSE() {
               case 'socratic_end': {
                 const endData = data.data || {}
                 if (endData.conversation_id) {
+                  streamConvId = endData.conversation_id
                   const s = useChatStore.getState()
                   if (s.currentConversationId === streamConvId) {
                     useChatStore.setState({ currentConversationId: endData.conversation_id })

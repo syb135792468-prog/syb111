@@ -303,6 +303,21 @@ async def evaluate_path(
         logger.warning(f"⚠️ LLM 进阶推荐生成失败: {e}")
         recommendations = []
 
+    # 实时推送通知：评估完成 + 画像升级信息
+    try:
+        from services.notification_service import push_notification
+        await push_notification(user_id, "evaluation_completed", {
+            "path_id": path_id,
+            "achievement_score": round(achievement_score, 1),
+            "level_upgraded": level_upgraded,
+            "message": (
+                f"路径评估完成（达成度 {round(achievement_score, 1)}）"
+                + (f"，知识水平已升级到 {level_upgraded}" if level_upgraded else "")
+            ),
+        })
+    except Exception as notify_err:
+        logger.warning(f"⚠️ 评估完成通知推送失败: {notify_err}")
+
     return {
         "achievement_score": achievement_score,
         "mastery_stats": mastery_stats,

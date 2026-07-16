@@ -138,6 +138,13 @@ const PathView: React.FC = () => {
     loadPaths()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 监听通知 SSE 推送的路径变更事件，自动刷新
+  useEffect(() => {
+    const handler = () => loadPaths()
+    window.addEventListener('path-dirty', handler)
+    return () => window.removeEventListener('path-dirty', handler)
+  }, [loadPaths])
+
   useEffect(() => {
     syncPaths(paths)
   }, [paths, syncPaths])

@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from api.schemas import BaseResponse
-from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path, images, task, multimodal, daily, graph, playground, course
+from api.routes import chat, profile, resource, progress, auth, conversation, quiz, error_book, code_execute, experiment, learning_path, images, task, multimodal, daily, graph, playground, course, notification
 from config.constants import (
     DEFAULT_PORT, SLOW_REQUEST_THRESHOLD_SEC, CORS_MAX_AGE,
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_SERVER_ERROR, HTTP_SERVICE_UNAVAILABLE,
@@ -290,6 +290,7 @@ app.include_router(daily.router, prefix="/api")
 app.include_router(graph.router, prefix="/api")
 app.include_router(playground.router, prefix="/api")
 app.include_router(course.router, prefix="/api")
+app.include_router(notification.router, prefix="/api")
 
 
 # ============================================================

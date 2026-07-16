@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useAuthStore } from './stores/auth'
 import { useChatStore } from './stores/chat'
 import { useAppStore } from './stores/app'
+import { useNotification } from './composables/useNotification'
 import AppLayout from './components/layout/AppLayout'
 import AppRoutes from './router'
 import AuthModal from './components/auth/AuthModal'
@@ -35,6 +36,9 @@ const App: React.FC = () => {
   const isChatPage = location.pathname === '/chat'
   const authStore = useMemo(() => ({ login, register }), [login, register])
   const chatStore = useMemo(() => ({ loadConversations }), [loadConversations])
+
+  // 全局通知长连接：登录后建立，登出时断开
+  useNotification()
 
   // 路由变化时自动切换右侧面板
   useEffect(() => {

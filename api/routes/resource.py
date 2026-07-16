@@ -1112,6 +1112,26 @@ async def _run_async_generation(task_id: str, req: ResourceRequest, request_id: 
             update_progress(task_id, 100, "done", "完成")
             complete_task(task_id, resource_to_response(db_resource))
 
+            # 实时推送通知：资源生成完成
+            try:
+                from services.notification_service import push_notification
+                from config.constants import RESOURCE_TYPE_TUTOR_VIDEO
+                # 辅导视频走独立事件类型，前端据此刷新错题本
+                event_type = (
+                    "tutor_video_ready"
+                    if req.resource_type == RESOURCE_TYPE_TUTOR_VIDEO
+                    else "resource_ready"
+                )
+                await push_notification(uid, event_type, {
+                    "task_id": task_id,
+                    "resource_id": db_resource.id,
+                    "resource_type": req.resource_type,
+                    "title": db_resource.title,
+                    "message": f"资源「{db_resource.title}」已生成完毕",
+                })
+            except Exception as notify_err:
+                logger.warning(f"⚠️ 资源完成通知推送失败: {notify_err}")
+
     except asyncio.TimeoutError:
         logger.error(f"⏱️ [ASYNC-GEN] 生成超时, task_id={task_id[:8]}", extra={"request_id": request_id})
         fail_task(task_id, MSG_GENERATE_TIMEOUT)

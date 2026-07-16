@@ -604,6 +604,17 @@ async def submit_quiz(resource_id: int, body: dict, session: AsyncSession = Depe
                         # 闭环：同步路径节点状态
                         # UserProfile.weak/mastered_points 由 _write_graph_evidence -> record_quiz_evidence -> project_to_profile 统一投影
                         await _sync_learning_path_nodes(r.user_id, std_kp, round(mastery))
+
+                        # 实时推送通知：测验结果已同步到路径
+                        try:
+                            from services.notification_service import push_notification
+                            await push_notification(r.user_id, "quiz_synced", {
+                                "knowledge_point": std_kp,
+                                "mastery": round(mastery),
+                                "message": f"测验结果已同步到路径节点「{std_kp}」（掌握度 {round(mastery)}）",
+                            })
+                        except Exception as notify_err:
+                            logger.warning(f"⚠️ 测验同步通知推送失败: {notify_err}")
                 except Exception as e:
                     logger.warning(f"⚠️ 测验画像更新失败: {e}")
 

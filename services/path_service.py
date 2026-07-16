@@ -101,4 +101,17 @@ async def insert_weak_node_if_missing(
     recalc_path_progress(path)
     await session.flush()
     logger.info(f"📌 薄弱点自动插入节点: user={user_id}, kp={knowledge_point}, path={path.id}, order={insert_order}")
+
+    # 实时推送通知（best-effort，无订阅者即丢弃）
+    try:
+        from services.notification_service import push_notification
+        await push_notification(user_id, "path_updated", {
+            "path_id": path.id,
+            "knowledge_point": knowledge_point,
+            "order": insert_order,
+            "message": f"检测到薄弱点「{knowledge_point}」，已自动插入复习节点",
+        })
+    except Exception as notify_err:
+        logger.warning(f"⚠️ 路径变更通知推送失败: {notify_err}")
+
     return True

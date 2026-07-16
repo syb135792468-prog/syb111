@@ -7,7 +7,7 @@ api/routes/chat.py - 智能辅导对话接口（最终提交版）
 - ✅ 智能字段过滤，轻量传输
 - ✅ 修复所有潜在边缘情况
 """
-from fastapi import APIRouter, Request, Depends, Query
+from fastapi import APIRouter, Request, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator, Optional, Any, Tuple
 import asyncio
@@ -71,6 +71,26 @@ request_id_var = contextvars.ContextVar("request_id", default="unknown")
 
 router = APIRouter(prefix="/chat", tags=["智能辅导"])
 logger = get_logger(__name__, task_id="chat_api")
+
+EMPTY_ASSISTANT_REPLY = "抱歉，我没有生成有效回答。请换一种表述后重试。"
+DEEP_ROUTER_TIMEOUT_SEC = 15
+
+
+async def _require_owned_conversation(
+    db: AsyncSession, conversation_id: int, user_id: int
+) -> None:
+    """Reject writes to a conversation that is missing or owned by another user."""
+    result = await db.execute(
+        select(Conversation.id).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=HTTP_NOT_FOUND,
+            detail="对话不存在或无权访问",
+        )
 
 
 def _resolve_image_path(url: str) -> Optional[Path]:
@@ -757,6 +777,17 @@ async def _fast_chat_handler(
             stop_data = ContentBlockStopData(block_id=current_block_id_ref[0])
             stop_event = StreamEvent(event="content_block_stop", data=stop_data.model_dump(), current_step="tutor")
             yield f"event: content_block_stop\ndata: {stop_event.model_dump_json()}\n\n"
+        elif not collected_reply_ref[0]:
+            # A successful but empty model stream must still produce a visible reply.
+            collected_reply_ref[0] = EMPTY_ASSISTANT_REPLY
+            content_blocks_ref.append({"type": "text", "text": EMPTY_ASSISTANT_REPLY})
+            block_id = str(uuid.uuid4())
+            start_data = ContentBlockStartData(block_type="text", block_id=block_id)
+            yield f"event: content_block_start\ndata: {StreamEvent(event='content_block_start', data=start_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
+            delta_data = ContentBlockDeltaData(block_id=block_id, delta=EMPTY_ASSISTANT_REPLY)
+            yield f"event: content_block_data\ndata: {StreamEvent(event='content_block_data', data=delta_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
+            stop_data = ContentBlockStopData(block_id=block_id)
+            yield f"event: content_block_stop\ndata: {StreamEvent(event='content_block_stop', data=stop_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
 
         t3 = _time.monotonic()
         logger.info(f"[FAST-PERF] 完成: 总{(t3-t0)*1000:.0f}ms, {chunk_count}个chunk, 长度{len(collected_reply_ref[0])}", extra={"request_id": request_id})
@@ -831,6 +862,16 @@ async def _fast_chat_handler(
                     yield f"event: content_block_data\ndata: {StreamEvent(event='content_block_data', data=delta_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
                     if delay > 0:
                         await asyncio.sleep(delay)
+                stop_data = ContentBlockStopData(block_id=block_id)
+                yield f"event: content_block_stop\ndata: {StreamEvent(event='content_block_stop', data=stop_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
+            else:
+                collected_reply_ref[0] = EMPTY_ASSISTANT_REPLY
+                content_blocks_ref.append({"type": "text", "text": EMPTY_ASSISTANT_REPLY})
+                block_id = str(uuid.uuid4())
+                start_data = ContentBlockStartData(block_type="text", block_id=block_id)
+                yield f"event: content_block_start\ndata: {StreamEvent(event='content_block_start', data=start_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
+                delta_data = ContentBlockDeltaData(block_id=block_id, delta=EMPTY_ASSISTANT_REPLY)
+                yield f"event: content_block_data\ndata: {StreamEvent(event='content_block_data', data=delta_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
                 stop_data = ContentBlockStopData(block_id=block_id)
                 yield f"event: content_block_stop\ndata: {StreamEvent(event='content_block_stop', data=stop_data.model_dump(), current_step='tutor').model_dump_json()}\n\n"
         except Exception as fallback_err:
@@ -1008,6 +1049,8 @@ async def chat_stream(
         await db.flush()
         conversation_id = conv.id
         logger.info(f"自动创建对话: conv_id={conversation_id}, title={title!r}")
+    else:
+        await _require_owned_conversation(db, conversation_id, current_user.id)
 
     # 加载用户画像和当前对话历史（不跨对话，只共享用户画像）
     profile_data, recent_history = await load_user_context(
@@ -1116,33 +1159,18 @@ async def deep_chat_stream(
         db.add(conv)
         await db.flush()
         conversation_id = conv.id
+    else:
+        await _require_owned_conversation(db, conversation_id, current_user.id)
 
     # 加载用户画像和当前对话历史
     profile_data, recent_history = await load_user_context(current_user.id, conversation_id, db)
 
-    # 使用 UnifiedRouterAgent 提取 topic 和画像更新
-    topic = ""
+    # Router work runs after the SSE connection opens so a slow model cannot
+    # leave the browser waiting for response headers indefinitely.
+    topic = request.message.strip()
     profile_update = {}
     progress_scores = {}
     augmented_msg = _build_augmented_message(request.message, request.images)
-    try:
-        from graph.workflow import get_or_create_agents
-        agents = get_or_create_agents()
-        progress_scores = await _fetch_progress_scores(db, current_user.id)
-        router_result = await agents["unified_router"].process(
-            request.message,
-            {"profile_data": profile_data, "chat_history": recent_history + [{"role": "user", "content": augmented_msg}], "progress_scores": progress_scores},
-        )
-        topic = router_result.get("topic", "") or ""
-        profile_update = router_result.get("_profile_update", {}) or {}
-        if profile_update:
-            logger.info(f"📝 深度模式画像更新: {profile_update}", extra={"request_id": request_id})
-    except Exception as e:
-        logger.warning(f"⚠️ 深度模式路由提取失败，使用原始消息作为 topic: {e}")
-        topic = request.message.strip()
-
-    if not topic:
-        topic = request.message.strip()
 
     # 保存用户消息
     user_msg = ChatMessage(
@@ -1160,8 +1188,39 @@ async def deep_chat_stream(
     _user_id = current_user.id
 
     async def deep_event_generator() -> AsyncGenerator[str, None]:
-        nonlocal collected_reply
+        nonlocal collected_reply, topic, profile_update, progress_scores
         try:
+            startup_event = StreamEvent(
+                event="thinking",
+                data={"text": "🧭 正在识别问题主题...", "conversation_id": _conversation_id},
+                current_step="router",
+            )
+            yield f"event: thinking\ndata: {startup_event.model_dump_json()}\n\n"
+
+            try:
+                from graph.workflow import get_or_create_agents
+                agents = get_or_create_agents()
+                progress_scores = await _fetch_progress_scores(db, current_user.id)
+                router_result = await asyncio.wait_for(
+                    agents["unified_router"].process(
+                        request.message,
+                        {
+                            "profile_data": profile_data,
+                            "chat_history": recent_history + [{"role": "user", "content": augmented_msg}],
+                            "progress_scores": progress_scores,
+                        },
+                    ),
+                    timeout=DEEP_ROUTER_TIMEOUT_SEC,
+                )
+                topic = router_result.get("topic", "") or topic
+                profile_update = router_result.get("_profile_update", {}) or {}
+                if profile_update:
+                    logger.info(f"📝 深度模式画像更新: {profile_update}", extra={"request_id": request_id})
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ 深度模式路由超时，使用原始消息作为 topic", extra={"request_id": request_id})
+            except Exception as e:
+                logger.warning(f"⚠️ 深度模式路由提取失败，使用原始消息作为 topic: {e}")
+
             deep_workflow = await get_deep_workflow()
 
             # 路由 Agent 协作可见性：推送主题识别结果
@@ -1259,6 +1318,9 @@ async def deep_chat_stream(
 
             # 流式输出最终回答
             final_response = final_result["response"]
+            if not final_response:
+                logger.warning("⚠️ 深度模式未生成回答，返回可恢复提示", extra={"request_id": request_id})
+                final_response = EMPTY_ASSISTANT_REPLY
             if final_response:
                 collected_reply = final_response
                 # 发送完成事件，前端折叠思考面板
@@ -1446,6 +1508,8 @@ async def socratic_chat_stream(
         db.add(conv)
         await db.flush()
         conversation_id = conv.id
+    else:
+        await _require_owned_conversation(db, conversation_id, current_user.id)
 
     # 保存用户消息
     user_msg = ChatMessage(
@@ -1625,7 +1689,7 @@ async def socratic_chat_stream(
                     yield f"event: socratic_feedback\ndata: {feedback_event.model_dump_json()}\n\n"
 
                 # 工作流被 interrupt 暂停，发送问题给用户
-                question_text = interrupt_info.get("content", interrupt_info.get("question", ""))
+                question_text = interrupt_info.get("content", interrupt_info.get("question", "")) or EMPTY_ASSISTANT_REPLY
                 collected_reply = question_text
 
                 # 保存 AI 回复（在发送事件之前，让前端拿到 message_id）
@@ -1679,7 +1743,7 @@ async def socratic_chat_stream(
                 yield f"event: {sse_event_type}\ndata: {sse_event.model_dump_json()}\n\n"
             else:
                 # 工作流正常完成（到了 END），发送最终结果
-                response_text = accumulated_state.get("current_response", "")
+                response_text = accumulated_state.get("current_response", "") or EMPTY_ASSISTANT_REPLY
                 response_type = accumulated_state.get("current_response_type", "summary")
                 collected_reply = response_text
 

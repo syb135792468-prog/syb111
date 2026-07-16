@@ -482,9 +482,10 @@ ERROR_PREFERENCES_MIN_SAMPLES = 3
 # ============================================================
 # 难度权重（从 api/routes/quiz.py 收口到常量）
 # 注意：source_weight 列有 CHECK 0-1 约束，所有值必须 <= 1.0
-# 相对顺序 hard(1.0) > medium(0.9) > easy(0.8) 体现"难题答对含金量更高"
+# 相对顺序 hard(1.0) = medium(1.0) > easy(0.8)。中等题是基准证据，
+# 难题不会额外抬高单次作答的分数，避免一次偶然正确造成虚高。
 DIFFICULTY_WEIGHT_EASY = 0.8
-DIFFICULTY_WEIGHT_MEDIUM = 0.9
+DIFFICULTY_WEIGHT_MEDIUM = 1.0
 DIFFICULTY_WEIGHT_HARD = 1.0
 DIFFICULTY_WEIGHT_DEFAULT = DIFFICULTY_WEIGHT_MEDIUM  # difficulty 缺失/未知时用中性权重
 DIFFICULTY_EVIDENCE_WEIGHT = {

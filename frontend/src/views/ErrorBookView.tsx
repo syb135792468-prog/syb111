@@ -168,6 +168,13 @@ const ErrorBookView: React.FC = () => {
     fetchItems()
   }, [fetchItems])
 
+  // 监听通知 SSE 推送的错题/辅导视频事件，自动刷新
+  useEffect(() => {
+    const handler = () => fetchItems()
+    window.addEventListener('error-book-dirty', handler)
+    return () => window.removeEventListener('error-book-dirty', handler)
+  }, [fetchItems])
+
   // 切换到复习模式时加载待复习
   useEffect(() => {
     if (mode === 'review') {

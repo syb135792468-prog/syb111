@@ -944,6 +944,17 @@ async def reorder_path(
             f"重排 {pending_count} 个未学节点"
         )
 
+        # 实时推送通知
+        try:
+            from services.notification_service import push_notification
+            await push_notification(current_user.id, "path_reordered", {
+                "path_id": path_id,
+                "reordered_count": pending_count,
+                "message": f"学习路径已按薄弱点优先级重排（{pending_count} 个节点）",
+            })
+        except Exception as notify_err:
+            logger.warning(f"⚠️ 路径重排通知推送失败: {notify_err}")
+
         return BaseResponse(
             code=HTTP_OK,
             message=MSG_SUCCESS,

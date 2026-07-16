@@ -176,8 +176,10 @@ class PathAgent(BaseAgent):
                 "difficulty": float(difficulty),
             })
 
-        # 按 order 排序，重新编号
+        # The UI and persistence contract support a compact path of at most
+        # MAX_LEARNING_PATH_STEPS. LLM output can exceed that instruction.
         learning_path.sort(key=lambda x: x["order"])
+        learning_path = learning_path[:MAX_LEARNING_PATH_STEPS]
         for i, step in enumerate(learning_path):
             step["order"] = i + 1
 
