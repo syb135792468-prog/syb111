@@ -419,6 +419,7 @@ RESOURCE_TYPE_MINDMAP = "mindmap"
 RESOURCE_TYPE_DAILY_CHALLENGE = "daily_challenge"
 RESOURCE_TYPE_DAILY_EXTRA = "daily_extra"
 RESOURCE_TYPE_SLIDES = "slides"
+RESOURCE_TYPE_TUTOR_VIDEO = "tutor_video"
 DIFFICULTY_AUTO = "auto"
 INTENT_GENERATE_RESOURCE = "generate_resource"
 INTENT_START_LEARNING = "start_learning"
@@ -480,9 +481,12 @@ ERROR_PREFERENCES_MIN_SAMPLES = 3
 # 42. 学习画像证据权重（精准画像重构）
 # ============================================================
 # 难度权重（从 api/routes/quiz.py 收口到常量）
-DIFFICULTY_WEIGHT_EASY = 0.85
-DIFFICULTY_WEIGHT_MEDIUM = 1.0
-DIFFICULTY_WEIGHT_HARD = 1.15
+# 注意：source_weight 列有 CHECK 0-1 约束，所有值必须 <= 1.0
+# 相对顺序 hard(1.0) > medium(0.9) > easy(0.8) 体现"难题答对含金量更高"
+DIFFICULTY_WEIGHT_EASY = 0.8
+DIFFICULTY_WEIGHT_MEDIUM = 0.9
+DIFFICULTY_WEIGHT_HARD = 1.0
+DIFFICULTY_WEIGHT_DEFAULT = DIFFICULTY_WEIGHT_MEDIUM  # difficulty 缺失/未知时用中性权重
 DIFFICULTY_EVIDENCE_WEIGHT = {
     "easy": DIFFICULTY_WEIGHT_EASY,
     "medium": DIFFICULTY_WEIGHT_MEDIUM,

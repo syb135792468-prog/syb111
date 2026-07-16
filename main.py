@@ -23,7 +23,7 @@ load_dotenv()
 
 # 从环境变量读取配置（默认值适配比赛环境）
 HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", 8001))
+PORT = int(os.getenv("PORT", 8000))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 WORKERS = int(os.getenv("WORKERS", 1))
 

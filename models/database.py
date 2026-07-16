@@ -547,6 +547,19 @@ async def _auto_migrate() -> None:
                 )
                 logger.info("✅ user_misconceptions 表已创建")
 
+            # ---- 辅导短视频：扩展 learning_path_node_resources.ck_lp_resource_type 约束 ----
+            lp_res_tables = await conn.run_sync(
+                lambda sync_conn: inspect(sync_conn).get_table_names()
+            )
+            if "learning_path_node_resources" in lp_res_tables:
+                ck_row = await conn.execute(text(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='learning_path_node_resources'"
+                ))
+                create_sql = (ck_row.fetchone() or (None,))[0] or ""
+                if "tutor_video" not in create_sql:
+                    await _rebuild_sqlite_table(conn, "learning_path_node_resources")
+                    logger.info("✅ learning_path_node_resources 约束已扩展 tutor_video")
+
     except Exception as e:
         logger.warning(f"⚠️ 自动迁移跳过（可能表尚未创建）: {e}")
 

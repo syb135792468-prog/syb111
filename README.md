@@ -63,7 +63,7 @@
 | **后端** | FastAPI + SQLAlchemy | 全异步，SSE 流式，自动 DB 迁移 |
 | **前端** | React 19 + TypeScript + Zustand | SPA，CodeMirror 代码编辑，Mermaid 思维导图 |
 | **向量库** | ChromaDB | PersistentClient，余弦距离，自动构建+检索 |
-| **LLM** | 小米 MiMo-v2.5-pro（主） / DeepSeek（备） | 统一客户端，自动降级重试 |
+| **LLM** | 智谱 GLM-5.2（主，火山方舟Coding Plan）/ DeepSeek（备） | 统一客户端，自动降级重试 |
 | **自适应** | IRT + 实时学习状态机 | 能力估计 + 5 状态驱动教学策略 |
 | **记忆** | 短期（chat_history）+ 长期（user_memory.json） | 增量更新，禁止全量覆盖 |
 

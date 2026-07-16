@@ -107,7 +107,7 @@ data/xfyun_tts_test.mp3
 # Third-party skill packs (external clones, not project code)
 andrej-karpathy-skills-main/
 
-# Runtime-generated video artifacts
-static/videos/cache/
-static/videos/*.webm
+# Runtime-generated static artifacts (dirs auto-created at app startup)
+static/uploads/
+static/videos/
 static/latest_video.html

@@ -1,0 +1,19 @@
+请根据以下错题数据生成辅导短视频脚本：
+
+知识点：{knowledge_point}
+错因类型：{error_type}
+题目原文：{question_text}
+学生答案（错误）：{user_answer}
+正确答案：{correct_answer}
+解析：{explanation}
+目标时长：{duration}秒
+教学风格：{style}
+步骤数量：{min_steps} 到 {max_steps} 步
+
+视频结构（4 段）：
+1. 错题回顾（展示题目原文和错误答案）
+2. 错因分析（针对 {error_type} 错因类型分析）
+3. 正确思路（讲解正确解法，对比错误答案）
+4. 举一反三（变式提示或防范建议）
+
+直接输出 JSON，不要输出任何其他内容。

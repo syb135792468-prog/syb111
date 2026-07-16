@@ -2,17 +2,19 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   X, Loader2, RefreshCw, Target, AlertCircle, CheckCircle2, Lock,
-  BookOpen, ChevronRight, Maximize2,
+  BookOpen, ChevronRight, Maximize2, GitBranch,
 } from 'lucide-react'
 import {
   getGraphSnapshot, getNodeDetail, getNodePractice,
   type GraphSnapshot, type NodeDetail, type NodePractice,
   type GraphNode,
 } from '../../api/graph'
+import KnowledgeMindmap from './KnowledgeMindmap'
+import KnowledgeTree from './KnowledgeTree'
 
 interface KnowledgeGraphProps {
   refreshKey?: number
-  mode?: 'profile' | 'local' | 'full'
+  mode?: 'profile' | 'local' | 'full' | 'tree'
 }
 
 interface PositionedNode extends GraphNode {
@@ -20,12 +22,16 @@ interface PositionedNode extends GraphNode {
   y: number
 }
 
-const COL_WIDTH = 130
-const ROW_HEIGHT = 48
-const PAD_TOP = 30
-const NODE_RADIUS = 17
+interface ModuleRegion {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+const NODE_RADIUS = 6.5
 const EXPLORER_WIDTH = 1280
-const EXPLORER_HEIGHT = 720
+const EXPLORER_HEIGHT = 820
 
 const FALLBACK_STATE_COLORS: Record<string, string> = {
   locked: '#cbd5e1',
@@ -111,8 +117,9 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
 
   const isProfile = mode === 'profile'
   const isLocal = mode === 'local'
+  const isTree = mode === 'tree'
   const canvasWidth = isLocal ? 960 : (isProfile ? 1180 : EXPLORER_WIDTH)
-  const canvasHeight = isLocal ? 440 : (isProfile ? 660 : EXPLORER_HEIGHT)
+  const canvasHeight = isLocal ? 440 : (isProfile ? 780 : EXPLORER_HEIGHT)
 
   const fetchSnapshot = useCallback(async () => {
     setLoading(true)
@@ -263,31 +270,50 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
   }, [snapshot, visibleNodes])
 
   // DAG 布局：桌面横向列式（每列内按 prerequisite 拓扑排序），移动端纵向行式（每模块一行）
+  const moduleRegions = useMemo<Record<string, ModuleRegion>>(() => {
+    if (activeModules.length === 0) return {}
+    const columns = Math.min(3, activeModules.length)
+    const rows = Math.ceil(activeModules.length / columns)
+    const gutterX = 28
+    const gutterY = 30
+    const paddingX = 32
+    const paddingY = 28
+    const width = (canvasWidth - paddingX * 2 - gutterX * (columns - 1)) / columns
+    const height = (canvasHeight - paddingY * 2 - gutterY * (rows - 1)) / rows
+
+    return activeModules.reduce<Record<string, ModuleRegion>>((regions, module, index) => {
+      const column = index % columns
+      const row = Math.floor(index / columns)
+      regions[module] = {
+        x: paddingX + column * (width + gutterX),
+        y: paddingY + row * (height + gutterY),
+        width,
+        height,
+      }
+      return regions
+    }, {})
+  }, [activeModules, canvasWidth, canvasHeight])
+
   const positionedNodes = useMemo<PositionedNode[]>(() => {
     if (snapshot === null || activeModules.length === 0) return []
     const result: PositionedNode[] = []
 
-    const moduleCount = activeModules.length
-    const ringRadiusX = moduleCount <= 2 ? canvasWidth * 0.24 : canvasWidth * 0.33
-    const ringRadiusY = moduleCount <= 2 ? canvasHeight * 0.18 : canvasHeight * 0.25
-
-    activeModules.forEach((module, moduleIndex) => {
-      const nodes = visibleNodes.filter((node) => node.module === module)
-      const moduleAngle = -Math.PI / 2 + (Math.PI * 2 * moduleIndex) / moduleCount
-      const centerX = moduleCount === 1
-        ? canvasWidth / 2
-        : canvasWidth / 2 + Math.cos(moduleAngle) * ringRadiusX
-      const centerY = moduleCount === 1
-        ? canvasHeight / 2
-        : canvasHeight / 2 + Math.sin(moduleAngle) * ringRadiusY
+    activeModules.forEach((module) => {
+      const region = moduleRegions[module]
+      if (!region) return
+      const nodes = visibleNodes
+        .filter((node) => node.module === module)
+        .sort((a, b) => a.level - b.level || a.code.localeCompare(b.code))
+      const columns = region.width > 300 ? 3 : 2
+      const cellWidth = (region.width - 24) / columns
 
       nodes.forEach((node, nodeIndex) => {
-        const nodeAngle = nodeIndex * 2.399963229728653
-        const nodeRadius = 26 + Math.sqrt(nodeIndex) * 19
+        const column = nodeIndex % columns
+        const row = Math.floor(nodeIndex / columns)
         result.push({
           ...node,
-          x: centerX + Math.cos(nodeAngle) * nodeRadius,
-          y: centerY + Math.sin(nodeAngle) * nodeRadius,
+          x: region.x + 12 + column * cellWidth,
+          y: region.y + 50 + row * 31,
         })
       })
     })
@@ -351,7 +377,7 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
     }
     return result
     */
-  }, [snapshot, activeModules, visibleNodes, canvasWidth, canvasHeight])
+  }, [snapshot, activeModules, visibleNodes, moduleRegions])
 
   const nodePosMap = useMemo(() => {
     const m: Record<string, PositionedNode> = {}
@@ -422,20 +448,20 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
     return positionedNodes.map(n => {
       const isSelected = selectedNode === n.code
       const isHovered = hoveredNode === n.code
-      const isPrereqOfSelected = !!selectedNode && visibleEdges.some(
-        e => e.target_code === selectedNode && e.source_code === n.code)
-      const isTargetOfSelected = !!selectedNode && visibleEdges.some(
-        e => e.source_code === selectedNode && e.target_code === n.code)
+      const activeCode = selectedNode || hoveredNode
+      const isPrereqOfSelected = !!activeCode && visibleEdges.some(
+        e => e.target_code === activeCode && e.source_code === n.code)
+      const isTargetOfSelected = !!activeCode && visibleEdges.some(
+        e => e.source_code === activeCode && e.target_code === n.code)
       const focusCode = isLocal ? focusNodeCode : recommendedNode?.code
       const isFocused = focusCode === n.code
-      const showLabel = labeledNodes.has(n.code) || isHovered || isSelected
+      const showLabel = !isLocal || labeledNodes.has(n.code) || isHovered || isSelected
       const color = stateColorMap[n.state] || FALLBACK_STATE_COLORS[n.state]
-      const dim = !!selectedNode && !isSelected && !isPrereqOfSelected && !isTargetOfSelected
-      const progress = n.state === 'mastered' || n.state === 'locked'
-        ? 1
-        : Math.max(0.08, Math.min(1, n.mastery_score / 100))
-      const ringCircumference = 2 * Math.PI * (NODE_RADIUS - 1)
-      const labelWidth = Math.max(54, n.name.length * 11 + 16)
+      const isRelated = isPrereqOfSelected || isTargetOfSelected
+      const dim = !!activeCode && activeCode !== n.code && !isRelated
+      const isMastered = n.state === 'mastered'
+      const isLocked = n.state === 'locked'
+      const nodeFill = isMastered ? color : (isLocked ? '#f8fafc' : 'white')
 
       return (
         <g
@@ -448,64 +474,44 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
           opacity={dim ? 0.3 : 1}
         >
           <title>{`${n.name} - ${stateNames[n.state] || n.state} - 掌握度 ${n.mastery_score}%`}</title>
-          {(isSelected || isPrereqOfSelected || isTargetOfSelected || isFocused) && (
+          {(isSelected || isRelated || isFocused) && (
             <circle
-              r={NODE_RADIUS + 5}
+              r={NODE_RADIUS + 4}
               fill="none"
               stroke={isSelected ? '#0f172a' : isFocused ? '#3b82f6' : (isPrereqOfSelected ? '#f59e0b' : '#10b981')}
-              strokeWidth={1.4}
+              strokeWidth={1.2}
               strokeDasharray={isPrereqOfSelected ? '2,2' : undefined}
             />
           )}
           <circle
             r={NODE_RADIUS}
-            fill={color}
-            fillOpacity={n.state === 'locked' ? 0.1 : 0.13}
+            fill={nodeFill}
             stroke={color}
-            strokeOpacity={n.state === 'locked' ? 0.35 : 0.42}
-            strokeWidth={1}
+            strokeOpacity={isLocked ? 0.72 : 1}
+            strokeWidth={isMastered ? 1 : 1.5}
           />
-          <circle
-            r={NODE_RADIUS - 1}
-            fill="none"
-            stroke={color}
-            strokeWidth={2.2}
-            strokeOpacity={n.state === 'locked' ? 0.28 : 0.84}
-            strokeLinecap="round"
-            strokeDasharray={`${ringCircumference * progress} ${ringCircumference}`}
-            transform="rotate(-90)"
-          />
-          <circle
-            r={NODE_RADIUS - 5.5}
-            fill={color}
-            fillOpacity={n.state === 'locked' ? 0.68 : 1}
-            stroke="white"
-            strokeWidth={1.5}
-          />
-          <StatusGlyph state={n.state} masteryScore={n.mastery_score} radius={NODE_RADIUS - 5.5} />
+          {!isLocked && !isMastered && <circle r={2.3} fill={color} />}
+          {isMastered && (
+            <path
+              d="M -3 0 L -0.8 2.2 L 3.5 -2.6"
+              fill="none"
+              stroke="white"
+              strokeWidth={1.7}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
           {showLabel && (
-            <g transform={`translate(0, ${NODE_RADIUS + 10})`}>
-              <rect
-                x={-labelWidth / 2}
-                y={-8}
-                width={labelWidth}
-                height={17}
-                rx={4}
-                fill="white"
-                fillOpacity={0.94}
-                stroke={isSelected ? color : '#e2e8f0'}
-                strokeWidth={0.8}
-              />
-              <text
-                y={4}
-                textAnchor="middle"
-                fontSize={10}
-                fill="#1e293b"
-                fontWeight={isFocused || isSelected ? 600 : 500}
-              >
-                {n.name}
-              </text>
-            </g>
+            <text
+              x={NODE_RADIUS + 6}
+              y={3.5}
+              textAnchor="start"
+              fontSize={10.5}
+              fill={isLocked ? '#94a3b8' : '#334155'}
+              fontWeight={isFocused || isSelected ? 650 : 500}
+            >
+              {n.name}
+            </text>
           )}
         </g>
       )
@@ -513,12 +519,15 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
   }
 
   const renderEdges = () => {
+    const activeCode = selectedNode || hoveredNode
+    if (!activeCode) return null
+
     return visibleEdges.map((edge, idx) => {
       const s = nodePosMap[edge.source_code]
       const t = nodePosMap[edge.target_code]
       if (!s || !t) return null
-      const isActive = selectedNode === edge.source_code || selectedNode === edge.target_code
-      const isFaded = !!selectedNode && !isActive
+      const isActive = activeCode === edge.source_code || activeCode === edge.target_code
+      if (!isActive) return null
 
       const sx = s.x + NODE_RADIUS
       const sy = s.y
@@ -532,10 +541,10 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
           key={`${edge.source_code}-${edge.target_code}-${idx}`}
           d={path}
           fill="none"
-          stroke={isActive ? '#0f172a' : '#cbd5e1'}
-          strokeWidth={isActive ? 1.5 : 0.8}
-          opacity={isFaded ? 0.1 : (isActive ? 0.9 : 0.28)}
-          markerEnd={isActive ? 'url(#arrow-active)' : 'url(#arrow)'}
+          stroke="#64748b"
+          strokeWidth={1.25}
+          opacity={0.62}
+          markerEnd="url(#arrow-active)"
         />
       )
     })
@@ -546,22 +555,39 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
 
     return activeModules.map((module) => {
       const meta = snapshot.modules[module]
-      const members = positionedNodes.filter((node) => node.module === module)
-      if (!meta || members.length === 0) return null
-      const centerX = members.reduce((sum, node) => sum + node.x, 0) / members.length
-      const topY = Math.min(...members.map((node) => node.y))
+      const region = moduleRegions[module]
+      if (!meta || !region) return null
       return (
-        <text
-          key={module}
-          x={centerX}
-          y={topY - 28}
-          textAnchor="middle"
-          fontSize={12}
-          fontWeight={600}
-          fill={meta.color}
-        >
-          {meta.name}
-        </text>
+        <g key={module}>
+          <line
+            x1={region.x}
+            y1={region.y + 17}
+            x2={region.x + 18}
+            y2={region.y + 17}
+            stroke={meta.color}
+            strokeWidth={2.5}
+            strokeLinecap="round"
+          />
+          <text
+            x={region.x + 27}
+            y={region.y + 21}
+            textAnchor="start"
+            fontSize={12}
+            fontWeight={650}
+            fill="#334155"
+          >
+            {meta.name}
+          </text>
+          <line
+            x1={region.x}
+            y1={region.y + 32}
+            x2={region.x + region.width}
+            y2={region.y + 32}
+            stroke={meta.color}
+            strokeOpacity={0.18}
+            strokeWidth={1}
+          />
+        </g>
       )
     })
 
@@ -603,6 +629,45 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
     */
   }
 
+  const renderLegend = () => {
+    if (isTree) {
+      return (
+        <div className="border-t border-slate-100 bg-white px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <div className="flex items-center gap-1.5">
+            <svg width={14} height={14} viewBox="-7 -7 14 14">
+              <circle r={5} fill={stateColorMap.mastered} />
+            </svg>
+            <span className="text-slate-600">已掌握</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <svg width={14} height={14} viewBox="-7 -7 14 14">
+              <circle r={5} fill={stateColorMap.available} />
+            </svg>
+            <span className="text-slate-600">未掌握</span>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="border-t border-slate-100 bg-white px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        {(['mastered', 'learning', 'available', 'locked'] as const).map(s => (
+          <div key={s} className="flex items-center gap-1.5">
+            <svg width={14} height={14} viewBox="-7 -7 14 14">
+              <circle
+                r={5}
+                fill={s === 'mastered' ? stateColorMap[s] : 'white'}
+                stroke={stateColorMap[s]}
+                strokeWidth={1.5}
+              />
+              {s !== 'locked' && s !== 'mastered' && <circle r={1.8} fill={stateColorMap[s]} />}
+            </svg>
+            <span className="text-slate-600">{stateNames[s]}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   const stats = snapshot?.stats
 
   return (
@@ -622,6 +687,15 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {!isLocal && !isTree && (
+            <button
+              onClick={() => navigate('/knowledge-tree')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              <GitBranch className="w-3 h-3" />
+              树形图谱
+            </button>
+          )}
           {isLocal && !isProfile && (
             <button
               onClick={() => navigate('/knowledge-graph')}
@@ -643,7 +717,7 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
       </div>
 
       {/* 下一步推荐卡片 */}
-      {!isProfile && recommendedNode && (
+      {!isProfile && !isTree && recommendedNode && (
         <div
           className="mb-4 p-3 rounded-lg border border-brand-200 bg-brand-50/40 flex items-center justify-between cursor-pointer hover:bg-brand-50/70 transition-colors"
           onClick={() => handleNodeClick(recommendedNode.code)}
@@ -717,6 +791,24 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
           </div>
         ) : positionedNodes.length === 0 ? (
           <div className="flex items-center justify-center h-[440px] text-slate-400 text-sm">暂无图谱数据</div>
+        ) : isTree && snapshot ? (
+          <>
+            <KnowledgeTree
+              snapshot={snapshot}
+              nodes={visibleNodes}
+              onNodeSelect={handleNodeClick}
+            />
+            {renderLegend()}
+          </>
+        ) : !isLocal && snapshot ? (
+          <>
+            <KnowledgeMindmap
+              snapshot={snapshot}
+              nodes={visibleNodes}
+              onNodeSelect={handleNodeClick}
+            />
+            {renderLegend()}
+          </>
         ) : (
           <>
             <div className="overflow-auto">
@@ -737,22 +829,7 @@ export default function KnowledgeGraph({ refreshKey = 0, mode = 'full' }: Knowle
                 {renderNodes()}
               </svg>
             </div>
-            {/* 图例浮层 - 右上角 */}
-            <div className="absolute top-2 right-2 bg-white/90 backdrop-blur rounded-lg p-2 text-xs space-y-1 shadow-sm border border-slate-100">
-              {(['mastered', 'learning', 'available', 'locked'] as const).map(s => (
-                <div key={s} className="flex items-center gap-1.5">
-                  <svg width={14} height={14} viewBox="-7 -7 14 14">
-                    <circle
-                      r={5}
-                      fill={s === 'available' ? 'white' : stateColorMap[s]}
-                      stroke={stateColorMap[s]}
-                      strokeWidth={s === 'available' ? 1.5 : 1}
-                    />
-                  </svg>
-                  <span className="text-slate-600">{stateNames[s]}</span>
-                </div>
-              ))}
-            </div>
+            {renderLegend()}
           </>
         )}
       </div>

@@ -132,6 +132,7 @@ RESOURCE_TYPES: List[str] = [
     "mindmap",          # 思维导图
     "code",             # 代码案例
     "video",            # 讲解视频
+    "tutor_video",      # 辅导短视频（基于错题的个性化辅导）
     "reading",          # 拓展阅读
     "daily_challenge",  # 每日一题
     "daily_extra",      # 每日一题额外挑战

@@ -79,6 +79,7 @@ _AGENT_REGISTRY: Dict[str, type[BaseAgent]] = {
     "mindmap": MindmapAgent,
     "doc": ContentAgent,
     "video": VideoAgent,
+    "tutor_video": VideoAgent,
     "reading": ContentAgent,
     "slides": ContentAgent,
 }
@@ -982,6 +983,49 @@ async def _run_async_generation(task_id: str, req: ResourceRequest, request_id: 
                 result = await asyncio.wait_for(
                     agent.process(
                         user_input=single_kp or req.topic,
+                        context=context,
+                        progress_callback=progress_cb,
+                    ),
+                    timeout=getattr(settings, "RESOURCE_GENERATE_TIMEOUT", RESOURCE_GENERATE_TIMEOUT_SEC),
+                )
+                new_items = result.get("resource_list", [])
+                if not new_items:
+                    fail_task(task_id, MSG_GENERATE_NO_DATA)
+                    return
+                item = new_items[0]
+                ts = datetime.now().strftime("%m%d%H%M%S")
+                db_resource = Resource(
+                    user_id=uid,
+                    task_id=str(uuid.uuid4()),
+                    resource_type=req.resource_type,
+                    title=f"{item.title} {ts}",
+                    content=item.content,
+                    knowledge_points=item.knowledge_points,
+                    status="completed",
+                    progress_percent=RESOURCE_PROGRESS_COMPLETE,
+                    extra_metadata=item.extra_metadata,
+                    in_library=False,
+                )
+                session.add(db_resource)
+            elif req.resource_type == "tutor_video":
+                # 辅导短视频 - 复用 video 3 阶段进度，注入 error_context
+                error_context = cfg.get("error_context")
+                if not error_context:
+                    fail_task(task_id, "辅导短视频缺少 error_context")
+                    return
+                update_progress(task_id, 5, "script", "生成辅导脚本")
+                tutor_kp = error_context.get("knowledge_point") or req.topic.strip() or DEFAULT_TOPIC
+                context = {
+                    "user_id": req.user_id,
+                    "profile_data": profile_ctx,
+                    "topic": tutor_kp,
+                    "resource_list": [],
+                    "config": cfg,
+                    "error_context": error_context,
+                }
+                result = await asyncio.wait_for(
+                    agent.process(
+                        user_input=tutor_kp,
                         context=context,
                         progress_callback=progress_cb,
                     ),

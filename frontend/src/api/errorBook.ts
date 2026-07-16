@@ -35,3 +35,12 @@ export function markMastered(id: string | number) {
 export function deleteErrorBook(id: string | number) {
   return apiDelete(`${API_BASE}/error-book/${id}`)
 }
+
+/** 为指定错题生成辅导短视频（异步，返回 task_id） */
+export function generateTutorVideo(itemId: string | number) {
+  return apiPost<{ task_id: string; error_context: Record<string, unknown> }>(
+    `${API_BASE}/error-book/${itemId}/tutor-video`,
+    {},
+    10000
+  )
+}

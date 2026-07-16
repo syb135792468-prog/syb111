@@ -292,7 +292,7 @@ class LearningPathNodeResource(Base):
     __tablename__ = "learning_path_node_resources"
     __table_args__ = (
         CheckConstraint(
-            "resource_type IN ('doc', 'quiz', 'mindmap', 'code', 'video')",
+            "resource_type IN ('doc', 'quiz', 'mindmap', 'code', 'video', 'tutor_video')",
             name="ck_lp_resource_type"
         ),
         CheckConstraint(

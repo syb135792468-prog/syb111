@@ -11,6 +11,7 @@ from config.model_config import PYTHON_KNOWLEDGE_POINTS
 from config.constants import (
     DEFAULT_ESTIMATED_TIME_MIN, MAX_LEARNING_PATH_STEPS,
     QUIZ_TYPE_CHOICE, DIFFICULTY_MEDIUM,
+    LP_NODE_STATUS_NOT_STARTED,
 )
 from utils.agent_helpers import get_profile_from_context
 
@@ -265,3 +266,68 @@ class PathAgent(BaseAgent):
                 "description": "PathAgent 协同 QuizAgent 生成前置测试",
             },
         }
+
+    @staticmethod
+    def reorder_pending_nodes(
+        nodes: List[Any],
+        weak_points: List[str],
+    ) -> List[int]:
+        """规则重排路径中 NOT_STARTED 节点的顺序。
+
+        算法：
+        1. 分组：固定节点（非 NOT_STARTED）位置不变，待重排节点 = NOT_STARTED
+        2. 待重排节点按优先级排序：
+           a. knowledge_point 在 weak_points 中的排最前（薄弱点优先复习）
+           b. difficulty 低的提前（难度递增原则）
+           c. 原始 order 作为稳定排序兜底
+        3. 固定节点保持原 order 位置，待重排节点按新顺序填入 NOT_STARTED 空位
+        4. 返回重排后的节点 ID 列表（全路径顺序）
+
+        Args:
+            nodes: 路径所有节点对象列表（需有 id/status/knowledge_point/difficulty/order 字段）
+            weak_points: 用户薄弱知识点列表
+
+        Returns:
+            重排后的节点 ID 顺序列表（调用方据此更新 order 字段）
+        """
+        if not nodes:
+            return []
+
+        # 按 order 排序，确保稳定起始顺序
+        sorted_nodes = sorted(nodes, key=lambda n: getattr(n, "order", 0) or 0)
+
+        # 分组：固定位置节点 + 待重排节点
+        fixed_positions: List[tuple] = []  # [(order_index, node_id)]
+        pending: List[Any] = []
+        for idx, node in enumerate(sorted_nodes):
+            if getattr(node, "status", None) == LP_NODE_STATUS_NOT_STARTED:
+                pending.append(node)
+            else:
+                fixed_positions.append((idx, node.id))
+
+        if not pending:
+            # 无可重排节点，返回原顺序
+            return [n.id for n in sorted_nodes]
+
+        weak_set = set(weak_points or [])
+
+        def sort_key(n: Any) -> tuple:
+            kp = getattr(n, "knowledge_point", "") or ""
+            is_weak = 0 if kp in weak_set else 1  # 薄弱点排前（0 < 1）
+            difficulty = getattr(n, "difficulty", 0.5) or 0.5
+            original_order = getattr(n, "order", 0) or 0
+            return (is_weak, difficulty, original_order)
+
+        pending_sorted = sorted(pending, key=sort_key)
+
+        # 合并：在原 sorted_nodes 位置上，NOT_STARTED 位置按 pending_sorted 顺序填入
+        result_ids: List[int] = [0] * len(sorted_nodes)
+        pending_iter = iter(pending_sorted)
+        for idx, node in enumerate(sorted_nodes):
+            if getattr(node, "status", None) == LP_NODE_STATUS_NOT_STARTED:
+                result_ids[idx] = next(pending_iter).id
+            else:
+                result_ids[idx] = node.id
+
+        return result_ids
+

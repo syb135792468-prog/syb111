@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
 import { useLearningCenterStore } from '../stores/learningCenter'
-import { listErrorBook, listDueReviews, recordReview, markMastered, deleteErrorBook } from '../api/errorBook'
+import { useTaskStore } from '../stores/taskStore'
+import { listErrorBook, listDueReviews, recordReview, markMastered, deleteErrorBook, generateTutorVideo } from '../api/errorBook'
+import { pollTaskProgress } from '../composables/useSSE'
 import AppHeader from '../components/layout/AppHeader'
 import {
   BookOpen, CheckCircle2, XCircle, Trash2,
-  Trophy, Clock, Brain, RotateCcw, Sparkles, Calendar
+  Trophy, Clock, Brain, RotateCcw, Sparkles, Calendar, Video, Loader2
 } from 'lucide-react'
 
 // --- 类型定义 ---
@@ -78,6 +81,7 @@ function getReviewStatus(item: ErrorBookItem): 'overdue' | 'due' | 'upcoming' | 
 
 // --- 组件 ---
 const ErrorBookView: React.FC = () => {
+  const navigate = useNavigate()
   const authStore = useAuthStore()
   const appStore = useAppStore()
   const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
@@ -90,6 +94,9 @@ const ErrorBookView: React.FC = () => {
 
   // 模式切换：list=错题列表, review=复习模式
   const [mode, setMode] = useState<'list' | 'review'>('list')
+
+  // 辅导视频生成中的错题 id 集合
+  const [tutorGeneratingIds, setTutorGeneratingIds] = useState<Set<string | number>>(new Set())
 
   // 复习模式状态
   const [dueItems, setDueItems] = useState<ErrorBookItem[]>([])
@@ -200,6 +207,46 @@ const ErrorBookView: React.FC = () => {
       appStore.showToast('操作失败', 'error')
     }
   }, [appStore, fetchItems, fetchDueItems, mode, items, recordLearningEvent, authStore.userId])
+
+  // --- 生成辅导短视频 ---
+  const handleGenerateTutor = useCallback(async (item: ErrorBookItem) => {
+    if (tutorGeneratingIds.has(item.id)) return
+    setTutorGeneratingIds(prev => new Set(prev).add(item.id))
+    try {
+      const resp = await generateTutorVideo(item.id)
+      if (resp.code !== 200 || !resp.data?.task_id) {
+        appStore.showToast(resp.message || '提交失败', 'error')
+        setTutorGeneratingIds(prev => { const n = new Set(prev); n.delete(item.id); return n })
+        return
+      }
+      const taskId = resp.data.task_id
+      useTaskStore.getState().addTask({
+        taskId,
+        resourceType: 'tutor_video',
+        topic: item.knowledge_point || '错题辅导',
+        status: 'pending',
+        createdAt: Date.now(),
+        progress: 0,
+      })
+      appStore.showToast('辅导视频生成中，完成后将跳转', 'success')
+      pollTaskProgress(
+        taskId,
+        () => {
+          setTutorGeneratingIds(prev => { const n = new Set(prev); n.delete(item.id); return n })
+          appStore.showToast('辅导视频已生成', 'success')
+          navigate('/teaching')
+        },
+        (err) => {
+          setTutorGeneratingIds(prev => { const n = new Set(prev); n.delete(item.id); return n })
+          appStore.showToast(`生成失败：${err}`, 'error')
+        }
+      )
+    } catch (e) {
+      setTutorGeneratingIds(prev => { const n = new Set(prev); n.delete(item.id); return n })
+      appStore.showToast('提交失败，请稍后重试', 'error')
+      console.error('生成辅导视频失败:', e)
+    }
+  }, [tutorGeneratingIds, appStore, navigate])
 
   // --- 删除 ---
   const handleDelete = useCallback(async (id: string | number) => {
@@ -385,6 +432,20 @@ const ErrorBookView: React.FC = () => {
                         </div>
                       )}
 
+                      {/* 生成辅导短视频 */}
+                      <div className="pt-3 border-t border-gray-100">
+                        <button
+                          onClick={() => handleGenerateTutor(currentReviewItem)}
+                          disabled={tutorGeneratingIds.has(currentReviewItem.id)}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-colors disabled:opacity-60 disabled:cursor-wait"
+                        >
+                          {tutorGeneratingIds.has(currentReviewItem.id)
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <Video className="w-4 h-4" />}
+                          {tutorGeneratingIds.has(currentReviewItem.id) ? '辅导视频生成中...' : '看辅导短视频'}
+                        </button>
+                      </div>
+
                       {/* 评分按钮 */}
                       <div className="pt-3 border-t border-gray-100">
                         <p className="text-sm text-gray-500 mb-3 text-center">你觉得这道题掌握得怎么样？</p>
@@ -545,6 +606,16 @@ const ErrorBookView: React.FC = () => {
                               <CheckCircle2 className="w-4 h-4" />
                             </button>
                           )}
+                          <button
+                            onClick={e => { e.stopPropagation(); handleGenerateTutor(item) }}
+                            disabled={tutorGeneratingIds.has(item.id)}
+                            className="p-1.5 rounded-lg text-violet-500 hover:bg-violet-100 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                            title="生成辅导短视频"
+                          >
+                            {tutorGeneratingIds.has(item.id)
+                              ? <Loader2 className="w-4 h-4 animate-spin" />
+                              : <Video className="w-4 h-4" />}
+                          </button>
                           <button
                             onClick={e => { e.stopPropagation(); handleDelete(item.id) }}
                             className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"

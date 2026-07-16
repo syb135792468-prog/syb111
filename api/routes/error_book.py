@@ -4,10 +4,12 @@ api/routes/error_book.py - 错题本接口
 - GET  /api/error-book/{user_id}/due      待复习列表（艾宾浩斯）
 - POST /api/error-book/{id}/review        记录复习结果
 - POST /api/error-book/{id}/mastered      标记已掌握
+- POST /api/error-book/{id}/tutor-video   生成辅导短视频（异步，返回 task_id）
 - DELETE /api/error-book/{id}              删除条目
 """
 from __future__ import annotations
 
+import uuid
 from typing import Optional, AsyncGenerator
 from datetime import datetime, UTC
 
@@ -18,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.schemas import BaseResponse
 from models.database import AsyncSessionLocal
 from models.error_book import ErrorBook
+from models.user import User
+from api.routes.auth import get_current_user
 from ai.spaced_repetition import get_next_review_time, is_due_for_review
 from config.constants import (
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_SERVER_ERROR,
@@ -50,10 +54,13 @@ async def list_error_book(
     mastered: Optional[bool] = Query(None),
     limit: int = Query(ERROR_BOOK_DEFAULT_LIMIT, ge=1, le=ERROR_BOOK_MAX_LIMIT),
     offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     try:
-        conditions = [ErrorBook.user_id == user_id]
+        if user_id != current_user.id:
+            return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_ERROR_BOOK_ITEM_NOT_FOUND, data=None)
+        conditions = [ErrorBook.user_id == current_user.id]
         if knowledge_point:
             conditions.append(ErrorBook.knowledge_point == knowledge_point)
         if difficulty:
@@ -92,13 +99,16 @@ async def list_error_book(
 async def list_due_reviews(
     user_id: int,
     limit: int = Query(ERROR_BOOK_DEFAULT_LIMIT, ge=1, le=ERROR_BOOK_MAX_LIMIT),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """获取到期待复习的错题（按 next_review_at 升序）。"""
     try:
+        if user_id != current_user.id:
+            return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_ERROR_BOOK_ITEM_NOT_FOUND, data=None)
         now = datetime.now(UTC)
         conditions = [
-            ErrorBook.user_id == user_id,
+            ErrorBook.user_id == current_user.id,
             ErrorBook.mastered == False,
         ]
 
@@ -139,6 +149,7 @@ async def list_due_reviews(
 async def record_review(
     item_id: int,
     quality: int = Query(..., ge=0, le=5, description="复习质量 0-5"),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -147,7 +158,7 @@ async def record_review(
     """
     try:
         item = await session.get(ErrorBook, item_id)
-        if not item:
+        if not item or item.user_id != current_user.id:
             return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_ERROR_BOOK_ITEM_NOT_FOUND, data=None)
 
         next_review_at, new_interval, new_ef, new_rep = get_next_review_time(
@@ -177,10 +188,14 @@ async def record_review(
 
 
 @router.post("/{item_id}/mastered", response_model=BaseResponse)
-async def mark_mastered(item_id: int, session: AsyncSession = Depends(get_db)):
+async def mark_mastered(
+    item_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
     try:
         item = await session.get(ErrorBook, item_id)
-        if not item:
+        if not item or item.user_id != current_user.id:
             return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_ERROR_BOOK_ITEM_NOT_FOUND, data=None)
 
         item.mastered = True
@@ -191,11 +206,70 @@ async def mark_mastered(item_id: int, session: AsyncSession = Depends(get_db)):
         return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
 
 
+@router.post("/{item_id}/tutor-video", response_model=BaseResponse)
+async def generate_tutor_video(
+    item_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """为指定错题生成辅导短视频（异步，返回 task_id，前端轮询 /tasks/{task_id}）。
+
+    闭合"答错题 -> 错题本 -> 辅导短视频"链路（偏差 D）。
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            item = await session.get(ErrorBook, item_id)
+            if not item or item.user_id != current_user.id:
+                return BaseResponse(
+                    code=HTTP_NOT_FOUND,
+                    message=MSG_ERROR_BOOK_ITEM_NOT_FOUND,
+                    data=None,
+                )
+
+            error_context = {
+                "error_book_id": item.id,
+                "knowledge_point": item.knowledge_point or "",
+                "error_type": item.error_type or "other",
+                "question_text": item.question_text or "",
+                "user_answer": item.user_answer or "",
+                "correct_answer": item.correct_answer or "",
+                "explanation": item.explanation or "",
+            }
+
+        from api.task_store import register_task
+        from api.routes.resource import _run_async_generation, ResourceRequest, get_request_id
+        from config.constants import RESOURCE_TYPE_TUTOR_VIDEO
+
+        task_id = str(uuid.uuid4())
+        req = ResourceRequest(
+            user_id=str(item.user_id),
+            topic=item.knowledge_point or "错题辅导",
+            resource_type=RESOURCE_TYPE_TUTOR_VIDEO,
+            config={"error_context": error_context},
+        )
+        register_task(task_id, RESOURCE_TYPE_TUTOR_VIDEO, req.topic)
+        import asyncio
+        asyncio.create_task(_run_async_generation(task_id, req, get_request_id()))
+
+        logger.info(f"🎬 辅导短视频生成任务已提交: item={item_id}, user={item.user_id}, task={task_id}")
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={"task_id": task_id, "error_context": error_context},
+        )
+    except Exception as e:
+        logger.error(f"生成辅导短视频失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
 @router.delete("/{item_id}", response_model=BaseResponse)
-async def delete_error_book(item_id: int, session: AsyncSession = Depends(get_db)):
+async def delete_error_book(
+    item_id: int,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
     try:
         item = await session.get(ErrorBook, item_id)
-        if not item:
+        if not item or item.user_id != current_user.id:
             return BaseResponse(code=HTTP_NOT_FOUND, message=MSG_ERROR_BOOK_ITEM_NOT_FOUND, data=None)
 
         await session.delete(item)

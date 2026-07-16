@@ -13,6 +13,7 @@ const TeachingAnimationView = lazy(() => import('../views/TeachingAnimationView'
 const MultimodalView = lazy(() => import('../views/MultimodalView'))
 const SlidesView = lazy(() => import('../views/SlidesView'))
 const KnowledgeGraphView = lazy(() => import('../views/KnowledgeGraphView'))
+const KnowledgeTreeView = lazy(() => import('../views/KnowledgeTreeView'))
 const CourseView = lazy(() => import('../views/CourseView'))
 
 // 加载占位
@@ -39,6 +40,7 @@ const AppRoutes: React.FC = () => {
         <Route path="/multimodal" element={<MultimodalView />} />
         <Route path="/slides" element={<SlidesView />} />
         <Route path="/knowledge-graph" element={<KnowledgeGraphView />} />
+        <Route path="/knowledge-tree" element={<KnowledgeTreeView />} />
       </Routes>
     </Suspense>
   )

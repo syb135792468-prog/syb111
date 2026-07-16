@@ -29,7 +29,7 @@ from config.constants import (
     ERROR_TYPE_SYNTAX, ERROR_TYPE_TYPE_CONFUSION, ERROR_TYPE_SCOPE_CONFUSION,
     ERROR_TYPE_BOUNDARY, ERROR_TYPE_API_MISUSE, ERROR_TYPE_LOGIC,
     ERROR_PREFERENCES_TOP_N, ERROR_PREFERENCES_MIN_SAMPLES,
-    DIFFICULTY_EVIDENCE_WEIGHT,
+    DIFFICULTY_EVIDENCE_WEIGHT, DIFFICULTY_WEIGHT_DEFAULT,
 )
 from config.messages import (
     MSG_SUCCESS, MSG_SERVER_ERROR, MSG_QUIZ_NOT_FOUND,
@@ -160,7 +160,7 @@ def _calculate_evidence_mastery(attempts: list[QuizAttempt]) -> float:
     total_weight = prior_weight
 
     for attempt in attempts:
-        weight = DIFFICULTY_EVIDENCE_WEIGHT.get(attempt.difficulty, 1.0)
+        weight = DIFFICULTY_EVIDENCE_WEIGHT.get(attempt.difficulty, DIFFICULTY_WEIGHT_DEFAULT)
         score_percent = max(0.0, min(100.0, attempt.score * 10.0))
         weighted_score += score_percent * weight
         total_weight += weight

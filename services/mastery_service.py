@@ -29,7 +29,7 @@ from models.knowledge_graph import (
 )
 from models.profile import UserProfile
 from config.constants import (
-    DIFFICULTY_EVIDENCE_WEIGHT,
+    DIFFICULTY_EVIDENCE_WEIGHT, DIFFICULTY_WEIGHT_DEFAULT,
     POSTERIOR_PRIOR, POSTERIOR_PRIOR_WEIGHT,
     UNCERTAINTY_DEFAULT, UNCERTAINTY_MIN_EVIDENCE,
     SIGNAL_TYPE_DIRECT, SIGNAL_TYPE_INFERRED,
@@ -155,6 +155,9 @@ async def add_evidence(
 
     mastery.evidence_count += 1
     mastery.last_evidence_at = _now()
+
+    # 必须先 flush，让新证据落库，_update_posterior 的查询才能看到它
+    await session.flush()
 
     # 4. 重算 posterior（跳过 weak_signal 证据）+ 同步派生字段 mastery_score
     latest_path_score = await _get_latest_path_score(session, user_id, node_code)
@@ -645,6 +648,16 @@ async def project_to_profile(
     profile.weak_points = sorted(weak_set)
     profile.updated_at = _now()
 
+    # 薄弱点自动插入路径节点钩子：检测新增薄弱点，插入到 active path
+    added_weak = weak_set - existing_weak
+    if added_weak:
+        from services.path_service import insert_weak_node_if_missing
+        for kp in added_weak:
+            try:
+                await insert_weak_node_if_missing(session, user_id, kp)
+            except Exception as e:
+                logger.warning(f"⚠️ 薄弱点节点插入失败 kp={kp}: {e}")
+
 
 # ==================== 内部辅助 ====================
 
@@ -958,7 +971,7 @@ async def record_quiz_evidence(
     }
 
     count = 0
-    diff_weight = DIFFICULTY_EVIDENCE_WEIGHT.get(difficulty or "", 1.0)
+    diff_weight = DIFFICULTY_EVIDENCE_WEIGHT.get(difficulty or "", DIFFICULTY_WEIGHT_DEFAULT)
     for node_code, weight in map_rows:
         await add_evidence(
             session, user_id, node_code,
@@ -1016,7 +1029,7 @@ async def record_code_evidence(
     }
 
     count = 0
-    diff_weight = DIFFICULTY_EVIDENCE_WEIGHT.get(difficulty or "", 1.0)
+    diff_weight = DIFFICULTY_EVIDENCE_WEIGHT.get(difficulty or "", DIFFICULTY_WEIGHT_DEFAULT)
     for node_code, weight in map_rows:
         await add_evidence(
             session, user_id, node_code,

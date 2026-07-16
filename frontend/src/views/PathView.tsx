@@ -9,12 +9,13 @@ import RecommendedPath from '../components/path/RecommendedPath'
 import { PathNodeData } from '../components/path/PathStep'
 import {
   listLearningPaths, getLearningPath, generateLearningPath,
-  getNodeResources, completePathNode, deleteLearningPath,
-  type LearningPathData, type PathNode,
+  getNodeResources, completePathNode, deleteLearningPath, reorderPath,
+  evaluatePath, createAdvancePath,
+  type LearningPathData, type PathNode, type PathEvaluation,
 } from '../api/learningPath'
 import {
   Route, MessageCircle, Plus, Trash2, ChevronRight,
-  Clock, CheckCircle, Target, Loader2, RefreshCw, AlertCircle, X
+  Clock, CheckCircle, Target, Loader2, RefreshCw, AlertCircle, X, Shuffle, Award, Sparkles, ArrowRight
 } from 'lucide-react'
 
 // --- 类型转换：后端PathNode -> 前端PathNodeData ---
@@ -35,6 +36,13 @@ function toStepData(node: PathNode): PathNodeData {
     prerequisites: node.prerequisites,
     resources: node.resources,
   }
+}
+
+// 画像 knowledge_level 中文映射（与后端 PathAgent 保持一致）
+const KNOWLEDGE_LEVEL_LABELS: Record<string, string> = {
+  beginner: '零基础',
+  intermediate: '有基础',
+  advanced: '进阶',
 }
 
 // --- 学习方向定义 ---
@@ -100,6 +108,10 @@ const PathView: React.FC = () => {
   const [masteredPoints, setMasteredPoints] = useState<Set<string>>(new Set())
   const [customKpInput, setCustomKpInput] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
+  const [evaluation, setEvaluation] = useState<PathEvaluation | null>(null)
+  const [evaluating, setEvaluating] = useState(false)
+  const [advancingTopic, setAdvancingTopic] = useState<string | null>(null)
 
   // 加载路径列表
   const loadPaths = useCallback(async () => {
@@ -129,6 +141,11 @@ const PathView: React.FC = () => {
   useEffect(() => {
     syncPaths(paths)
   }, [paths, syncPaths])
+
+  // 切换路径时清空评估结果
+  useEffect(() => {
+    setEvaluation(null)
+  }, [activePathId])
 
   // 当 chatStore 收到 SSE 路径事件时，重新从 API 加载路径列表（确保数据已持久化）
   useEffect(() => {
@@ -355,11 +372,84 @@ const PathView: React.FC = () => {
     navigate('/chat')
   }, [chatStore, navigate])
 
+  // 规则重排路径 NOT_STARTED 节点
+  const handleReorderPath = useCallback(async (pathId: number) => {
+    if (reordering) return
+    setReordering(true)
+    try {
+      const resp = await reorderPath(pathId)
+      if (resp.code === 200 && resp.data) {
+        setPaths(prev => prev.map(p => p.id === pathId ? resp.data! : p))
+        const info = resp.data.reorder_info
+        const msg = info && info.reordered_count > 0
+          ? `已重排 ${info.reordered_count} 个未学节点${info.weak_points_prioritized.length > 0 ? '（薄弱点已优先）' : ''}`
+          : '暂无可重排的未学节点'
+        setError(msg)
+        setTimeout(() => setError(null), 3000)
+      } else {
+        setError(resp.message || '重排失败')
+      }
+    } catch (e) {
+      console.error('路径重排失败:', e)
+      setError('重排失败，请稍后重试')
+    } finally {
+      setReordering(false)
+    }
+  }, [reordering])
+
   const useRecommendedPath = useCallback((topic: string) => {
     setNewTopic(topic)
     setFormTab('quick')
     setShowNewForm(true)
   }, [])
+
+  // 评估路径完成度（偏差 F 评估闭环）
+  const handleEvaluate = useCallback(async (pathId: number) => {
+    if (evaluating) return
+    setEvaluating(true)
+    setError(null)
+    try {
+      const resp = await evaluatePath(pathId)
+      if (resp.code === 200 && resp.data) {
+        setEvaluation(resp.data)
+        // 评估后路径 status 变 completed，重新加载路径列表
+        await loadPaths()
+      } else {
+        setError(resp.message || '评估失败')
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '评估失败，请稍后重试'
+      setError(msg)
+      console.error('路径评估失败:', e)
+    } finally {
+      setEvaluating(false)
+    }
+  }, [evaluating, loadPaths])
+
+  // 一键创建进阶路径
+  const handleCreateAdvance = useCallback(async (pathId: number, topic: string, reason: string) => {
+    if (advancingTopic) return
+    setAdvancingTopic(topic)
+    setError(null)
+    try {
+      const resp = await createAdvancePath(pathId, topic, reason)
+      if (resp.code === 200 && resp.data) {
+        await loadPaths()
+        setActivePathId(resp.data!.id)
+        setEvaluation(null)
+        setError(`已创建进阶路径：${resp.data!.title}`)
+        setTimeout(() => setError(null), 3000)
+      } else {
+        setError(resp.message || '进阶路径创建失败')
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '创建失败，请稍后重试'
+      setError(msg)
+      console.error('进阶路径创建失败:', e)
+    } finally {
+      setAdvancingTopic(null)
+    }
+  }, [advancingTopic, loadPaths])
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -636,6 +726,31 @@ const PathView: React.FC = () => {
                     )}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
+                    {stats.percent >= 100 && activePath.status === 'active' && (
+                      <button
+                        onClick={() => handleEvaluate(activePath.id)}
+                        disabled={evaluating}
+                        className="btn-primary text-xs px-3 py-1.5"
+                        style={{ opacity: evaluating ? 0.7 : 1, cursor: evaluating ? 'wait' : 'pointer' }}
+                        title="评估路径完成度，生成评估报告和进阶推荐"
+                      >
+                        {evaluating
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <Award className="w-3.5 h-3.5" />}
+                        {evaluating ? '评估中...' : '完成评估'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleReorderPath(activePath.id)}
+                      disabled={reordering}
+                      className="icon-button"
+                      title="根据学习进展重排未学节点（薄弱点优先）"
+                      style={{ opacity: reordering ? 0.5 : 1, cursor: reordering ? 'wait' : 'pointer' }}
+                    >
+                      {reordering
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Shuffle className="w-4 h-4" />}
+                    </button>
                     <button
                       onClick={loadPaths}
                       className="icon-button"
@@ -682,6 +797,132 @@ const PathView: React.FC = () => {
                     预计还需 <span className="font-semibold text-slate-700">{stats.timeLeft}</span> 分钟
                   </span>
                 </div>
+              </div>
+            )}
+
+            {/* 评估报告（偏差 F 评估闭环） */}
+            {evaluation && (
+              <div className="page-panel mb-6 p-5">
+                {/* 顶部：达成度评分 + 升级横幅 */}
+                <div className="flex items-center gap-4 mb-4 pb-4 border-b border-slate-100">
+                  <div className="flex-shrink-0 w-20 h-20 rounded-full bg-gradient-to-br from-brand-50 to-brand-100 flex flex-col items-center justify-center">
+                    <span className="text-2xl font-bold text-brand-700 font-mono">
+                      {evaluation.achievement_score}
+                    </span>
+                    <span className="text-[10px] text-slate-500">达成度</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Award className="w-4 h-4 text-amber-500" />
+                      <h4 className="text-sm font-semibold text-slate-800">路径完成评估报告</h4>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      掌握度均值 {evaluation.mastery_stats.avg} · 完成率 {Math.round(evaluation.completion_rate * 100)}%
+                    </p>
+                    {evaluation.level_upgraded && (
+                      <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-700">
+                        <Sparkles className="w-3 h-3" />
+                        知识水平升级：{KNOWLEDGE_LEVEL_LABELS[evaluation.level_upgraded.from] || evaluation.level_upgraded.from} → {KNOWLEDGE_LEVEL_LABELS[evaluation.level_upgraded.to] || evaluation.level_upgraded.to}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 目标达成度 */}
+                {evaluation.report.goal_achievement && (
+                  <div className="mb-3">
+                    <span className="text-xs font-medium text-slate-600">目标达成度：</span>
+                    <span className={`ml-1.5 text-xs font-semibold px-2 py-0.5 rounded ${
+                      evaluation.report.goal_achievement === 'high' ? 'bg-emerald-50 text-emerald-700' :
+                      evaluation.report.goal_achievement === 'medium' ? 'bg-amber-50 text-amber-700' :
+                      'bg-rose-50 text-rose-700'
+                    }`}>
+                      {evaluation.report.goal_achievement === 'high' ? '高度达成' :
+                       evaluation.report.goal_achievement === 'medium' ? '部分达成' : '达成不足'}
+                    </span>
+                  </div>
+                )}
+
+                {/* 目标分析 */}
+                {evaluation.report.goal_analysis && (
+                  <div className="mb-3 text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-lg">
+                    {evaluation.report.goal_analysis}
+                  </div>
+                )}
+
+                {/* 强项 / 弱项 */}
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <p className="text-xs font-medium text-emerald-600 mb-1.5">💪 强项</p>
+                    <div className="flex flex-wrap gap-1">
+                      {evaluation.report.strengths.length > 0 ? evaluation.report.strengths.map((s, i) => (
+                        <span key={i} className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          {s}
+                        </span>
+                      )) : <span className="text-xs text-slate-400">暂无</span>}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-rose-600 mb-1.5">⚠️ 弱项</p>
+                    <div className="flex flex-wrap gap-1">
+                      {evaluation.report.weaknesses.length > 0 ? evaluation.report.weaknesses.map((w, i) => (
+                        <span key={i} className="text-xs px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">
+                          {w}
+                        </span>
+                      )) : <span className="text-xs text-slate-400">暂无</span>}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 建议 */}
+                {evaluation.report.suggestions.length > 0 && (
+                  <div className="mb-4">
+                    <p className="text-xs font-medium text-slate-600 mb-1.5">📝 学习建议</p>
+                    <ul className="space-y-1">
+                      {evaluation.report.suggestions.map((s, i) => (
+                        <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                          <span className="text-brand-500 mt-0.5">•</span>
+                          <span>{s}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* 进阶推荐 */}
+                {evaluation.recommendations.length > 0 && (
+                  <div className="pt-4 border-t border-slate-100">
+                    <p className="text-xs font-medium text-slate-600 mb-2">🚀 进阶学习推荐</p>
+                    <div className="space-y-2">
+                      {evaluation.recommendations.map((rec, i) => (
+                        <div key={i} className="flex items-start gap-2 p-2.5 rounded-lg border border-slate-200 hover:border-brand-300 transition-colors">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-sm font-medium text-slate-800">{rec.topic}</span>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                rec.difficulty === 'advanced' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
+                              }`}>
+                                {rec.difficulty === 'advanced' ? '进阶' : '中级'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">{rec.reason}</p>
+                          </div>
+                          <button
+                            onClick={() => activePath && handleCreateAdvance(activePath.id, rec.topic, rec.reason)}
+                            disabled={advancingTopic !== null}
+                            className="btn-secondary text-xs px-2.5 py-1 flex-shrink-0"
+                            style={{ opacity: advancingTopic ? 0.5 : 1 }}
+                          >
+                            {advancingTopic === rec.topic
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : <ArrowRight className="w-3 h-3" />}
+                            创建
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

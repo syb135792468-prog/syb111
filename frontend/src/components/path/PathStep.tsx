@@ -1,13 +1,19 @@
 import React, { useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   CheckCircle, Clock, AlertTriangle, SkipForward, ChevronDown, ChevronUp,
   FileText, HelpCircle, GitBranch, Code, PlayCircle, Loader2, Award,
-  Zap, RotateCcw
+  Zap, RotateCcw, Video
 } from 'lucide-react'
 import {
   generatePreTest, submitPreTest, unskipNode,
   type PreTest,
 } from '../../api/learningPath'
+import { listErrorBook, generateTutorVideo } from '../../api/errorBook'
+import { useAuthStore } from '../../stores/auth'
+import { useAppStore } from '../../stores/app'
+import { useTaskStore } from '../../stores/taskStore'
+import { pollTaskProgress } from '../../composables/useSSE'
 
 // --- 类型定义 ---
 export interface PathNodeResource {
@@ -138,6 +144,11 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
   const [selectedAnswer, setSelectedAnswer] = useState<string>('')
   const [preTestResult, setPreTestResult] = useState<{ is_correct: boolean; correct_answer: string; explanation: string; matched_error_type: string | null } | null>(null)
   const [unskipping, setUnskipping] = useState(false)
+  const [tutorLoading, setTutorLoading] = useState(false)
+
+  const navigate = useNavigate()
+  const authStore = useAuthStore()
+  const appStore = useAppStore()
 
   const isReview = (step.type || step.node_type) === 'review'
   const status = step.status || 'not_started'
@@ -227,6 +238,56 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
       setUnskipping(false)
     }
   }, [step.id, unskipping, onPathUpdated])
+
+  // 需复习节点：看辅导短视频（按知识点查最近错题 -> 触发生成）
+  const handleWatchTutorVideo = useCallback(async () => {
+    if (tutorLoading || !step.knowledge_point) return
+    setTutorLoading(true)
+    try {
+      const listResp = await listErrorBook(authStore.userId, { knowledge_point: step.knowledge_point, limit: 1 })
+      const listData = listResp.code === 200 && listResp.data
+        ? listResp.data as { items?: Array<{ id: string | number }> }
+        : null
+      const items = listData?.items || []
+      if (items.length === 0) {
+        setTutorLoading(false)
+        appStore.showToast('该知识点暂无错题记录', 'info')
+        return
+      }
+      const errorId = items[0].id
+      const resp = await generateTutorVideo(errorId)
+      if (resp.code !== 200 || !resp.data?.task_id) {
+        appStore.showToast(resp.message || '提交失败', 'error')
+        return
+      }
+      const taskId = resp.data.task_id
+      useTaskStore.getState().addTask({
+        taskId,
+        resourceType: 'tutor_video',
+        topic: step.knowledge_point,
+        status: 'pending',
+        createdAt: Date.now(),
+        progress: 0,
+      })
+      appStore.showToast('辅导视频生成中，完成后将跳转', 'success')
+      pollTaskProgress(
+        taskId,
+        () => {
+          setTutorLoading(false)
+          appStore.showToast('辅导视频已生成', 'success')
+          navigate('/teaching')
+        },
+        (err) => {
+          setTutorLoading(false)
+          appStore.showToast(`生成失败：${err}`, 'error')
+        }
+      )
+    } catch (e) {
+      setTutorLoading(false)
+      appStore.showToast('提交失败，请稍后重试', 'error')
+      console.error('生成辅导视频失败:', e)
+    }
+  }, [tutorLoading, step.knowledge_point, authStore.userId, appStore, navigate])
 
   // 从题目内容解析选项（选择题格式：A. xxx / B. xxx）
   const parseOptions = (content: string): string[] => {
@@ -620,6 +681,31 @@ const PathStep: React.FC<PathStepProps> = ({ step, isLast = false, onNodeClick, 
                     <RotateCcw style={{ width: 12, height: 12 }} />
                   )}
                   取消跳过
+                </button>
+              )}
+
+              {/* 看辅导短视频按钮（needs_review 状态） */}
+              {step.id && status === 'needs_review' && step.knowledge_point && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleWatchTutorVideo() }}
+                  disabled={tutorLoading}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '6px 14px', fontSize: 13, fontWeight: 500,
+                    background: 'var(--py-yellow-tint)', color: 'var(--py-yellow-deep)',
+                    border: '1px solid rgba(255, 212, 59, 0.6)', borderRadius: 8,
+                    cursor: tutorLoading ? 'not-allowed' : 'pointer',
+                    opacity: tutorLoading ? 0.6 : 1,
+                    marginRight: 8,
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {tutorLoading ? (
+                    <Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} />
+                  ) : (
+                    <Video style={{ width: 13, height: 13 }} />
+                  )}
+                  {tutorLoading ? '辅导视频生成中...' : '看辅导短视频'}
                 </button>
               )}
 

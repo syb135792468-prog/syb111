@@ -35,6 +35,7 @@ from models.profile import UserProfile
 from models.learning_path import LearningPath, LearningPathNode, LearningPathNodeResource
 from api.routes.auth import get_current_user
 from utils.logger import get_logger
+from services.path_service import recalc_path_progress
 from config.constants import (
     HTTP_OK, HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_SERVER_ERROR,
     DEFAULT_ESTIMATED_TIME_MIN, EXTENDED_ESTIMATED_TIME_MIN,
@@ -67,20 +68,6 @@ def _path_to_response(path: LearningPath) -> Dict[str, Any]:
 def _node_to_response(node: LearningPathNode) -> Dict[str, Any]:
     """将节点ORM对象转换为响应字典"""
     return node.to_dict()
-
-
-def _recalc_path_progress(path: LearningPath) -> None:
-    """重算路径 completed_nodes 和 progress_percent。
-    completed + skipped 都算已完成。
-    """
-    completed = sum(
-        1 for n in path.nodes
-        if n.status in (LP_NODE_STATUS_COMPLETED, LP_NODE_STATUS_SKIPPED)
-    )
-    path.completed_nodes = completed
-    path.progress_percent = (
-        round(completed / path.total_nodes * 100) if path.total_nodes else 0
-    )
 
 
 async def _get_user_profile(session: AsyncSession, user_id: int) -> Dict[str, Any]:
@@ -375,13 +362,8 @@ async def complete_node(
         if node.status != LP_NODE_STATUS_COMPLETED:
             node.mark_completed()
 
-        # 更新路径进度
-        completed_count = sum(
-            1 for n in (path.nodes or [])
-            if n.status == LP_NODE_STATUS_COMPLETED or n.id == node_id
-        )
-        path.completed_nodes = completed_count
-        path.update_progress()
+        # 更新路径进度（统一口径：completed + skipped）
+        recalc_path_progress(path)
 
         await session.flush()
 
@@ -575,13 +557,8 @@ async def submit_quiz_result(
             if node.status == LP_NODE_STATUS_COMPLETED:
                 node.mark_needs_review()
 
-        # 统一重新计算已完成节点数（无论状态如何变化）
-        completed_count = sum(
-            1 for n in (path.nodes or [])
-            if n.status == LP_NODE_STATUS_COMPLETED
-        )
-        path.completed_nodes = completed_count
-        path.update_progress()
+        # 统一重新计算路径进度（completed + skipped，避免 SKIPPED 节点进度倒退）
+        recalc_path_progress(path)
         await session.flush()
 
         # 图谱回写：通过知识点名匹配图谱节点，写 path_node 证据
@@ -809,7 +786,7 @@ async def submit_node_pre_test(
             node.completed_at = now
             node.last_study_at = now
             if not was_completed:
-                _recalc_path_progress(path)
+                recalc_path_progress(path)
             await session.flush()
 
             # 重新加载完整路径（含 nodes + resources）
@@ -877,7 +854,7 @@ async def unskip_node(
         node.status = LP_NODE_STATUS_NOT_STARTED
         node.mastery = 0.0
         node.completed_at = None
-        _recalc_path_progress(path)
+        recalc_path_progress(path)
         await session.flush()
 
         # 重新加载完整路径
@@ -897,6 +874,220 @@ async def unskip_node(
         )
     except Exception as e:
         logger.error(f"取消跳过失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/{path_id}/reorder", response_model=BaseResponse)
+async def reorder_path(
+    path_id: int = PathParam(..., description="路径ID"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """规则重排路径中 NOT_STARTED 节点的顺序（薄弱点优先 + 难度递增）。
+
+    固定节点（IN_PROGRESS/COMPLETED/SKIPPED/NEEDS_REVIEW）位置不变，
+    只重排 NOT_STARTED 节点。
+    """
+    try:
+        from agents.path_agent import PathAgent
+
+        # 查路径 + 节点
+        stmt = (
+            select(LearningPath)
+            .where(
+                LearningPath.id == path_id,
+                LearningPath.user_id == current_user.id,
+            )
+            .options(selectinload(LearningPath.nodes))
+        )
+        result = await session.execute(stmt)
+        path = result.scalar_one_or_none()
+        if not path:
+            return BaseResponse(
+                code=HTTP_NOT_FOUND, message=MSG_LEARNING_PATH_NOT_FOUND, data=None
+            )
+
+        # 查用户画像（取 weak_points）
+        profile = await _get_user_profile(session, current_user.id)
+        weak_points = profile.get("weak_points", [])
+
+        # 调规则重排
+        reordered_ids = PathAgent.reorder_pending_nodes(path.nodes, weak_points)
+
+        # 构建 id -> node 映射
+        node_map = {n.id: n for n in path.nodes}
+
+        # 按 reordered_ids 顺序重新分配 order（1, 2, 3...）
+        pending_count = sum(
+            1 for n in path.nodes if n.status == LP_NODE_STATUS_NOT_STARTED
+        )
+        for new_order, node_id in enumerate(reordered_ids, start=1):
+            node = node_map.get(node_id)
+            if node:
+                node.order = new_order
+
+        await session.flush()
+        recalc_path_progress(path)
+        await session.commit()
+
+        # 重新加载（含 resources）
+        stmt2 = (
+            select(LearningPath)
+            .where(LearningPath.id == path.id)
+            .options(selectinload(LearningPath.nodes).selectinload(LearningPathNode.resources))
+        )
+        result2 = await session.execute(stmt2)
+        path = result2.scalar_one()
+
+        logger.info(
+            f"🔄 路径重排完成: user={current_user.id}, path={path_id}, "
+            f"重排 {pending_count} 个未学节点"
+        )
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data={
+                **_path_to_response(path),
+                "reorder_info": {
+                    "reordered_count": pending_count,
+                    "weak_points_prioritized": [
+                        kp for kp in weak_points
+                        if kp in {n.knowledge_point for n in path.nodes}
+                    ],
+                },
+            },
+        )
+    except Exception as e:
+        logger.error(f"路径重排失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/{path_id}/evaluate", response_model=BaseResponse)
+async def evaluate_path_endpoint(
+    path_id: int = PathParam(..., description="路径ID"),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """路径完成评估：规则评分 + LLM 报告 + 画像 knowledge_level 升级 + LLM 进阶推荐。
+
+    闭合"路径完成 -> 目标达成评估 -> 画像升级 -> 进阶推荐"链路（偏差 F 评估闭环）。
+    评估后路径 status 从 active 流转为 completed。
+    """
+    try:
+        from services.evaluation_service import evaluate_path
+
+        result = await evaluate_path(session, current_user.id, path_id)
+        await session.commit()
+
+        logger.info(
+            f"📊 路径评估完成: user={current_user.id}, path={path_id}, "
+            f"achievement={result['achievement_score']}, "
+            f"level_upgraded={result['level_upgraded']}"
+        )
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_SUCCESS,
+            data=result,
+        )
+    except ValueError as e:
+        return BaseResponse(
+            code=HTTP_NOT_FOUND, message=str(e), data=None
+        )
+    except Exception as e:
+        logger.error(f"路径评估失败: {e}", exc_info=True)
+        return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
+
+
+@router.post("/{path_id}/advance", response_model=BaseResponse)
+async def create_advance_path(
+    path_id: int = PathParam(..., description="原路径ID"),
+    body: dict = None,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """基于评估推荐的 topic 创建进阶学习路径（一键创建）。
+
+    复用 PathAgent 生成逻辑，传入推荐 topic + 用户画像。
+    """
+    try:
+        body = body or {}
+        topic = str(body.get("topic", "")).strip()
+        reason = str(body.get("reason", "")).strip()
+
+        if not topic:
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST, message="缺少 topic 参数", data=None
+            )
+
+        # 校验原路径属于用户
+        orig_stmt = select(LearningPath).where(
+            LearningPath.id == path_id,
+            LearningPath.user_id == current_user.id,
+        )
+        orig_result = await session.execute(orig_stmt)
+        if not orig_result.scalar_one_or_none():
+            return BaseResponse(
+                code=HTTP_NOT_FOUND, message=MSG_LEARNING_PATH_NOT_FOUND, data=None
+            )
+
+        # 获取用户画像
+        profile = await _get_user_profile(session, current_user.id)
+
+        # 调用 PathAgent 生成新路径
+        agent_result = await _generate_path_with_agent(
+            user_id=current_user.id,
+            topic=topic,
+            goal=reason or f"进阶学习：{topic}",
+            profile=profile,
+        )
+        path_steps = agent_result.get("learning_path", [])
+        llm_title = agent_result.get("path_title", "")
+
+        if not path_steps:
+            return BaseResponse(
+                code=HTTP_BAD_REQUEST,
+                message=f"无法生成进阶路径：{topic}（可能你已掌握相关知识点）",
+                data=None,
+            )
+
+        title = llm_title or f"{topic}进阶学习路径"
+        new_path = await _save_path_to_db(
+            session=session,
+            user_id=current_user.id,
+            title=title,
+            topic=topic,
+            goal=reason or f"进阶学习：{topic}",
+            path_steps=path_steps,
+        )
+
+        # 重新加载路径（含节点）
+        await session.refresh(new_path)
+        stmt = (
+            select(LearningPath)
+            .where(LearningPath.id == new_path.id)
+            .options(selectinload(LearningPath.nodes))
+        )
+        result = await session.execute(stmt)
+        new_path = result.scalar_one()
+
+        logger.info(
+            f"🚀 进阶路径创建: user={current_user.id}, 原路径={path_id}, "
+            f"新路径={new_path.id}, topic={topic}"
+        )
+
+        return BaseResponse(
+            code=HTTP_OK,
+            message=MSG_LEARNING_PATH_GENERATED,
+            data=_path_to_response(new_path),
+        )
+    except asyncio.TimeoutError:
+        return BaseResponse(
+            code=HTTP_SERVER_ERROR, message="进阶路径生成超时，请重试", data=None
+        )
+    except Exception as e:
+        logger.error(f"进阶路径创建失败: {e}", exc_info=True)
         return BaseResponse(code=HTTP_SERVER_ERROR, message=MSG_SERVER_ERROR, data=None)
 
 

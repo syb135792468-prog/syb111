@@ -213,3 +213,56 @@ export async function unskipNode(nodeId: number) {
     10000
   )
 }
+
+/** 规则重排路径 NOT_STARTED 节点（薄弱点优先 + 难度递增） */
+export async function reorderPath(pathId: number) {
+  return apiPost<LearningPathData & { reorder_info?: { reordered_count: number; weak_points_prioritized: string[] } }>(
+    `/api/learning-path/${pathId}/reorder`,
+    {},
+    15000
+  )
+}
+
+// ==================== 评估闭环（偏差 F）====================
+
+export interface PathEvaluationReport {
+  goal_achievement: 'high' | 'medium' | 'low'
+  strengths: string[]
+  weaknesses: string[]
+  goal_analysis: string
+  suggestions: string[]
+}
+
+export interface PathRecommendation {
+  topic: string
+  reason: string
+  difficulty: string
+}
+
+export interface PathEvaluation {
+  achievement_score: number
+  mastery_stats: { avg: number; min: number; max: number }
+  completion_rate: number
+  error_distribution: Record<string, number>
+  report: PathEvaluationReport
+  recommendations: PathRecommendation[]
+  level_upgraded: { from: string; to: string } | null
+}
+
+/** 评估路径完成度：规则评分 + LLM 报告 + 画像升级 + 进阶推荐 */
+export async function evaluatePath(pathId: number) {
+  return apiPost<PathEvaluation>(`/api/learning-path/${pathId}/evaluate`, {}, 90000)
+}
+
+/** 基于评估推荐创建进阶学习路径（一键创建） */
+export async function createAdvancePath(
+  pathId: number,
+  topic: string,
+  reason: string
+) {
+  return apiPost<LearningPathData>(
+    `/api/learning-path/${pathId}/advance`,
+    { topic, reason },
+    120000
+  )
+}

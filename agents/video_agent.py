@@ -198,6 +198,30 @@ class VideoAgent(BaseAgent):
     ) -> Dict[str, Any]:
         target_kp = self._get_target_kp(user_input, context)
         video_config = self._build_video_config((context or {}).get("config", {}))
+        error_context = (context or {}).get("error_context")
+
+        # 辅导短视频路径：有 error_context 时走专门分支（跳过缓存，每条错题个性化）
+        if error_context:
+            try:
+                self.logger.info(f"开始生成辅导短视频，知识点：{target_kp}")
+                html_code = await self._generate_with_retry(
+                    target_kp, video_config, progress_callback, error_context=error_context
+                )
+                if not html_code or len(html_code.strip()) < 50:
+                    raise ValueError("LLM返回的HTML内容无效")
+                if "animationData" not in html_code:
+                    html_code = self._enhance_animation(html_code, video_config)
+                html_code = self._validate_html(html_code)
+                resource = self._build_tutor_resource(html_code, target_kp, video_config, error_context)
+                new_resources = self._append_resource(context, resource)
+                self.logger.info(f"辅导短视频生成完成：{resource.title}")
+                return self._build_result(new_resources)
+            except Exception as e:
+                self.logger.error(f"辅导短视频生成失败：{type(e).__name__}: {str(e)}", exc_info=True)
+                fallback_html = self._get_fallback_html(target_kp, str(e))
+                resource = self._build_tutor_resource(fallback_html, target_kp, video_config, error_context)
+                new_resources = self._append_resource(context, resource)
+                return self._build_result(new_resources)
 
         # 检查缓存（跳过自定义prompt的情况）
         custom_prompt = video_config.get("custom_prompt", "")
@@ -263,9 +287,15 @@ class VideoAgent(BaseAgent):
     # 三阶段流水线：脚本 → HTML → 后处理
     # ================================================================
 
-    async def _generate_script(self, topic: str, video_config: Dict[str, Any]) -> Optional[AnimationScript]:
-        """阶段1：生成结构化教学脚本（JSON）"""
-        self.logger.info(f"[阶段1] 生成教学脚本：{topic}")
+    async def _generate_script(
+        self,
+        topic: str,
+        video_config: Dict[str, Any],
+        error_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[AnimationScript]:
+        """阶段1：生成结构化教学脚本（JSON）。
+        传 error_context 时走辅导短视频 prompt（4 段错题辅导结构）。"""
+        self.logger.info(f"[阶段1] 生成教学脚本：{topic}" + ("（辅导短视频）" if error_context else ""))
 
         duration = video_config["duration"]
         # 按目标时长计算每步旁白字数上限
@@ -276,20 +306,42 @@ class VideoAgent(BaseAgent):
         per_step_voice_time = total_voice_time / SCRIPT_MAX_STEPS
         max_chars = max(20, int(per_step_voice_time * voice_speed))
 
-        system_prompt = self._load_prompt("video_script_system",
-            duration=duration,
-            style=video_config["style"],
-            min_steps=SCRIPT_MIN_STEPS,
-            max_steps=SCRIPT_MAX_STEPS,
-            max_chars=max_chars,
-        )
-        user_prompt = self._load_prompt("video_script_user",
-            topic=topic,
-            duration=duration,
-            style=video_config["style"],
-            min_steps=SCRIPT_MIN_STEPS,
-            max_steps=SCRIPT_MAX_STEPS,
-        )
+        if error_context:
+            system_prompt = self._load_prompt("video_tutor_script_system",
+                duration=duration,
+                style=video_config["style"],
+                error_type=error_context.get("error_type") or "other",
+                min_steps=SCRIPT_MIN_STEPS,
+                max_steps=SCRIPT_MAX_STEPS,
+                max_chars=max_chars,
+            )
+            user_prompt = self._load_prompt("video_tutor_script_user",
+                knowledge_point=error_context.get("knowledge_point") or topic,
+                error_type=error_context.get("error_type") or "other",
+                question_text=error_context.get("question_text") or "",
+                user_answer=error_context.get("user_answer") or "",
+                correct_answer=error_context.get("correct_answer") or "",
+                explanation=error_context.get("explanation") or "",
+                duration=duration,
+                style=video_config["style"],
+                min_steps=SCRIPT_MIN_STEPS,
+                max_steps=SCRIPT_MAX_STEPS,
+            )
+        else:
+            system_prompt = self._load_prompt("video_script_system",
+                duration=duration,
+                style=video_config["style"],
+                min_steps=SCRIPT_MIN_STEPS,
+                max_steps=SCRIPT_MAX_STEPS,
+                max_chars=max_chars,
+            )
+            user_prompt = self._load_prompt("video_script_user",
+                topic=topic,
+                duration=duration,
+                style=video_config["style"],
+                min_steps=SCRIPT_MIN_STEPS,
+                max_steps=SCRIPT_MAX_STEPS,
+            )
 
         last_errors = []
         for attempt in range(SCRIPT_MAX_RETRIES + 1):
@@ -415,8 +467,10 @@ class VideoAgent(BaseAgent):
         topic: str,
         video_config: Dict[str, Any],
         progress_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
+        error_context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """脚本 -> TTS音频 -> 模板注入，失败时降级到 LLM 直接生成"""
+        """脚本 -> TTS音频 -> 模板注入，失败时降级到 LLM 直接生成。
+        传 error_context 时走辅导短视频脚本生成。"""
 
         async def _report(percent: int, stage: str, message: str) -> None:
             if progress_callback is not None:
@@ -426,8 +480,8 @@ class VideoAgent(BaseAgent):
                     pass
 
         # --- 阶段1：生成脚本 ---
-        await _report(5, "script", "生成视频脚本")
-        script = await self._generate_script(topic, video_config)
+        await _report(5, "script", "生成辅导脚本" if error_context else "生成视频脚本")
+        script = await self._generate_script(topic, video_config, error_context=error_context)
 
         if script:
             # --- 阶段1.5：批量生成 TTS 音频（失败则降级 Web Speech）---
@@ -803,5 +857,34 @@ class VideoAgent(BaseAgent):
                 "auto_play": True,
                 "duration": video_config.get("duration"),
                 "style": video_config.get("style"),
+            }
+        )
+
+    def _build_tutor_resource(
+        self,
+        html_content: str,
+        kp: str,
+        video_config: Dict[str, Any],
+        error_context: Dict[str, Any],
+    ) -> ResourceItem:
+        return ResourceItem(
+            resource_type="tutor_video",
+            title=f"{kp} - 错题辅导",
+            content=html_content,
+            knowledge_points=[kp],
+            status=RESOURCE_STATUS_COMPLETED,
+            progress_percent=RESOURCE_PROGRESS_COMPLETE,
+            is_reusable=False,
+            extra_metadata={
+                "video_format": "html_animation",
+                "has_voice": True,
+                "voice_source": tts_client.get_provider_name(),
+                "voice_id": video_config.get("voice_id"),
+                "auto_play": True,
+                "duration": video_config.get("duration"),
+                "style": video_config.get("style"),
+                "is_tutor_video": True,
+                "error_type": error_context.get("error_type"),
+                "error_book_id": error_context.get("error_book_id"),
             }
         )
