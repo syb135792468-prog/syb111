@@ -5,17 +5,14 @@ import {
   LogOut,
   Trash2,
   MessageSquare,
-  User,
   BookOpen,
-  GitBranch,
   AlertCircle,
   Code,
-  Play,
   ScanSearch,
-  Presentation,
   Compass,
   Sparkles,
   GraduationCap,
+  LayoutDashboard,
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useAuthStore } from '../../stores/auth'
@@ -27,28 +24,23 @@ interface NavItem {
   name: string
   path: string
   label: string
-  group: 'core' | 'tools' | 'growth'
+  group: 'core' | 'tools'
   icon: React.ReactNode
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { name: 'Course', path: '/course', label: '课程概览', group: 'core', icon: <GraduationCap style={{ width: 17, height: 17 }} /> },
-  { name: 'Chat', path: '/chat', label: '智能对话', group: 'core', icon: <MessageSquare style={{ width: 17, height: 17 }} /> },
+  { name: 'LearningOverview', path: '/learning-overview', label: '学习概览', group: 'core', icon: <LayoutDashboard style={{ width: 17, height: 17 }} /> },
+  { name: 'Profile', path: '/profile', label: '学习画像', group: 'core', icon: <GraduationCap style={{ width: 17, height: 17 }} /> },
   { name: 'Path', path: '/path', label: '学习路径', group: 'core', icon: <Compass style={{ width: 17, height: 17 }} /> },
   { name: 'Playground', path: '/playground', label: '编程练习', group: 'core', icon: <Code style={{ width: 17, height: 17 }} /> },
   { name: 'Resources', path: '/resources', label: '学习资源', group: 'tools', icon: <BookOpen style={{ width: 17, height: 17 }} /> },
-  { name: 'Mindmap', path: '/mindmap', label: '思维导图', group: 'tools', icon: <GitBranch style={{ width: 17, height: 17 }} /> },
   { name: 'ErrorBook', path: '/error-book', label: '错题本', group: 'tools', icon: <AlertCircle style={{ width: 17, height: 17 }} /> },
-  { name: 'Animation', path: '/animation', label: '教学动画', group: 'tools', icon: <Play style={{ width: 17, height: 17 }} /> },
   { name: 'Multimodal', path: '/multimodal', label: '代码识别', group: 'tools', icon: <ScanSearch style={{ width: 17, height: 17 }} /> },
-  { name: 'Slides', path: '/slides', label: '演示幻灯片', group: 'tools', icon: <Presentation style={{ width: 17, height: 17 }} /> },
-  { name: 'Profile', path: '/profile', label: '学习画像', group: 'growth', icon: <User style={{ width: 17, height: 17 }} /> },
 ]
 
 const NAV_GROUPS: Array<{ key: NavItem['group']; label: string }> = [
   { key: 'core', label: '核心流程' },
   { key: 'tools', label: '学习工具' },
-  { key: 'growth', label: '成长反馈' },
 ]
 
 const RESOURCE_TYPE_LABEL: Record<string, string> = {
@@ -65,6 +57,7 @@ const AppSidebar: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const username = useAuthStore((state) => state.username)
+  const classId = useAuthStore((state) => state.classId)
   const logout = useAuthStore((state) => state.logout)
   const conversations = useChatStore((state) => state.conversations)
   const currentConversationId = useChatStore((state) => state.currentConversationId)
@@ -128,13 +121,16 @@ const AppSidebar: React.FC = () => {
       >
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '14px 12px 12px' }}>
           <button
-            onClick={() => navigateTo('/course')}
-            className="rail-card btn-click-feedback"
-            aria-label="进入课程概览"
+            onClick={() => navigateTo('/learning-overview')}
+            className="rail-card rail-brand-card btn-click-feedback"
+            aria-label="进入学习画像"
             style={{ padding: '14px 14px 12px', marginBottom: 10, cursor: 'pointer', textAlign: 'left', width: '100%', display: 'block' }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <GraduationCap style={{ width: 16, height: 16, color: 'var(--py-blue)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <span className="python-brand-mark" aria-hidden="true">
+                <span className="python-brand-blue"><i /></span>
+                <span className="python-brand-yellow"><i /></span>
+              </span>
               <span style={{ fontSize: 10.5, color: 'var(--mute)', fontWeight: 600, letterSpacing: '0.02em' }}>
                 高校 Python 课程
               </span>
@@ -145,7 +141,7 @@ const AppSidebar: React.FC = () => {
                 color: 'var(--ink)',
                 fontSize: 20,
                 lineHeight: 1.08,
-                letterSpacing: '-0.04em',
+                letterSpacing: 0,
                 fontFamily: 'var(--font-display)',
                 fontWeight: 700,
               }}
@@ -284,7 +280,27 @@ const AppSidebar: React.FC = () => {
                 >
                   {username || '学习者'}
                 </div>
-                <div style={{ color: 'var(--mute)', fontSize: 11 }}>学习状态已同步</div>
+                <button
+                  type="button"
+                  onClick={() => navigate('/join-class')}
+                  className="rail-class-link"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    color: classId ? 'var(--mute)' : '#b73b2a',
+                    fontSize: 11,
+                    fontWeight: classId ? 400 : 600,
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                  }}
+                  title={classId ? '点击切换班级' : '点击加入班级'}
+                >
+                  <GraduationCap style={{ width: 11, height: 11 }} />
+                  {classId ? '已加入班级 · 点击切换' : '未加入班级 · 点击加入'}
+                </button>
               </div>
               <button onClick={handleLogout} title="退出登录" className="rail-icon-button">
                 <LogOut style={{ width: 15, height: 15 }} />

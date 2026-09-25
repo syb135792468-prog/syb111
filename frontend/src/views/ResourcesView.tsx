@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../stores/auth'
 import { useAppStore } from '../stores/app'
 import { useTaskStore } from '../stores/taskStore'
@@ -12,8 +12,7 @@ import ResourceDetail from '../components/resource/ResourceDetail'
 import ConfirmDialog from '../components/common/ConfirmDialog'
 import GenerateModal from '../components/resource/GenerateModal'
 import QuizView from '../components/quiz/QuizView'
-import ProgressBar from '../components/common/ProgressBar'
-import { BookOpen, Plus } from 'lucide-react'
+import { BookOpen, GitBranch, Play, Plus, Presentation } from 'lucide-react'
 
 // --- 类型定义 ---
 interface Resource {
@@ -36,6 +35,7 @@ interface GeneratePayload {
 const ResourcesView: React.FC = () => {
   const authStore = useAuthStore()
   const appStore = useAppStore()
+  const navigate = useNavigate()
   const recordLearningEvent = useLearningCenterStore((state) => state.recordEvent)
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -56,7 +56,6 @@ const ResourcesView: React.FC = () => {
   const [detailResource, setDetailResource] = useState<Resource | null>(null)
   const [showQuiz, setShowQuiz] = useState(false)
   const [quizResourceId, setQuizResourceId] = useState('')
-  const [quizGenTaskId, setQuizGenTaskId] = useState<string | null>(null)
 
   // --- 删除状态 ---
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
@@ -126,15 +125,22 @@ const ResourcesView: React.FC = () => {
     if (r.resource_type === 'quiz') {
       setQuizResourceId(String(r.id))
       setShowQuiz(true)
-    } else if (r.resource_type === 'video' || r.resource_type === 'slides') {
-      // video/slides 需要完整渲染，打开全屏弹窗
+    } else {
       setDetailResource(r)
       setShowDetail(true)
-    } else {
-      // 打开右侧面板
-      appStore.openRightPanel('resource-summary', { resource: r })
     }
-  }, [appStore, authStore.userId, recordLearningEvent])
+  }, [authStore.userId, recordLearningEvent])
+
+  const openResourceSummary = useCallback((r: Resource) => {
+    setShowDetail(false)
+    appStore.openRightPanel('resource-summary', {
+      resource: r,
+      onPreview: () => {
+        setDetailResource(r)
+        setShowDetail(true)
+      },
+    })
+  }, [appStore])
 
   // --- 生成资源 ---
   const handleGenerate = useCallback(async ({ topic, type, config = {} }: GeneratePayload) => {
@@ -147,7 +153,6 @@ const ResourcesView: React.FC = () => {
         const resp = await generateResourceAsync(authStore.userId, topic, type, config)
         if (resp.code === 200 && resp.data?.task_id) {
           const taskId = resp.data.task_id
-          setQuizGenTaskId(taskId)
           setShowGenerate(false)
           useTaskStore.getState().addTask({
             taskId,
@@ -161,14 +166,12 @@ const ResourcesView: React.FC = () => {
             taskId,
             () => {
               if (!mountedRef.current) return
-              setQuizGenTaskId(null)
               appStore.showToast('资源生成成功', 'success')
               fetchResources()
               setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
             },
             (error) => {
               if (!mountedRef.current) return
-              setQuizGenTaskId(null)
               appStore.showToast('生成失败：' + error, 'error')
               setTimeout(() => useTaskStore.getState().removeTask(taskId), 2000)
             },
@@ -301,9 +304,28 @@ const ResourcesView: React.FC = () => {
       </AppHeader>
 
       <div className="page-scroll-area">
-        {quizGenTaskId && (
-          <QuizGenProgress taskId={quizGenTaskId} />
-        )}
+        <div className="page-content pb-0">
+          <div className="page-panel-soft flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-700">学习工具</p>
+              <p className="mt-0.5 text-xs text-slate-400">从这里进入专用的导图、动画和幻灯片工作区</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => navigate('/mindmap')} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800">
+                <GitBranch className="h-4 w-4" />
+                思维导图
+              </button>
+              <button type="button" onClick={() => navigate('/animation')} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800">
+                <Play className="h-4 w-4" />
+                教学动画
+              </button>
+              <button type="button" onClick={() => navigate('/slides')} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-800">
+                <Presentation className="h-4 w-4" />
+                演示幻灯片
+              </button>
+            </div>
+          </div>
+        </div>
         {/* Loading */}
         {loading ? (
           <div className="page-content flex items-center justify-center h-64">
@@ -360,6 +382,7 @@ const ResourcesView: React.FC = () => {
           type={detailResource.resource_type}
           resourceId={String(detailResource.id || '')}
           extraMetadata={detailResource.extra_metadata as Record<string, unknown> | null}
+          onOpenSummary={() => openResourceSummary(detailResource)}
           onClose={() => setShowDetail(false)}
         />
       )}
@@ -386,25 +409,3 @@ const ResourcesView: React.FC = () => {
 }
 
 export default ResourcesView
-
-const QuizGenProgress: React.FC<{ taskId: string }> = ({ taskId }) => {
-  const task = useTaskStore((state) => state.tasks.find((t) => t.taskId === taskId))
-  if (!task) return null
-  return (
-    <div className="page-content">
-      <div className="page-panel-soft" style={{ padding: '14px 18px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-brand-600" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink, #1e293b)' }}>
-            正在生成练习题：{task.topic}
-          </span>
-        </div>
-        <ProgressBar
-          percent={task.progress || 0}
-          stage={task.stage}
-          message={task.message}
-        />
-      </div>
-    </div>
-  )
-}
