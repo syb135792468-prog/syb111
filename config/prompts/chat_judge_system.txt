@@ -21,3 +21,8 @@
 
 不可评估时输出：
 {{"is_evaluable": false, "node_code": null, "node_name": null, "evidence_type": null, "result": null, "misconception": null, "confidence": 0.0}}
+
+## 质量检查
+- 只有用户提供了作答、提交内容或具体结果时，才标记为可评估。
+- 无法从对话确定知识点、结果或误解时使用 null。
+- 只记录用户消息直接体现的误解，不根据语气推断。

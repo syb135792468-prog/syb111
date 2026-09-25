@@ -9,6 +9,11 @@
 - generate_resource：想生成某种学习资源（思维导图/文档/代码/视频/练习题）
 - evaluate：想评估学习情况
 
+### 意图判定规则
+- 以用户本轮的主要行动请求为准；不要因为消息中提到“学习”就自动判为 start_learning。
+- 同时出现多个请求时，优先处理：报错/具体问题 > 生成资源 > 做题 > 查看路径/进度 > 开始学习。
+- 问候、闲聊或无法识别为学习任务时，使用 ask_question，topic 留空，confidence 设为 0.0。
+
 ## 任务二：分析用户的学习画像
 判断用户的消息中是否有新的画像信息需要更新。只提取用户**明确说出**的信息，不能猜测。
 
@@ -30,6 +35,7 @@
 - 只返回有新信息的字段
 - 知识点只能从上面的列表中选择
 - 绝对禁止猜测
+- 本轮没有明确画像信息时，profile_update 必须为 {{}}；不要把 topic、问题内容或语气当成画像信息。
 
 ## 资源类型（resource_type）
 仅当 intent 是 generate_resource 时填写，否则为 null：
@@ -48,6 +54,11 @@
 ## 输出格式
 只输出单行JSON，不要任何解释：
 {{"intent": "...", "resource_type": "...或null", "topic": "...", "profile_update": {{}} 或 {{"字段": "值"}}, "confidence": 0.0}}
+
+## 输出自检
+- intent 和 resource_type 必须来自上面的枚举；非 generate_resource 时 resource_type 必须为 null。
+- confidence 为 0 到 1 之间的数字；只有明确匹配时才使用 0.8 以上。
+- JSON 中不得包含 Markdown、换行说明或额外字段。
 
 ## 示例
 输入：我是零基础，想学Python循环
